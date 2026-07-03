@@ -30,6 +30,24 @@
     {% endif %}
 </div>
 
+{% if connected %}
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Kaggle</h3>
+        <button type="button" class="btn-outline btn-sm" id="kaggle-creds-btn" onclick="copyKaggleCreds()">Copy Kaggle credentials</button>
+    </div>
+    <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted)">
+        De notebook batch chay tren Kaggle truy cap Drive truc tiep (tu tai package ve va upload .wav
+        len Drive khi chay - resume duoc qua nhieu session): copy JSON nay, roi tren Kaggle vao
+        <strong>Add-ons &gt; Secrets</strong>, tao secret ten <code>GDRIVE_CREDS</code> voi gia tri vua copy
+        va bat cho notebook. Secret nay chua refresh token cua tai khoan Drive - chi dan vao Kaggle Secrets
+        (rieng tu), khong dan vao code cua notebook.
+    </p>
+    <textarea id="kaggle-creds-out" readonly rows="3" style="width:100%;display:none;font-family:monospace;font-size:0.85em"></textarea>
+    <p id="kaggle-creds-msg" style="display:none;margin:var(--space-sm) 0 0 0"></p>
+</div>
+{% endif %}
+
 <div class="card">
     <div class="card-header">
         <h3 style="margin:0">Lich su Export</h3>
@@ -67,4 +85,35 @@
 </div>
 
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function copyKaggleCreds() {
+    const msg = document.getElementById('kaggle-creds-msg');
+    const out = document.getElementById('kaggle-creds-out');
+    try {
+        const res = await fetch('/drive/kaggle-credentials');
+        if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error((body && body.detail) || res.statusText);
+        }
+        const text = JSON.stringify(await res.json());
+        out.value = text;
+        try {
+            await navigator.clipboard.writeText(text);
+            msg.textContent = 'Da copy vao clipboard - dan vao Kaggle secret GDRIVE_CREDS.';
+        } catch (e) {
+            out.style.display = 'block';
+            out.select();
+            msg.textContent = 'Khong copy tu dong duoc - JSON hien ben duoi, hay copy thu cong.';
+        }
+        msg.style.color = 'var(--text-muted)';
+    } catch (e) {
+        msg.textContent = 'Loi: ' + e.message;
+        msg.style.color = 'var(--color-error)';
+    }
+    msg.style.display = 'block';
+}
+</script>
 {% endblock %}

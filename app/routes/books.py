@@ -8,7 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app import repository
+from app import google_drive, repository
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -158,6 +158,7 @@ def book_detail(request: Request, book_id: int):
         chapters = repository.list_chapters(conn, book_id)
         last_error = repository.get_last_error_for_book(conn, book_id)
         video_job = repository.get_book_job(conn, book_id, "video")
+        drive_connected = google_drive.get_creds_from_db(conn) is not None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
     return templates.TemplateResponse(
         request, "book_detail.html", {
@@ -168,6 +169,8 @@ def book_detail(request: Request, book_id: int):
             "last_error": last_error,
             "video_job": video_job,
             "has_active_patches": has_active_patches,
+            "drive_connected": drive_connected,
+            "drive_configured": google_drive.is_configured(),
         }
     )
 

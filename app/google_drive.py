@@ -241,6 +241,31 @@ def upload_file(service, folder_id: str, local_path: str, mime_type: str | None 
     return file["id"]
 
 
+def upload_directory(service, parent_id: str, local_dir: str) -> dict[str, dict]:
+    """Recursively upload the contents of ``local_dir`` into the Drive folder
+    ``parent_id``, creating subfolders as needed.
+
+    Returns {relative_posix_path: {"id", "link"}} for every created subfolder, so
+    callers can record e.g. the Drive folder id of "patches/patch_004" (the batch
+    export route stores one patch_export row per patch pointing at its subfolder).
+    """
+    folder_map: dict[str, dict] = {}
+    root = Path(local_dir)
+
+    def _upload(folder_id: str, directory: Path, rel: str) -> None:
+        for entry in sorted(directory.iterdir()):
+            if entry.is_dir():
+                child_rel = f"{rel}/{entry.name}" if rel else entry.name
+                child = create_folder(service, entry.name, parent_id=folder_id)
+                folder_map[child_rel] = child
+                _upload(child["id"], entry, child_rel)
+            else:
+                upload_file(service, folder_id, str(entry))
+
+    _upload(parent_id, root, "")
+    return folder_map
+
+
 def find_subfolder(service, parent_id: str, name: str) -> str | None:
     """Return the id of a folder named ``name`` directly inside ``parent_id``, or None.
 

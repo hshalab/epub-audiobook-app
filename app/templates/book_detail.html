@@ -177,11 +177,28 @@
 <div class="card">
     <div class="card-header">
         <h3 style="margin:0">Patches ({{ patches|length }})</h3>
+        <div style="display:flex;gap:var(--space-sm);align-items:center">
+            <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled
+                    title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
+                Download selected (.zip)
+            </button>
+            {% if drive_configured and drive_connected %}
+            <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
+                    formaction="/books/{{ book.id }}/patches/export-batch"
+                    title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
+                Export selected to Drive
+            </button>
+            {% endif %}
+        </div>
     </div>
+    {# The table rows contain their own nested forms, so the batch form stays empty
+       and the checkboxes/buttons bind to it via the HTML5 form="" attribute. #}
+    <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download"></form>
     <div class="table-wrap">
     <table>
         <thead>
             <tr>
+                <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
                 <th>Patch</th>
                 <th>Chapters</th>
                 <th>Chunks</th>
@@ -194,6 +211,8 @@
         <tbody>
         {% for patch in patches %}
             <tr>
+                <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
+                           form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
                 <td><strong>{{ patch.name or patch.patch_index }}</strong></td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
                 <td>{{ patch.chunk_count }}</td>
@@ -254,6 +273,33 @@
 
 {% block scripts %}
 <script>
+(function() {
+    // Batch export: select-all checkbox + enable the export buttons only when
+    // at least one patch is selected (the server validates too).
+    const selectAll = document.getElementById('batch-select-all');
+    const checkboxes = Array.from(document.querySelectorAll('.batch-patch-checkbox'));
+    const batchButtons = ['batch-download-btn', 'batch-drive-btn']
+        .map(id => document.getElementById(id)).filter(Boolean);
+
+    function refreshBatchButtons() {
+        const anyChecked = checkboxes.some(cb => cb.checked);
+        batchButtons.forEach(btn => { btn.disabled = !anyChecked; });
+        if (selectAll) {
+            const enabled = checkboxes.filter(cb => !cb.disabled);
+            selectAll.checked = enabled.length > 0 && enabled.every(cb => cb.checked);
+        }
+    }
+
+    if (selectAll) {
+        selectAll.addEventListener('change', () => {
+            checkboxes.forEach(cb => { if (!cb.disabled) cb.checked = selectAll.checked; });
+            refreshBatchButtons();
+        });
+    }
+    checkboxes.forEach(cb => cb.addEventListener('change', refreshBatchButtons));
+    refreshBatchButtons();
+})();
+
 (function() {
     const BOOK_ID = {{ book.id }};
     const STATUS_URL = `/books/${BOOK_ID}/status`;

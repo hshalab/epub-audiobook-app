@@ -292,6 +292,79 @@ def download_patch_export(request: Request, book_id: int, patch_id: int):
     )
 
 
+def _load_batch_patches(conn, book_id: int, patch_ids: list[int]):
+    """Validate a multi-patch export selection and return (book, patches sorted by
+    patch_index). Raises HTTPException on empty/unknown/processing selections."""
+    if not patch_ids:
+        raise HTTPException(status_code=400, detail="no patches selected")
+    book = repository.get_book(conn, book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="book not found")
+    patches = []
+    for patch_id in dict.fromkeys(patch_ids):  # dedupe, keep order
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail=f"patch {patch_id} not found")
+        if patch.status == "processing":
+            raise HTTPException(
+                status_code=400,
+                detail=f"cannot export patch {patch.name or patch.patch_index} while it is processing",
+            )
+        patches.append(patch)
+    return book, sorted(patches, key=lambda p: p.patch_index)
+
+
+@router.post("/books/{book_id}/patches/export-batch/download")
+def download_batch_export(request: Request, book_id: int, patch_ids: list[int] = Form(...)):
+    with locked_conn(request) as conn:
+        book, patches = _load_batch_patches(conn, book_id, patch_ids)
+        # Same convention as the single-patch download: compute the timestamped name
+        # once and bake it into the notebook so its fallback matches the zip filename.
+        folder_name = drive_export.folder_name_for_batch(book.title, patches)
+        zip_path = drive_export.build_batch_export_zip(
+            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token
+        )
+    return FileResponse(
+        str(zip_path),
+        media_type="application/zip",
+        filename=f"{folder_name}.zip",
+    )
+
+
+@router.post("/books/{book_id}/patches/export-batch")
+def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] = Form(...)):
+    with locked_conn(request) as conn:
+        book, patches = _load_batch_patches(conn, book_id, patch_ids)
+        if google_drive.get_creds_from_db(conn) is None:
+            raise HTTPException(status_code=400, detail="Google Drive not connected. Connect it at /drive first.")
+
+        folder_name = drive_export.folder_name_for_batch(book.title, patches)
+        package_dir, batch_manifest = drive_export.build_batch_export_package(
+            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token
+        )
+        try:
+            service = google_drive.get_drive_service(conn)
+            root_id = google_drive.get_or_create_root_folder(service)
+            batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
+            folder_map = google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
+            # Only record the exports after every upload succeeded, so a mid-upload
+            # failure can't leave patch_export rows pointing at a half-filled folder.
+            # Each patch points at its own subfolder, which is exactly the layout the
+            # existing per-patch "Import results from Drive" flow expects.
+            for entry in batch_manifest["patches"]:
+                info = folder_map[entry["folder"]]
+                repository.create_patch_export(
+                    conn, entry["patch_id"], info["id"], info["link"], entry["chunk_count"]
+                )
+        except Exception as exc:
+            logger.exception("batch export to Google Drive failed for book %s", book_id)
+            raise HTTPException(status_code=500, detail=f"Drive export failed: {exc}")
+        finally:
+            shutil.rmtree(package_dir, ignore_errors=True)
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/import")
 def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:

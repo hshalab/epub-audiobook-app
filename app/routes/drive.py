@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import google_drive, repository
+from app.config import settings
 from app.deps import locked_conn
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,25 @@ def drive_callback(request: Request, code: str = "", error: str = ""):
         logger.exception("Failed to save Google Drive credentials")
         return RedirectResponse(url=f"/drive?error={str(exc)}")
     return RedirectResponse(url="/drive?connected=1")
+
+
+@router.get("/drive/kaggle-credentials")
+def drive_kaggle_credentials(request: Request):
+    """Credentials JSON for the batch notebook's Kaggle Drive mode: the user pastes
+    this into a private Kaggle secret named GDRIVE_CREDS so the notebook can download
+    the exported batch from Drive and upload synthesized audio back (same drive.file
+    scope and OAuth client as the app itself)."""
+    if not google_drive.is_configured():
+        raise HTTPException(status_code=400, detail="Google Drive not configured")
+    with locked_conn(request) as conn:
+        creds = google_drive.get_creds_from_db(conn)
+    if creds is None or not creds.get("refresh_token"):
+        raise HTTPException(status_code=400, detail="Google Drive not connected. Connect it first.")
+    return JSONResponse({
+        "client_id": settings.google_drive_client_id,
+        "client_secret": settings.google_drive_client_secret,
+        "refresh_token": creds["refresh_token"],
+    })
 
 
 @router.post("/drive/disconnect")
