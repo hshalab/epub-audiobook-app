@@ -5,7 +5,9 @@ Order of operations:
   1. Remove junk tokens (e.g. EPUB formatting artifacts like OO@@).
   2. Remove dots inside Vietnamese words (e.g. ch.ế.t -> chết).
   3. Convert numbers/currency/dates/times/percentages into spoken Vietnamese.
-  4. User-defined replace rules run afterwards so users can override results.
+  4. Expand file extensions (.wav, .mp3 ...) into spoken form.
+  5. Ensure each line/sentence ends with punctuation.
+  6. User-defined replace rules run afterwards so users can override results.
 """
 from __future__ import annotations
 
@@ -93,12 +95,29 @@ _INTEGER_RE = re.compile(
     r"(?![\d])"
 )
 
+# File extension: .wav, .mp3, .jpg etc.
+# Two patterns: one with a preceding filename (needs space separator),
+# one standalone (preceded by non-word).
+_FILE_EXT_WITH_FILENAME_RE = re.compile(
+    r"(?<=\w)"                       # preceded by word char (the filename)
+    r"\."
+    r"(?P<ext>[a-zA-Z][a-zA-Z0-9]{1,3})"  # extension: letter + 1-3 alnum = 2-4 total
+    r"(?!\w)"                        # not followed by a word char
+)
+_FILE_EXT_STANDALONE_RE = re.compile(
+    r"(?<![.\w])"                    # not preceded by dot or word char
+    r"\."
+    r"(?P<ext>[a-zA-Z][a-zA-Z0-9]{1,3})"
+    r"(?!\w)"
+)
 
 @dataclass
 class NormalizationOptions:
     numbers: bool = True
     junk: bool = True
     spellcheck: bool = True
+    file_extensions: bool = True
+    punctuation: bool = True
     junk_extra_tokens: list[str] | None = None
 
 
@@ -218,6 +237,49 @@ def _replace_integer(m: re.Match) -> str:
     return _number_to_words(m.group("num"))
 
 
+def _read_extension(ext: str) -> str:
+    """Read a file extension for TTS: if all letters keep as-is, else spell character-by-character."""
+    if ext.isalpha():
+        return ext
+    words = []
+    for ch in ext:
+        if ch.isdigit():
+            words.append(_digit_to_word(ch))
+        else:
+            words.append(ch)
+    return " ".join(words)
+
+
+def _replace_file_ext_spaced(m: re.Match) -> str:
+    return f" chấm {_read_extension(m.group('ext'))}"
+
+
+def _replace_file_ext_standalone(m: re.Match) -> str:
+    return f"chấm {_read_extension(m.group('ext'))}"
+
+
+def normalize_file_extensions(text: str) -> str:
+    """Expand file extensions into spoken form (.wav -> 'chấm wav', .mp3 -> 'chấm m p ba')."""
+    text = _FILE_EXT_WITH_FILENAME_RE.sub(_replace_file_ext_spaced, text)
+    text = _FILE_EXT_STANDALONE_RE.sub(_replace_file_ext_standalone, text)
+    return text
+
+
+_SENTENCE_PUNCTUATION = frozenset(".!?…:;,)\]\"'»")
+
+
+def ensure_sentence_punctuation(text: str) -> str:
+    """Add a period to each line that does not already end with sentence punctuation."""
+    lines = text.split("\n")
+    result: list[str] = []
+    for line in lines:
+        stripped = line.rstrip()
+        if stripped and stripped[-1] not in _SENTENCE_PUNCTUATION:
+            stripped += "."
+        result.append(stripped)
+    return "\n".join(result)
+
+
 def _has_vietnamese_diacritic(word: str) -> bool:
     return any(ch in _VIETNAMESE_DIACRITICS for ch in word.lower())
 
@@ -274,4 +336,8 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
         text = remove_dots_in_vietnamese_words(text)
     if opts.numbers:
         text = normalize_numbers(text)
+    if opts.file_extensions:
+        text = normalize_file_extensions(text)
+    if opts.punctuation:
+        text = ensure_sentence_punctuation(text)
     return text
