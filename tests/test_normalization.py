@@ -8,6 +8,7 @@ from app.normalization import (
     normalize_file_extensions,
     normalize_numbers,
     normalize_text,
+    remove_cjk,
     remove_dots_in_vietnamese_words,
 )
 
@@ -69,6 +70,29 @@ def test_clean_junk_tokens_default():
 
 def test_clean_junk_tokens_custom():
     assert clean_junk_tokens("fooBARbaz", ["BAR"]) == "foobaz"
+
+
+def test_remove_cjk_basic():
+    assert remove_cjk("Chương 日") == "Chương "
+    assert remove_cjk("你好Hello") == "Hello"
+    assert remove_cjk("Việt Nam") == "Việt Nam"
+
+
+def test_remove_cjk_multiple_ranges():
+    # CJK Unified Ideographs (4E00-9FFF), Extension A (3400-4DBF), Compatibility (F900-FAFF)
+    assert remove_cjk("中文") == ""
+    assert remove_cjk("A文B") == "AB"
+
+
+def test_remove_cjk_edge_cases():
+    assert remove_cjk("") == ""
+    assert remove_cjk("Hello世界!") == "Hello!"
+    assert remove_cjk("Chương 100") == "Chương 100"
+
+
+def test_remove_cjk_in_pipeline():
+    result = normalize_text("Hello你好 World", NormalizationOptions(numbers=False, junk=False, spellcheck=False, punctuation=False))
+    assert result == "Hello World"
 
 
 def test_remove_dots_in_vietnamese_words():

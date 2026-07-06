@@ -29,6 +29,8 @@ _DIGIT_WORDS = [
 
 DEFAULT_JUNK_TOKENS = ["OO@@", "@@", "##", "**"]
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+")
+
 # Currency: requires either a prefix symbol/code ($/₫/đ/VND/USD/EUR)
 # or a suffix symbol/code.
 _CURRENCY_CODES = r"VND|vnd|USD|usd|EUR|eur"
@@ -291,6 +293,11 @@ def _remove_dots_in_word(m: re.Match) -> str:
     return word
 
 
+def remove_cjk(text: str) -> str:
+    """Remove CJK Unified Ideographs from text."""
+    return _CJK_RE.sub("", text)
+
+
 def clean_junk_tokens(text: str, tokens: list[str] | None = None) -> str:
     """Remove known junk/formatting tokens from text."""
     tokens = tokens or DEFAULT_JUNK_TOKENS
@@ -332,6 +339,7 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
     opts = opts or NormalizationOptions()
     if opts.junk:
         text = clean_junk_tokens(text, opts.junk_extra_tokens)
+    text = remove_cjk(text)
     if opts.spellcheck:
         text = remove_dots_in_vietnamese_words(text)
     if opts.numbers:

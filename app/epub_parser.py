@@ -25,6 +25,7 @@ _MIN_CHAPTER_CHARS = 50  # below this, treat the spine doc as cover/nav, not a c
 _SPLIT_MARKER = "\x00CHAPTER_SPLIT\x00"
 _WHITESPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+")
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _CONTAINER_NS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
 
@@ -44,9 +45,14 @@ class ParsedChapter:
         return len(self.text)
 
 
+def _remove_cjk(text: str) -> str:
+    return _CJK_RE.sub("", text)
+
+
 def _clean_text(raw: str) -> str:
     text = _WHITESPACE_RE.sub(" ", raw)
     text = _BLANK_LINES_RE.sub("\n\n", text)
+    text = _remove_cjk(text)
     return text.strip()
 
 
@@ -115,11 +121,11 @@ def _split_by_headings(soup: BeautifulSoup) -> list[tuple[str, str]]:
     """Split a single spine document into one or more (title, text) chapters at heading boundaries."""
     headings = soup.find_all(_HEADING_TAGS)
     if len(headings) <= 1:
-        title = headings[0].get_text(strip=True) if headings else ""
+        title = _remove_cjk(headings[0].get_text(strip=True)) if headings else ""
         text = _clean_text(soup.get_text(separator="\n"))
         return [(title, text)]
 
-    titles = [h.get_text(strip=True) for h in headings]
+    titles = [_remove_cjk(h.get_text(strip=True)) for h in headings]
     for heading in headings:
         heading.insert_before(NavigableString(_SPLIT_MARKER))
 
