@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -84,6 +86,31 @@ def _resolve_background_image(bg_path: str | None) -> Path | None:
     if Path(default).exists():
         return Path(default)
     return None
+
+
+def _sanitize_basename(name: str) -> str:
+    """Sanitize an audio filename into a safe video basename (no extension).
+
+    Strips path components, replaces filesystem-unsafe characters with
+    underscores, and falls back to 'video' if the result is empty.
+    """
+    base = Path(name or "").name
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', base)
+    base = base.strip().strip('.')
+    return base or "video"
+
+
+def _unique_video_path(stem: str) -> Path:
+    """Return a non-colliding path in _VIDEOS_DIR for the given stem."""
+    candidate = _VIDEOS_DIR / f"{stem}.mp4"
+    if not candidate.exists():
+        return candidate
+    i = 1
+    while True:
+        candidate = _VIDEOS_DIR / f"{stem}_{i}.mp4"
+        if not candidate.exists():
+            return candidate
+        i += 1
 
 
 def _get_recent_videos(limit: int = 20) -> list[dict]:
@@ -327,11 +354,13 @@ async def generate_batch(request: Request):
             results.append({"index": idx, "status": "error", "message": "No background image available"})
             continue
 
-        out_name = f"{batch_id}_{idx}.mp4"
-        tmp_out = _TMP_DIR / out_name
+        stem = _sanitize_basename(finfo["original_name"])
+        final_path = _unique_video_path(stem)
+        tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
         progress_cb = _make_progress_logger(
             "video_creator.batch", batch_id=batch_id, index=idx, mode="batch",
         )
+        started = time.time()
         try:
             await asyncio.to_thread(
                 video_gen.generate_standalone_video,
@@ -339,18 +368,25 @@ async def generate_batch(request: Request):
                 on_progress=progress_cb,
                 **cfg,
             )
-            final_path = _VIDEOS_DIR / out_name
             shutil.move(str(tmp_out), str(final_path))
+            completed_at = datetime.now()
             results.append({
                 "index": idx,
                 "status": "done",
-                "name": finfo["original_name"],
-                "video_url": f"/video/videos/{out_name}",
+                "name": final_path.name,
+                "video_url": f"/video/videos/{final_path.name}",
                 "size_mb": round(final_path.stat().st_size / (1024 * 1024), 1),
+                "elapsed_seconds": round(time.time() - started, 1),
+                "completed_at": completed_at.isoformat(timespec="seconds"),
             })
         except Exception as exc:
             tmp_out.unlink(missing_ok=True)
-            results.append({"index": idx, "status": "error", "message": str(exc)})
+            results.append({
+                "index": idx,
+                "status": "error",
+                "message": str(exc),
+                "elapsed_seconds": round(time.time() - started, 1),
+            })
 
     return JSONResponse({"results": results})
 

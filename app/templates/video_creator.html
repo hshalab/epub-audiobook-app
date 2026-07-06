@@ -57,6 +57,7 @@
                 <th class="col-bg">Background Image</th>
                 <th class="col-preview">Preview</th>
                 <th class="col-status">Status</th>
+                <th class="col-time">Thời gian tạo</th>
             </tr>
         </thead>
         <tbody id="file-table-body">
@@ -160,6 +161,26 @@
 </div>
 {% endif %}
 
+<style>
+.col-time {
+    width: 140px;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+.col-time .time-elapsed {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin-left: 0.25rem;
+}
+.result-time {
+    color: var(--text-muted);
+    font-size: 0.85em;
+    margin-left: 0.4rem;
+}
+</style>
+
 <script>
 (function() {
     const API = {
@@ -249,6 +270,7 @@
                     <div class="bg-preview-name" data-index="${f.index}">Default</div>
                 </td>
                 <td class="status-pending" data-status="${f.index}">Ready</td>
+                <td class="col-time" data-time="${f.index}">—</td>
             `;
             tbody.appendChild(tr);
         });
@@ -345,6 +367,14 @@
         return d.innerHTML;
     }
 
+    function formatTimeShort(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        const pad = n => String(n).padStart(2, '0');
+        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
     document.getElementById('upload-form').addEventListener('submit', async function(e) {
         e.preventDefault();
         const input = document.getElementById('audio-files');
@@ -433,14 +463,33 @@
             data.results.forEach(r => {
                 const div = document.createElement('div');
                 div.className = 'result-item';
+                const statusEl = document.querySelector(`[data-status="${r.index}"]`);
+                const timeEl = document.querySelector(`[data-time="${r.index}"]`);
                 if (r.status === 'done') {
-                    div.innerHTML = `<span class="status-ok">Done</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>`;
-                    const statusEl = document.querySelector(`[data-status="${r.index}"]`);
-                    if (statusEl) { statusEl.textContent = 'Done'; statusEl.className = 'status-ok'; }
+                    const elapsed = r.elapsed_seconds != null ? `${r.elapsed_seconds}s` : '';
+                    const completed = r.completed_at ? formatTimeShort(r.completed_at) : '';
+                    const timeParts = [elapsed, completed].filter(Boolean).join(' \u00b7 ');
+                    div.innerHTML = `<span class="status-ok">Done</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>${timeParts ? ` <span class="result-time">${escHtml(timeParts)}</span>` : ''}`;
+                    if (statusEl) {
+                        statusEl.textContent = 'Done';
+                        statusEl.className = 'status-ok';
+                    }
+                    if (timeEl) {
+                        const timeHtml = [completed, elapsed && `<span class="time-elapsed">(${escHtml(elapsed)})</span>`].filter(Boolean).join(' ');
+                        timeEl.innerHTML = timeHtml || '—';
+                        if (r.completed_at) timeEl.title = 'Completed at ' + r.completed_at;
+                    }
                 } else {
-                    div.innerHTML = `<span class="status-err">Failed</span> <span>#${r.index}</span> <span class="status-err">${escHtml(r.message)}</span>`;
-                    const statusEl = document.querySelector(`[data-status="${r.index}"]`);
-                    if (statusEl) { statusEl.textContent = 'Error'; statusEl.className = 'status-err'; }
+                    const elapsed = r.elapsed_seconds != null ? `${r.elapsed_seconds}s` : '';
+                    div.innerHTML = `<span class="status-err">Failed</span> <span>#${r.index}</span> <span class="status-err">${escHtml(r.message)}</span>${elapsed ? ` <span class="result-time">${escHtml(elapsed)}</span>` : ''}`;
+                    if (statusEl) {
+                        statusEl.textContent = 'Error';
+                        statusEl.className = 'status-err';
+                    }
+                    if (timeEl) {
+                        const now = formatTimeShort(new Date().toISOString());
+                        timeEl.innerHTML = `${now}${elapsed ? ` <span class="time-elapsed">(${escHtml(elapsed)})</span>` : ''}`;
+                    }
                 }
                 resultsList.appendChild(div);
             });
