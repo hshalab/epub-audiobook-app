@@ -32,6 +32,35 @@
     </div>
 </div>
 
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">TTS Normalization</h3>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Configure how text is preprocessed before speech synthesis.
+    </p>
+    <form action="/books/{{ book.id }}/normalization" method="post">
+        <div style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
+                Convert numbers, currency, dates, times to Vietnamese words
+            </label>
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" name="junk" {% if book.normalize_junk_enabled %}checked{% endif %}>
+                Remove junk/formatting tokens (e.g. OO@@)
+            </label>
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" name="spellcheck" {% if book.normalize_spellcheck_enabled %}checked{% endif %}>
+                Fix dotted Vietnamese words (e.g. ch.ế.t → chết)
+            </label>
+        </div>
+        <div class="btn-group">
+            <button type="submit" class="btn-primary btn-sm">Save settings</button>
+            <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Preview chapter 0</a>
+        </div>
+    </form>
+</div>
+
 {% if last_error %}
     <div class="error-block">
         <p><strong>Last error:</strong> {{ last_error }}</p>

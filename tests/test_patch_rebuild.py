@@ -76,9 +76,10 @@ def test_build_patch_text_skips_excluded(conn):
     conn.commit()
     patch = repository.get_patch(conn, 1)
     text = repository.build_patch_text(conn, patch)
-    assert "chapter 2" not in text
-    assert "chapter 0" in text
-    assert "chapter 4" in text
+    # Chapter indexes are normalized to Vietnamese words by default.
+    assert "chapter hai" not in text
+    assert "chapter không" in text
+    assert "chapter bốn" in text
 
 
 def test_build_patch_text_applies_replace_rules(conn):

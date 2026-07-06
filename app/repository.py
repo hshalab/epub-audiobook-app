@@ -12,6 +12,7 @@ from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Patch, PatchExport, TextReplaceRule
+from app.normalization import NormalizationOptions, normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,40 @@ def set_book_status(conn: sqlite3.Connection, book_id: int, status: str) -> None
     conn.commit()
 
 
+def update_book_normalization(
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    numbers: bool | None = None,
+    junk: bool | None = None,
+    spellcheck: bool | None = None,
+) -> Book | None:
+    """Update one or more TTS normalization toggles for a book."""
+    book = get_book(conn, book_id)
+    if book is None:
+        return None
+    fields = []
+    params = []
+    if numbers is not None:
+        fields.append("normalize_numbers_enabled = ?")
+        params.append(1 if numbers else 0)
+    if junk is not None:
+        fields.append("normalize_junk_enabled = ?")
+        params.append(1 if junk else 0)
+    if spellcheck is not None:
+        fields.append("normalize_spellcheck_enabled = ?")
+        params.append(1 if spellcheck else 0)
+    if not fields:
+        return book
+    params.extend([_now(), book_id])
+    conn.execute(
+        f"UPDATE book SET {', '.join(fields)}, updated_at = ? WHERE id = ?",
+        params,
+    )
+    conn.commit()
+    return get_book(conn, book_id)
+
+
 def set_book_final_audio(conn: sqlite3.Connection, book_id: int, final_audio_path: str) -> None:
     conn.execute(
         """UPDATE book SET final_audio_path = ?, status = 'done', updated_at = ? WHERE id = ?""",
@@ -807,8 +842,8 @@ _TITLE_END_PUNCTUATION = frozenset(".!?…:;,)]\"'»")
 
 
 def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
-    """Return the full text for a patch: included chapter texts joined, with
-    the book's replace rules applied."""
+    """Return the full text for a patch: included chapter texts joined,
+    normalized (if enabled), then with the book's replace rules applied."""
     chapters = get_chapters_in_range(
         conn, patch.book_id, patch.chapter_start, patch.chapter_end
     )
@@ -822,6 +857,16 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
                 t = ch.title + ".\n\n" + suffix
         texts.append(t)
     raw = "\n\n".join(texts)
+
+    book = get_book(conn, patch.book_id)
+    if book is not None:
+        opts = NormalizationOptions(
+            numbers=bool(book.normalize_numbers_enabled),
+            junk=bool(book.normalize_junk_enabled),
+            spellcheck=bool(book.normalize_spellcheck_enabled),
+        )
+        raw = normalize_text(raw, opts)
+
     rules = list_replace_rules(conn, patch.book_id)
     return apply_replace_rules(raw, rules)
 

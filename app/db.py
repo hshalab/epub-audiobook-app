@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS book (
     background_image_path TEXT,
     voice_clip_path TEXT,
     voice_transcript TEXT,
+    normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1,
+    normalize_junk_enabled INTEGER NOT NULL DEFAULT 1,
+    normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -181,3 +184,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN default_image_animation TEXT NOT NULL DEFAULT 'none'")
     if "max_chars" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN max_chars INTEGER")
+    if "normalize_numbers_enabled" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1")
+    if "normalize_junk_enabled" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN normalize_junk_enabled INTEGER NOT NULL DEFAULT 1")
+    if "normalize_spellcheck_enabled" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1")

@@ -22,6 +22,9 @@ class Book:
     video_resolution: str = "1920x1080"
     video_fps: int = 30
     default_image_animation: str = "none"
+    normalize_numbers_enabled: int = 1
+    normalize_junk_enabled: int = 1
+    normalize_spellcheck_enabled: int = 1
 
 
 @dataclass

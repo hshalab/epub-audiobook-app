@@ -12,6 +12,7 @@ from app import google_drive, repository
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
+from app.normalization import NormalizationOptions, normalize_text
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -447,6 +448,55 @@ def delete_rule(request: Request, book_id: int, rule_id: int):
         if repository.delete_replace_rule(conn, rule_id):
             repository.reset_done_patches_for_book(conn, book_id)
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# TTS normalization settings + preview
+# ---------------------------------------------------------------------------
+
+
+@router.post("/books/{book_id}/normalization")
+def update_normalization(
+    request: Request,
+    book_id: int,
+    numbers: str = Form(default=""),
+    junk: str = Form(default=""),
+    spellcheck: str = Form(default=""),
+):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        repository.update_book_normalization(
+            conn,
+            book_id,
+            numbers=numbers.lower() == "on" if numbers else None,
+            junk=junk.lower() == "on" if junk else None,
+            spellcheck=spellcheck.lower() == "on" if spellcheck else None,
+        )
+        repository.reset_done_patches_for_book(conn, book_id)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.get("/books/{book_id}/normalization/preview", response_class=PlainTextResponse)
+def preview_normalization(
+    request: Request,
+    book_id: int,
+    chapter_index: int = Query(default=0),
+):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        text = repository.get_chapter_text(conn, book_id, chapter_index)
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"chapter {chapter_index} not found")
+        opts = NormalizationOptions(
+            numbers=bool(book.normalize_numbers_enabled),
+            junk=bool(book.normalize_junk_enabled),
+            spellcheck=bool(book.normalize_spellcheck_enabled),
+        )
+        normalized = normalize_text(text, opts)
+    return PlainTextResponse(normalized)
 
 
 # ---------------------------------------------------------------------------
