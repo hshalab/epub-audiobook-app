@@ -429,14 +429,23 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 def ensure_patch_overlay(
     book: Book, patch: Patch, font_path: str | None = None,
 ) -> str | None:
-    """Backwards-compatible wrapper — builds cfg from legacy font_path arg."""
+    """Backwards-compatible wrapper — builds cfg from legacy font_path arg.
+
+    Forces a re-render when marquee is enabled but marquee files are missing
+    (e.g. user enabled marquee after the overlay was already generated).
+    """
     cfg = parse_overlay_config(book.overlay_config)
     if font_path and not cfg.get("font_path"):
         cfg["font_path"] = font_path
     if _resolve_background(book) is None:
         return None
     out_path = get_patch_overlay_path(book.id, patch.id)
-    if needs_rerender(book, patch, out_path):
+    force = False
+    marquee_cfg = cfg.get("marquee") or {}
+    if marquee_cfg.get("enabled"):
+        if not get_marquee_path(book.id, patch.id).exists():
+            force = True
+    if force or needs_rerender(book, patch, out_path):
         try:
             render_patch_overlay(book, patch, cfg, str(out_path))
         except Exception as exc:
