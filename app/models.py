@@ -25,6 +25,8 @@ class Book:
     normalize_numbers_enabled: int = 1
     normalize_junk_enabled: int = 1
     normalize_spellcheck_enabled: int = 1
+    music_id: int | None = None
+    music_volume: float = 0.15
 
 
 @dataclass
@@ -57,6 +59,15 @@ class Patch:
     chunk_count: int = 0
     next_chunk_index: int = 0
     max_chars: int | None = None
+
+
+@dataclass
+class Music:
+    id: int
+    name: str
+    file_path: str
+    duration_sec: float | None
+    created_at: str
 
 
 @dataclass

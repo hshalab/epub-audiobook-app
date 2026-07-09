@@ -41,11 +41,11 @@ def _write_patch_files(
     patch: Patch,
     dest_dir: Path,
     reference_rel: str | None,
+    overlay_image_path: str | None = None,
 ) -> dict:
-    """Write chunk_NNN.txt files + manifest.json for one patch into dest_dir and
-    return the manifest dict. ``reference_rel`` is the path (relative to dest_dir)
-    recorded in the manifest for the voice reference clip, or None when the book
-    has no voice clip."""
+    """Write chunk_NNN.txt files + manifest.json + background image for one patch into
+    dest_dir and return the manifest dict. overlay_image_path is the pre-rendered
+    background image (text already baked in by Pillow); falls back to raw background."""
     text = repository.build_patch_text(conn, patch)
     max_chars = patch.max_chars or settings.tts_max_chars
     chunks = split_into_tts_chunks(text, max_chars=max_chars)
@@ -59,6 +59,19 @@ def _write_patch_files(
         filename = f"chunk_{i:03d}.txt"
         (dest_dir / filename).write_text(chunk_text, encoding="utf-8")
         chunk_filenames.append(filename)
+
+    bg_filename: str | None = None
+    bg_source = overlay_image_path
+    if not bg_source and book.background_image_path and Path(book.background_image_path).exists():
+        bg_source = book.background_image_path
+    if not bg_source:
+        default = settings.default_background_image
+        if Path(default).exists():
+            bg_source = default
+    if bg_source:
+        ext = Path(bg_source).suffix.lower() or ".jpg"
+        bg_filename = f"background{ext}"
+        shutil.copyfile(bg_source, dest_dir / bg_filename)
 
     manifest = {
         "patch_id": patch.id,
@@ -74,11 +87,27 @@ def _write_patch_files(
         "reference_transcript": book.voice_transcript or None,
         "voxcpm_model_id": "openbmb/VoxCPM2",
         "expected_outputs": [f"chunk_{i:03d}.wav" for i in range(len(chunks))],
+        "background_image": bg_filename,
     }
     (dest_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return manifest
+
+
+def _copy_music_to_package(book: Book, conn: sqlite3.Connection, package_dir: Path) -> str | None:
+    """Copy the book's music file into package_dir/music/ and return the relative path,
+    or None if the book has no music assigned."""
+    if not book.music_id:
+        return None
+    music = repository.get_music(conn, book.music_id)
+    if music is None or not Path(music.file_path).exists():
+        return None
+    music_dir = package_dir / "music"
+    music_dir.mkdir(exist_ok=True)
+    dest_name = Path(music.file_path).name
+    shutil.copyfile(music.file_path, music_dir / dest_name)
+    return f"music/{dest_name}"
 
 
 def build_export_package(
@@ -87,13 +116,10 @@ def build_export_package(
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
 ) -> Path:
-    """Write manifest.json + chunk_NNN.txt + (optional) voice reference + the notebook
-    template into a fresh temp directory. Caller is responsible for deleting it.
+    """Write manifest.json + chunk_NNN.txt + background image + optional music + notebook
+    template into a fresh temp directory. Caller is responsible for deleting it."""
+    from app import image_overlay
 
-    ``drive_folder_name`` is baked into the notebook so its Colab cell can locate the
-    exported folder automatically. If not given (e.g. the plain local-download path),
-    the deterministic per-patch name is used as the fallback default.
-    """
     book = repository.get_book(conn, patch.book_id)
     if book is None:
         raise ValueError(f"book {patch.book_id} not found")
@@ -107,18 +133,32 @@ def build_export_package(
         reference_wav_name = "reference" + Path(book.voice_clip_path).suffix
         shutil.copyfile(book.voice_clip_path, package_dir / reference_wav_name)
 
-    _write_patch_files(conn, book, patch, package_dir, reference_wav_name)
+    overlay_path = image_overlay.ensure_patch_overlay(
+        book, patch, settings.default_font_path or None
+    )
+    _write_patch_files(conn, book, patch, package_dir, reference_wav_name, overlay_path)
 
-    # Bake the patch id + folder name + HF token into the notebook so its cells can find
-    # the exported folder and authenticate automatically. Kept as simple placeholder
-    # substitutions rather than parsing/rewriting nbformat cells.
+    music_rel = _copy_music_to_package(book, conn, package_dir)
+
+    w, h = (book.video_resolution or "1920x1080").split("x")
+    video_config = {
+        "resolution": book.video_resolution or "1920x1080",
+        "fps": book.video_fps or 30,
+        "music_file": music_rel,
+        "music_volume": book.music_volume,
+        "youtube_privacy": settings.youtube_default_privacy,
+    }
+
     folder_name = drive_folder_name or folder_name_for_patch(book.title, patch)
     notebook_src = _NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
     notebook_src = notebook_src.replace("__PATCH_ID__", str(patch.id))
     notebook_src = notebook_src.replace(
-        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]  # escape for JSON string literal
+        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
     )
     notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
+    notebook_src = notebook_src.replace(
+        "__VIDEO_CONFIG__", json.dumps(video_config, ensure_ascii=False)
+    )
     (package_dir / "colab_kaggle_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
 
     return package_dir
@@ -129,8 +169,7 @@ def build_export_zip(
     patch: Patch,
     hf_token: str | None = None,
 ) -> Path:
-    """Same package as build_export_package, zipped up for local download (the safety
-    net that works even without connecting Google Drive)."""
+    """Same package as build_export_package, zipped up for local download."""
     package_dir = build_export_package(conn, patch, hf_token=hf_token)
     try:
         zip_path = shutil.make_archive(str(package_dir), "zip", root_dir=package_dir)
@@ -157,11 +196,15 @@ def folder_name_for_batch(book_title: str, patches: list[Patch]) -> str:
 
 
 def result_wav_name(patch: Patch) -> str:
-    """Filename of the merged per-patch wav the batch notebook writes into result/.
-    Prefixed with the zero-padded patch index so duplicate patch names cannot
-    collide and the files sort in reading order."""
+    """Filename of the merged per-patch wav the batch notebook writes into result/."""
     label = _sanitize_name(patch.name or str(patch.patch_index)) or "patch"
     return f"{patch.patch_index:03d} - {label}.wav"
+
+
+def result_mp4_name(patch: Patch) -> str:
+    """Filename of the rendered per-patch MP4 the batch notebook writes into result/."""
+    label = _sanitize_name(patch.name or str(patch.patch_index)) or "patch"
+    return f"{patch.patch_index:03d} - {label}.mp4"
 
 
 def build_batch_export_package(
@@ -171,10 +214,11 @@ def build_batch_export_package(
     hf_token: str | None = None,
 ) -> tuple[Path, dict]:
     """Write a multi-patch package: batch_manifest.json + the batch notebook at the
-    root, one shared voice reference clip, and per-patch subfolders under patches/
-    (each with the same manifest.json + chunk_NNN.txt layout as a single export).
-    Returns (package_dir, batch_manifest); caller is responsible for deleting the
-    directory."""
+    root, one shared voice reference clip, per-patch background images (overlays),
+    optional music, and per-patch subfolders under patches/.
+    Returns (package_dir, batch_manifest); caller is responsible for deleting the directory."""
+    from app import image_overlay
+
     if not patches:
         raise ValueError("no patches to export")
     book_ids = {p.book_id for p in patches}
@@ -190,18 +234,22 @@ def build_batch_export_package(
     package_dir = _TMP_DIR / f"batch_{uuid.uuid4().hex[:8]}"
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    # The reference clip is book-level, so it is stored once at the batch root and
-    # each per-patch manifest points at it with a relative path.
     reference_wav_name = None
     if book.voice_clip_path and Path(book.voice_clip_path).exists():
         reference_wav_name = "reference" + Path(book.voice_clip_path).suffix
         shutil.copyfile(book.voice_clip_path, package_dir / reference_wav_name)
 
+    music_rel = _copy_music_to_package(book, conn, package_dir)
+
+    font_path = settings.default_font_path or None
     patch_entries = []
     for patch in patches:
         folder_rel = f"patches/patch_{patch.patch_index:03d}"
         reference_rel = f"../../{reference_wav_name}" if reference_wav_name else None
-        manifest = _write_patch_files(conn, book, patch, package_dir / folder_rel, reference_rel)
+        overlay_path = image_overlay.ensure_patch_overlay(book, patch, font_path)
+        manifest = _write_patch_files(
+            conn, book, patch, package_dir / folder_rel, reference_rel, overlay_path
+        )
         patch_entries.append({
             "patch_id": patch.id,
             "patch_index": patch.patch_index,
@@ -212,10 +260,19 @@ def build_batch_export_package(
             "max_chars": manifest["max_chars"],
             "chunk_count": manifest["chunk_count"],
             "result_wav": f"result/{result_wav_name(patch)}",
+            "result_mp4": f"result/{result_mp4_name(patch)}",
+            "background_image": f"{folder_rel}/{manifest['background_image']}" if manifest.get("background_image") else None,
         })
 
     timestamp = datetime.now(timezone.utc)
     batch_id = f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    video_config = {
+        "resolution": book.video_resolution or "1920x1080",
+        "fps": book.video_fps or 30,
+        "music_file": music_rel,
+        "music_volume": book.music_volume,
+        "youtube_privacy": settings.youtube_default_privacy,
+    }
     batch_manifest = {
         "format": "epub-audiobook-batch-v1",
         "batch_id": batch_id,
@@ -227,19 +284,17 @@ def build_batch_export_package(
         "reference_transcript": book.voice_transcript or None,
         "patch_count": len(patch_entries),
         "patches": patch_entries,
+        "video_config": video_config,
     }
     (package_dir / "batch_manifest.json").write_text(
         json.dumps(batch_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # Same placeholder substitution as the single-patch notebook. Note __BATCH_ID__
-    # sits inside string quotes in the template (batch ids are strings, unlike the
-    # bare-int __PATCH_ID__).
     folder_name = drive_folder_name or folder_name_for_batch(book.title, patches)
     notebook_src = _BATCH_NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
     notebook_src = notebook_src.replace("__BATCH_ID__", batch_id)
     notebook_src = notebook_src.replace(
-        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]  # escape for JSON string literal
+        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
     )
     notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
     (package_dir / "colab_kaggle_batch_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
@@ -253,9 +308,7 @@ def build_batch_export_zip(
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
 ) -> Path:
-    """Same package as build_batch_export_package, zipped up for local download
-    (works without connecting Google Drive; also what gets uploaded to Kaggle
-    as a dataset)."""
+    """Same package as build_batch_export_package, zipped up for local download."""
     package_dir, _ = build_batch_export_package(
         conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token
     )

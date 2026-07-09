@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS google_drive_credentials (
     updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS music (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    duration_sec    REAL,
+    created_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS patch_export (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
@@ -190,3 +198,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_junk_enabled INTEGER NOT NULL DEFAULT 1")
     if "normalize_spellcheck_enabled" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1")
+    if "music_id" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN music_id INTEGER REFERENCES music(id)")
+    if "music_volume" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")

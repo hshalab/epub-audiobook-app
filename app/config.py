@@ -42,5 +42,13 @@ class Settings(BaseSettings):
     google_drive_client_id: str = ""
     google_drive_client_secret: str = ""
 
+    # Font path for text overlay on patch background images (Pillow).
+    # Set to the absolute path of a .ttf/.otf font file supporting Vietnamese.
+    # If empty or file not found, Pillow falls back to its built-in bitmap font.
+    default_font_path: str = ""
+
+    # Maximum music file size in MB for uploads to the music library.
+    music_max_size_mb: int = 20
+
 
 settings = Settings()

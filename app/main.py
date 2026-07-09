@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, downloads, drive, logs, patches, queue, video, youtube
+from app.routes import books, downloads, drive, logs, music, patches, queue, video, youtube
 from app.tts_engine import VoxCPMEngine
 from app.worker import DisabledWorker, PatchWorker
 
@@ -137,6 +137,7 @@ app.include_router(downloads.router)
 app.include_router(queue.router)
 app.include_router(logs.router)
 app.include_router(video.router)
+app.include_router(music.router)
 app.include_router(youtube.router)
 app.include_router(drive.router)
 

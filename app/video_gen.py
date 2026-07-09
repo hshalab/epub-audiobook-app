@@ -68,16 +68,22 @@ def generate_segment(
     audio_bitrate: str = "192k",
     crf: int = 23,
     use_nvenc: bool = False,
+    music_path: str | None = None,
+    music_volume: float = 0.15,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
 
     image_type: 'none' (static), 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'
+    music_path: optional background music file (looped, mixed at music_volume ratio)
 
     on_progress: optional callback(event: str, fields: dict) for progress logging.
     Events: segment.start, segment.ffmpeg_start, segment.ffmpeg_done, segment.done,
             segment.failed.
     """
+    if music_path is not None and not Path(music_path).exists():
+        raise FileNotFoundError(f"music file not found: {music_path}")
+
     video_codec = "h264_nvenc" if use_nvenc else "libx264"
     width, height = resolution
 
@@ -92,20 +98,40 @@ def generate_segment(
         tune_args = ["-tune", "stillimage"]
 
     if image_type == "none":
-        cmd = [
-            get_ffmpeg_path(), "-y",
-            "-loop", "1", "-i", image_path,
-            "-i", audio_path,
-            "-c:v", video_codec,
-            *tune_args,
-            "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-            "-r", str(fps),
-            "-c:a", "aac", "-b:a", audio_bitrate,
-            "-pix_fmt", "yuv420p",
-            *quality_args,
-            "-shortest",
-            out_path,
-        ]
+        if music_path:
+            cmd = [
+                get_ffmpeg_path(), "-y",
+                "-loop", "1", "-i", image_path,
+                "-i", audio_path,
+                "-stream_loop", "-1", "-i", music_path,
+                "-filter_complex",
+                f"[2:a]volume={music_volume}[music];[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]",
+                "-map", "0:v", "-map", "[aout]",
+                "-c:v", video_codec,
+                *tune_args,
+                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                "-r", str(fps),
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                "-pix_fmt", "yuv420p",
+                *quality_args,
+                "-shortest",
+                out_path,
+            ]
+        else:
+            cmd = [
+                get_ffmpeg_path(), "-y",
+                "-loop", "1", "-i", image_path,
+                "-i", audio_path,
+                "-c:v", video_codec,
+                *tune_args,
+                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                "-r", str(fps),
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                "-pix_fmt", "yuv420p",
+                *quality_args,
+                "-shortest",
+                out_path,
+            ]
     else:
         _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
         probe = subprocess.run(
@@ -118,19 +144,38 @@ def generate_segment(
         zp_filter = _build_zoompan_filter(image_type, width, height, fps, duration)
         vf = f"{zp_filter},format=yuv420p"
 
-        cmd = [
-            get_ffmpeg_path(), "-y",
-            "-loop", "1", "-i", image_path,
-            "-i", audio_path,
-            "-vf", vf,
-            "-c:v", video_codec,
-            *tune_args,
-            "-c:a", "aac", "-b:a", audio_bitrate,
-            "-pix_fmt", "yuv420p",
-            *quality_args,
-            "-shortest",
-            out_path,
-        ]
+        if music_path:
+            cmd = [
+                get_ffmpeg_path(), "-y",
+                "-loop", "1", "-i", image_path,
+                "-i", audio_path,
+                "-stream_loop", "-1", "-i", music_path,
+                "-filter_complex",
+                f"[2:a]volume={music_volume}[music];[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]",
+                "-map", "0:v", "-map", "[aout]",
+                "-vf", vf,
+                "-c:v", video_codec,
+                *tune_args,
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                "-pix_fmt", "yuv420p",
+                *quality_args,
+                "-shortest",
+                out_path,
+            ]
+        else:
+            cmd = [
+                get_ffmpeg_path(), "-y",
+                "-loop", "1", "-i", image_path,
+                "-i", audio_path,
+                "-vf", vf,
+                "-c:v", video_codec,
+                *tune_args,
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                "-pix_fmt", "yuv420p",
+                *quality_args,
+                "-shortest",
+                out_path,
+            ]
 
     _emit(on_progress, "segment.ffmpeg_start", path=out_path)
     t0 = time.monotonic()
@@ -217,13 +262,21 @@ def generate_full_video(
     *,
     default_image: str,
     use_nvenc: bool = False,
+    music_path: str | None = None,
+    music_volume: float = 0.15,
+    font_path: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a full video by creating segments per patch and concatenating.
 
+    music_path: optional background music file looped at music_volume ratio.
+    font_path: passed to image_overlay.ensure_patch_overlay() for text rendering.
+
     on_progress: optional callback(event, fields) for progress logging.
     Events: video.start, video.segment_skipped, video.segments_done, video.done, video.failed.
     """
+    from app import image_overlay
+
     w, h = (book.video_resolution or "1920x1080").split("x")
     resolution = (int(w), int(h))
     fps = book.video_fps or 30
@@ -244,7 +297,9 @@ def generate_full_video(
                 _emit(on_progress, "video.segment_skipped",
                       patch_index=patch.patch_index, reason="no_audio")
                 continue
-            image = resolve_patch_image(patch, book, default_image)
+
+            overlay = image_overlay.ensure_patch_overlay(book, patch, font_path)
+            image = overlay or resolve_patch_image(patch, book, default_image)
             if not image:
                 _emit(on_progress, "video.segment_skipped",
                       patch_index=patch.patch_index, reason="no_image")
@@ -253,9 +308,9 @@ def generate_full_video(
             anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
             seg_path = str(tmp_dir / f"seg_{i:04d}.mp4")
 
-            def _seg_progress(event: str, fields: dict) -> None:
-                _emit(on_progress, event, patch_index=patch.patch_index,
-                      patch_id=patch.id, **{k: v for k, v in fields.items() if k != "path"})
+            def _seg_progress(event: str, fields: dict, _p=patch) -> None:
+                _emit(on_progress, event, patch_index=_p.patch_index,
+                      patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
             generate_segment(
                 image, patch.audio_path, seg_path,
@@ -263,6 +318,8 @@ def generate_full_video(
                 resolution=resolution,
                 fps=fps,
                 use_nvenc=use_nvenc,
+                music_path=music_path,
+                music_volume=music_volume,
                 on_progress=_seg_progress,
             )
             segment_paths.append(seg_path)
@@ -287,7 +344,10 @@ def generate_full_video(
         for p in segment_paths:
             Path(p).unlink(missing_ok=True)
         if tmp_dir.exists():
-            tmp_dir.rmdir()
+            try:
+                tmp_dir.rmdir()
+            except OSError:
+                pass
 
 
 def generate_standalone_video(

@@ -455,13 +455,19 @@ class PatchWorker:
         if book is None or not book.final_audio_path:
             raise ValueError(f"book {job.book_id} has no final_audio_path")
 
+        music_path: str | None = None
+        if book.music_id is not None:
+            with self.db_lock:
+                music = repository.get_music(self.conn, book.music_id)
+            if music and Path(music.file_path).exists():
+                music_path = music.file_path
+
         done_patches = [p for p in patches if p.status == "done" and p.audio_path]
         book_dir = self.data_root / "books" / str(job.book_id)
         book_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(book_dir / f"video_{job.id}.mp4")
 
         def _on_progress(event: str, fields: dict) -> None:
-            # Re-prefix with video_job context so log lines are easy to grep.
             self._log_event(
                 f"video_job.{event}",
                 book_job_id=job.id,
@@ -473,6 +479,9 @@ class PatchWorker:
             done_patches, book, out_path,
             default_image=settings.default_background_image,
             use_nvenc=settings.use_nvenc,
+            music_path=music_path,
+            music_volume=book.music_volume,
+            font_path=settings.default_font_path or None,
             on_progress=_on_progress,
         )
         return out_path

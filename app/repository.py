@@ -11,7 +11,7 @@ from pathlib import Path
 from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
-from app.models import Book, BookJob, Chapter, Patch, PatchExport, TextReplaceRule
+from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
 from app.normalization import NormalizationOptions, normalize_text
 
 logger = logging.getLogger(__name__)
@@ -1459,3 +1459,59 @@ def list_all_patch_exports(conn: sqlite3.Connection, limit: int = 50) -> list[di
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Music library
+# ---------------------------------------------------------------------------
+
+
+def _music_from_row(row: sqlite3.Row) -> Music:
+    return Music(**{k: row[k] for k in row.keys()})
+
+
+def create_music(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    file_path: str,
+    duration_sec: float | None,
+) -> Music:
+    now = _now()
+    cur = conn.execute(
+        "INSERT INTO music (name, file_path, duration_sec, created_at) VALUES (?, ?, ?, ?)",
+        (name, file_path, duration_sec, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM music WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _music_from_row(row)
+
+
+def list_music(conn: sqlite3.Connection) -> list[Music]:
+    rows = conn.execute("SELECT * FROM music ORDER BY created_at DESC").fetchall()
+    return [_music_from_row(r) for r in rows]
+
+
+def get_music(conn: sqlite3.Connection, music_id: int) -> Music | None:
+    row = conn.execute("SELECT * FROM music WHERE id = ?", (music_id,)).fetchone()
+    return _music_from_row(row) if row else None
+
+
+def delete_music(conn: sqlite3.Connection, music_id: int) -> bool:
+    conn.execute("UPDATE book SET music_id = NULL WHERE music_id = ?", (music_id,))
+    cur = conn.execute("DELETE FROM music WHERE id = ?", (music_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_book_music(
+    conn: sqlite3.Connection,
+    book_id: int,
+    music_id: int | None,
+    music_volume: float,
+) -> None:
+    conn.execute(
+        "UPDATE book SET music_id = ?, music_volume = ?, updated_at = ? WHERE id = ?",
+        (music_id, music_volume, _now(), book_id),
+    )
+    conn.commit()

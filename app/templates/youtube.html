@@ -36,6 +36,22 @@
 {% if connected %}
 <div class="card">
     <div class="card-header">
+        <h3 style="margin:0">Kaggle / Colab</h3>
+        <button type="button" class="btn-outline btn-sm" onclick="copyYouTubeCreds()">Copy YouTube credentials for Kaggle/Colab</button>
+    </div>
+    <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted)">
+        Để notebook batch upload video lên YouTube từ Colab/Kaggle: copy JSON này, vào
+        <strong>Add-ons &gt; Secrets</strong> trên Kaggle (hoặc Colab Secrets), tạo secret tên
+        <code>YOUTUBE_CREDS</code> với giá trị vừa copy.
+    </p>
+    <textarea id="yt-creds-out" readonly rows="3" style="width:100%;display:none;font-family:monospace;font-size:0.85em"></textarea>
+    <p id="yt-creds-msg" style="display:none;margin:var(--space-sm) 0 0 0"></p>
+</div>
+{% endif %}
+
+{% if connected %}
+<div class="card">
+    <div class="card-header">
         <h3 style="margin:0">Upload Video</h3>
     </div>
     <div class="yt-upload-form-wrapper">
@@ -204,5 +220,35 @@ document.getElementById('yt-upload-form').addEventListener('submit', async funct
     }
 });
 {% endif %}
+</script>
+
+<script>
+async function copyYouTubeCreds() {
+    const msg = document.getElementById('yt-creds-msg');
+    const out = document.getElementById('yt-creds-out');
+    if (!msg || !out) return;
+    try {
+        const res = await fetch('/youtube/kaggle-credentials');
+        if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error((body && body.detail) || res.statusText);
+        }
+        const text = JSON.stringify(await res.json());
+        out.value = text;
+        try {
+            await navigator.clipboard.writeText(text);
+            msg.textContent = 'Đã copy vào clipboard — dán vào Kaggle secret YOUTUBE_CREDS.';
+        } catch (e) {
+            out.style.display = 'block';
+            out.select();
+            msg.textContent = 'Không copy tự động được — JSON hiển thị bên dưới, hãy copy thủ công.';
+        }
+        msg.style.color = 'var(--text-muted)';
+    } catch (e) {
+        msg.textContent = 'Lỗi: ' + e.message;
+        msg.style.color = 'var(--color-error)';
+    }
+    msg.style.display = 'block';
+}
 </script>
 {% endblock %}

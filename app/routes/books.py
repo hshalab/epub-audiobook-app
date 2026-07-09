@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import shutil
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -13,6 +15,8 @@ from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
 from app.normalization import NormalizationOptions, normalize_text
+
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -160,7 +164,10 @@ def book_detail(request: Request, book_id: int):
         last_error = repository.get_last_error_for_book(conn, book_id)
         video_job = repository.get_book_job(conn, book_id, "video")
         drive_connected = google_drive.get_creds_from_db(conn) is not None
+        music_list = repository.list_music(conn)
+        current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
+
     return templates.TemplateResponse(
         request, "book_detail.html", {
             "book": book,
@@ -172,6 +179,9 @@ def book_detail(request: Request, book_id: int):
             "has_active_patches": has_active_patches,
             "drive_connected": drive_connected,
             "drive_configured": google_drive.is_configured(),
+            "music_list": music_list,
+            "current_music": current_music,
+            "backgrounds": _list_backgrounds(),
         }
     )
 
@@ -239,6 +249,34 @@ def trigger_video(request: Request, book_id: int):
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
+@router.post("/books/{book_id}/music")
+def update_book_music(
+    request: Request,
+    book_id: int,
+    music_id: str = Form(default=""),
+    music_volume: int = Form(default=15),
+):
+    from app import image_overlay
+    mid: int | None = None
+    if music_id.strip().isdigit():
+        mid = int(music_id.strip())
+    vol = max(0, min(100, music_volume)) / 100.0
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        repository.set_book_music(conn, book_id, mid, vol)
+        book = repository.get_book(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+    font_path = settings.default_font_path or None
+    for patch in patches:
+        try:
+            image_overlay.ensure_patch_overlay(book, patch, font_path)
+        except Exception:
+            pass
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
 @router.post("/books/{book_id}/delete")
 def delete_book(request: Request, book_id: int):
     with locked_conn(request) as conn:
@@ -246,6 +284,84 @@ def delete_book(request: Request, book_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail=f"book {book_id} not found")
     return RedirectResponse(url="/books", status_code=303)
+
+
+@router.post("/books/{book_id}/background-image-select")
+def select_background_image(
+    request: Request, book_id: int,
+    background_path: str = Form(default=""),
+):
+    from app import image_overlay
+
+    path: str | None = background_path.strip() or None
+    if path and not Path(path).exists():
+        raise HTTPException(status_code=400, detail="File ảnh không tồn tại")
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        conn.execute(
+            "UPDATE book SET background_image_path = ?, updated_at = ? WHERE id = ?",
+            (path, datetime.now(timezone.utc).isoformat(), book_id),
+        )
+        conn.commit()
+        book = repository.get_book(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+
+    font_path = settings.default_font_path or None
+    for patch in patches:
+        try:
+            image_overlay.ensure_patch_overlay(book, patch, font_path)
+        except Exception:
+            pass
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.post("/books/{book_id}/background-image")
+async def upload_background_image(
+    request: Request, book_id: int,
+    image: UploadFile = File(...),
+):
+    ext = Path(image.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Định dạng không hỗ trợ: {ext}")
+
+    from app import image_overlay
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+
+        uploads_dir = Path(settings.data_root) / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        if book.background_image_path:
+            Path(book.background_image_path).unlink(missing_ok=True)
+
+        filename = f"{book_id}_bg_{uuid.uuid4().hex[:8]}{ext}"
+        dest = uploads_dir / filename
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(image.file, f)
+
+        conn.execute(
+            "UPDATE book SET background_image_path = ?, updated_at = ? WHERE id = ?",
+            (str(dest), datetime.now(timezone.utc).isoformat(), book_id),
+        )
+        conn.commit()
+        book = repository.get_book(conn, book_id)
+
+        patches = repository.list_patches(conn, book_id)
+
+    font_path = settings.default_font_path or None
+    for patch in patches:
+        try:
+            image_overlay.ensure_patch_overlay(book, patch, font_path)
+        except Exception:
+            pass
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
 def _parse_ids(raw: str | None) -> list[int]:
@@ -657,3 +773,17 @@ async def patch_builder_submit(request: Request, book_id: int):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+def _list_backgrounds() -> list[dict]:
+    """Shared helper: list background images (default + user-uploaded)."""
+    from app.routes.video import _BACKGROUNDS_DIR, ALLOWED_IMAGE_EXTENSIONS
+    items: list[dict] = []
+    default = settings.default_background_image
+    if Path(default).exists():
+        items.append({"name": "__default__", "path": default, "is_default": True})
+    _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    for f in sorted(_BACKGROUNDS_DIR.iterdir()):
+        if f.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
+            items.append({"name": f.name, "path": str(f), "is_default": False})
+    return items

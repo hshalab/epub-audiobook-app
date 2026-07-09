@@ -153,3 +153,20 @@ def youtube_uploads_list(request: Request):
     with locked_conn(request) as conn:
         uploads = youtube.list_uploads(conn)
     return JSONResponse({"uploads": uploads})
+
+
+@router.get("/youtube/kaggle-credentials")
+def youtube_kaggle_credentials(request: Request):
+    """Credentials JSON for use as YOUTUBE_CREDS Kaggle/Colab Secret so the
+    batch notebook can upload rendered MP4s directly to YouTube."""
+    if not youtube.is_configured():
+        raise HTTPException(status_code=400, detail="YouTube chưa được cấu hình")
+    with locked_conn(request) as conn:
+        creds = youtube.get_creds_from_db(conn)
+    if creds is None or not creds.get("refresh_token"):
+        raise HTTPException(status_code=400, detail="YouTube chưa được kết nối. Kết nối trước tại /youtube.")
+    return JSONResponse({
+        "client_id": settings.youtube_client_id,
+        "client_secret": settings.youtube_client_secret,
+        "refresh_token": creds["refresh_token"],
+    })

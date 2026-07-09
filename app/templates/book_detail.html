@@ -136,6 +136,65 @@
 
 <div class="card">
     <div class="card-header">
+        <h3 style="margin:0">Ảnh nền</h3>
+        <a href="/video" class="btn-outline btn-sm" target="_blank">Upload ảnh mới</a>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Ảnh nền cho video. Text tên sách + tên patch được vẽ tự động lên ảnh khi render.
+        {% if book.background_image_path %}
+        <br>Hiện tại: <strong>{{ book.background_image_path.split('/')[-1].split('\\')[-1] }}</strong>
+        {% else %}
+        <br>Hiện tại: <em>Dùng ảnh mặc định</em>
+        {% endif %}
+    </p>
+    <form method="post" action="/books/{{ book.id }}/background-image-select" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0;flex:1;min-width:200px">
+            <label for="bg-select">Chọn ảnh nền</label>
+            <select name="background_path" id="bg-select">
+                <option value="">— Ảnh mặc định —</option>
+                {% for bg in backgrounds %}
+                <option value="{{ bg.path }}" {% if book.background_image_path == bg.path %}selected{% endif %}>{{ bg.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn-primary btn-sm">Chọn</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Nhạc nền</h3>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Nhạc nền sẽ được mix ở volume thấp với TTS audio khi render video, tự động loop nếu ngắn hơn video.
+        {% if book.music_id and current_music %}
+        <br>Hiện tại: <strong>{{ current_music.name }}</strong>
+        {% else %}
+        <br>Hiện tại: <em>Không có nhạc</em>
+        {% endif %}
+    </p>
+    <form method="post" action="/books/{{ book.id }}/music" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0;flex:1;min-width:180px">
+            <label for="music-select">Chọn nhạc</label>
+            <select name="music_id" id="music-select">
+                <option value="">— Không có nhạc —</option>
+                {% for m in music_list %}
+                <option value="{{ m.id }}" {% if book.music_id == m.id %}selected{% endif %}>{{ m.name }}{% if m.duration_sec %} ({{ "%.0f"|format(m.duration_sec // 60) }}:{{ "%02.0f"|format(m.duration_sec % 60) }}){% endif %}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0;min-width:140px">
+            <label for="music-volume">Volume nhạc: <span id="vol-label">{{ (book.music_volume * 100)|round|int }}%</span></label>
+            <input type="range" name="music_volume" id="music-volume" min="0" max="100" value="{{ (book.music_volume * 100)|round|int }}"
+                   oninput="document.getElementById('vol-label').textContent=this.value+'%'">
+        </div>
+        <button type="submit" class="btn-primary btn-sm">Lưu</button>
+        <a href="/music" class="btn-outline btn-sm">Quản lý nhạc</a>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3 style="margin:0">Text Replace Rules</h3>
     </div>
 

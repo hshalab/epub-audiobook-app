@@ -16,6 +16,7 @@
             <nav>
                 <a href="/books" {% if request.url.path.startswith('/books') %}class="active"{% endif %}>Books</a>
                 <a href="/video" {% if request.url.path == '/video' %}class="active"{% endif %}>Video</a>
+                <a href="/music" {% if request.url.path.startswith('/music') %}class="active"{% endif %}>Music</a>
                 <a href="/youtube" {% if request.url.path == '/youtube' %}class="active"{% endif %}>YouTube</a>
                 <a href="/drive" {% if request.url.path == '/drive' %}class="active"{% endif %}>Drive</a>
                 <a href="/logs" {% if request.url.path == '/logs' %}class="active"{% endif %}>Logs</a>
