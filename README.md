@@ -48,7 +48,30 @@ Key settings:
 
 ### ffmpeg/ffprobe
 
-Binary tracked via Git LFS. Place `ffmpeg.exe` and `ffprobe.exe` in `assets/bin/`.
+The app needs `ffmpeg` and `ffprobe` binaries for audio merging and video generation. Place `ffmpeg.exe` and `ffprobe.exe` in `assets/bin/` (they are tracked via Git LFS, so they may already be present after cloning).
+
+If `assets/bin/` is empty (e.g. Git LFS not installed), download the binaries manually:
+
+**Windows**
+1. Download a build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (grab the `ffmpeg-release-essentials.zip`) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases).
+2. Extract the archive and copy `ffmpeg.exe` and `ffprobe.exe` from the `bin/` folder into `assets/bin/`.
+
+**macOS**
+```bash
+brew install ffmpeg
+```
+
+**Linux (Debian/Ubuntu)**
+```bash
+sudo apt install ffmpeg
+```
+
+On macOS/Linux, if `ffmpeg` and `ffprobe` are on your `PATH` you don't need to copy them into `assets/bin/`. Verify the install:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
 
 ## Running
 
