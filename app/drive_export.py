@@ -73,6 +73,14 @@ def _write_patch_files(
         bg_filename = f"background{ext}"
         shutil.copyfile(bg_source, dest_dir / bg_filename)
 
+    # Bundle marquee band + meta if available for this patch.
+    from app import image_overlay as _io
+    marquee_png_src = _io.get_marquee_path(patch.book_id, patch.id)
+    marquee_json_src = _io.get_marquee_meta_path(patch.book_id, patch.id)
+    if marquee_png_src.exists() and marquee_json_src.exists():
+        shutil.copyfile(marquee_png_src, dest_dir / f"{patch.id}.marquee.png")
+        shutil.copyfile(marquee_json_src, dest_dir / f"{patch.id}.marquee.json")
+
     manifest = {
         "patch_id": patch.id,
         "book_id": patch.book_id,

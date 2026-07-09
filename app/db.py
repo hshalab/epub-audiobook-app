@@ -202,3 +202,5 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN music_id INTEGER REFERENCES music(id)")
     if "music_volume" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")
+    if "overlay_config" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN overlay_config TEXT")

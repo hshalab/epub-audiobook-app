@@ -90,6 +90,16 @@ _DOT_INTEGER_RE = re.compile(
     r"(?![\d])"
 )
 
+# Decimal with dot separator: 125.3, 3.14 etc.  (Placed after _DOT_INTEGER_RE so
+# thousand-separated numbers like 1.000 / 1.000.000 are consumed first.)
+_DOT_DECIMAL_RE = re.compile(
+    r"(?<![\d,.])"
+    r"(?P<integer>\d+)"
+    r"\."
+    r"(?P<fraction>\d+)"
+    r"(?![\d])"
+)
+
 # Plain integer.
 _INTEGER_RE = re.compile(
     r"(?<![\d])"
@@ -330,6 +340,7 @@ def normalize_numbers(text: str) -> str:
     text = _PERCENT_RE.sub(_replace_percent, text)
     text = _DECIMAL_RE.sub(_replace_decimal, text)
     text = _DOT_INTEGER_RE.sub(_replace_dot_integer, text)
+    text = _DOT_DECIMAL_RE.sub(_replace_decimal, text)
     text = _INTEGER_RE.sub(_replace_integer, text)
     return text
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import audio_merge, drive_export, google_drive, repository, video_gen
+from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
@@ -131,7 +131,9 @@ async def generate_patch_video(request: Request, book_id: int, patch_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
 
-    image = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None)
+    if not image:
+        image = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     if not image:
         raise HTTPException(status_code=400, detail="No background image available")
 
@@ -144,6 +146,18 @@ async def generate_patch_video(request: Request, book_id: int, patch_id: int):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = str(out_dir / f"{patch_id}.mp4")
 
+    marquee_p = image_overlay.get_marquee_path(book_id, patch_id)
+    marquee_m_p = image_overlay.get_marquee_meta_path(book_id, patch_id)
+    seg_marquee_path: str | None = None
+    seg_marquee_meta: dict | None = None
+    if marquee_p.exists() and marquee_m_p.exists():
+        try:
+            import json
+            seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
+            seg_marquee_path = str(marquee_p)
+        except Exception:
+            pass
+
     try:
         await asyncio.to_thread(
             video_gen.generate_segment,
@@ -152,6 +166,8 @@ async def generate_patch_video(request: Request, book_id: int, patch_id: int):
             resolution=resolution,
             fps=fps,
             use_nvenc=settings.use_nvenc,
+            marquee_path=seg_marquee_path,
+            marquee_meta=seg_marquee_meta,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

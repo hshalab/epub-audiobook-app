@@ -163,6 +163,138 @@
 
 <div class="card">
     <div class="card-header">
+        <h3 style="margin:0">Text overlay (chữ trên nền)</h3>
+        <button type="button" class="btn-outline btn-sm" onclick="document.getElementById('overlay-preview').src='/books/{{ book.id }}/overlay-preview?t='+Date.now()">
+            Xem preview
+        </button>
+    </div>
+    <form method="post" action="/books/{{ book.id }}/overlay-config">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-md);margin-bottom:var(--space-md)">
+            <div class="form-group" style="margin:0">
+                <label for="ov-position">Vị trí</label>
+                <select name="position" id="ov-position">
+                    <option value="top" {% if overlay_cfg.position == 'top' %}selected{% endif %}>Trên</option>
+                    <option value="center" {% if overlay_cfg.position == 'center' %}selected{% endif %}>Giữa</option>
+                    <option value="bottom" {% if overlay_cfg.position == 'bottom' %}selected{% endif %}>Dưới</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin:0">
+                <label for="ov-alignment">Căn ngang</label>
+                <select name="alignment" id="ov-alignment">
+                    <option value="left" {% if overlay_cfg.alignment == 'left' %}selected{% endif %}>Trái</option>
+                    <option value="center" {% if overlay_cfg.alignment == 'center' %}selected{% endif %}>Giữa</option>
+                    <option value="right" {% if overlay_cfg.alignment == 'right' %}selected{% endif %}>Phải</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin:0">
+                <label for="ov-font-size">Cỡ chữ (px)</label>
+                <input type="number" name="font_size" id="ov-font-size" min="12" max="200" value="{{ overlay_cfg.font_size }}">
+            </div>
+            <div class="form-group" style="margin:0">
+                <label for="ov-text-color">Màu chữ</label>
+                <input type="color" name="text_color" id="ov-text-color" value="{{ overlay_cfg.text_color }}">
+            </div>
+            <div class="form-group" style="margin:0">
+                <label for="ov-margin">Khoảng cách mép (px)</label>
+                <input type="number" name="margin" id="ov-margin" min="0" max="200" value="{{ overlay_cfg.margin }}">
+            </div>
+        </div>
+
+        <details style="margin-bottom:var(--space-md)">
+            <summary style="cursor:pointer;font-weight:500">Shadow (đổ bóng)</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
+                <label style="display:flex;align-items:center;gap:var(--space-xs)">
+                    <input type="checkbox" name="shadow_enabled" {% if overlay_cfg.shadow.enabled %}checked{% endif %}>
+                    Bật
+                </label>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-shadow-color">Màu</label>
+                    <input type="color" name="shadow_color" id="ov-shadow-color" value="{{ overlay_cfg.shadow.color }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-shadow-offset">Offset (px)</label>
+                    <input type="number" name="shadow_offset" id="ov-shadow-offset" min="0" max="20" value="{{ overlay_cfg.shadow.offset }}">
+                </div>
+            </div>
+        </details>
+
+        <details style="margin-bottom:var(--space-md)">
+            <summary style="cursor:pointer;font-weight:500">Background box (hộp nền)</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
+                <label style="display:flex;align-items:center;gap:var(--space-xs)">
+                    <input type="checkbox" name="box_enabled" {% if overlay_cfg.box.enabled %}checked{% endif %}>
+                    Bật
+                </label>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-box-color">Màu</label>
+                    <input type="color" name="box_color" id="ov-box-color" value="{{ overlay_cfg.box.color }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-box-opacity">Độ mờ: <span id="ov-opacity-label">{{ overlay_cfg.box.opacity }}%</span></label>
+                    <input type="range" name="box_opacity" id="ov-box-opacity" min="0" max="100" value="{{ overlay_cfg.box.opacity }}"
+                           oninput="document.getElementById('ov-opacity-label').textContent=this.value+'%'">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-box-px">Padding X (px)</label>
+                    <input type="number" name="box_padding_x" id="ov-box-px" min="0" max="200" value="{{ overlay_cfg.box.padding_x }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-box-py">Padding Y (px)</label>
+                    <input type="number" name="box_padding_y" id="ov-box-py" min="0" max="200" value="{{ overlay_cfg.box.padding_y }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="ov-box-radius">Bo góc (px)</label>
+                    <input type="number" name="box_radius" id="ov-box-radius" min="0" max="200" value="{{ overlay_cfg.box.radius }}">
+                </div>
+            </div>
+        </details>
+
+        <details style="margin-bottom:var(--space-md)">
+            <summary style="cursor:pointer;font-weight:500">Marquee (chạy chữ ngang)</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
+                <label style="display:flex;align-items:center;gap:var(--space-xs)">
+                    <input type="checkbox" name="marquee_enabled" {% if overlay_cfg.marquee.enabled %}checked{% endif %}>
+                    Bật marquee
+                </label>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-height">Chiều cao bar (px)</label>
+                    <input type="number" name="marquee_height" id="mq-height" min="20" max="200" value="{{ overlay_cfg.marquee.height }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-font-size">Cỡ chữ (px)</label>
+                    <input type="number" name="marquee_font_size" id="mq-font-size" min="12" max="120" value="{{ overlay_cfg.marquee.font_size }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-text-color">Màu chữ</label>
+                    <input type="color" name="marquee_text_color" id="mq-text-color" value="{{ overlay_cfg.marquee.text_color }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-bg-color">Màu nền bar</label>
+                    <input type="color" name="marquee_bg_color" id="mq-bg-color" value="{{ overlay_cfg.marquee.bg_color }}">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-bg-opacity">Độ mờ nền: <span id="mq-opacity-label">{{ overlay_cfg.marquee.bg_opacity }}%</span></label>
+                    <input type="range" name="marquee_bg_opacity" id="mq-bg-opacity" min="0" max="100" value="{{ overlay_cfg.marquee.bg_opacity }}"
+                           oninput="document.getElementById('mq-opacity-label').textContent=this.value+'%'">
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="mq-speed">Tốc độ (px/s)</label>
+                    <input type="number" name="marquee_speed" id="mq-speed" min="10" max="500" value="{{ overlay_cfg.marquee.speed_px_per_sec }}">
+                </div>
+            </div>
+        </details>
+
+        <div class="btn-group">
+            <button type="submit" class="btn-primary">Lưu cấu hình</button>
+        </div>
+    </form>
+    <div style="margin-top:var(--space-md)">
+        <img id="overlay-preview" src="/books/{{ book.id }}/overlay-preview" alt="Preview" style="max-width:100%;border-radius:var(--radius-md);border:1px solid var(--border-color)">
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <h3 style="margin:0">Nhạc nền</h3>
     </div>
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">

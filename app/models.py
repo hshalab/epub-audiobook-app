@@ -27,6 +27,17 @@ class Book:
     normalize_spellcheck_enabled: int = 1
     music_id: int | None = None
     music_volume: float = 0.15
+    overlay_config: str | None = None
+    text_position: str = "top"
+    text_align: str = "center"
+    text_font_size: int = 52
+    text_color: str = "#FFFFFF"
+    text_shadow: int = 1
+    text_box_enabled: int = 0
+    text_box_color: str = "#000000"
+    text_box_opacity: float = 0.6
+    text_box_padding: int = 12
+    text_box_radius: int = 12
 
 
 @dataclass

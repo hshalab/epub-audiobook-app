@@ -1,6 +1,8 @@
 """Video generation: static image, Ken Burns animated, multi-segment concat, standalone."""
 from __future__ import annotations
 
+import json
+import logging
 import subprocess
 import tempfile
 import time
@@ -9,6 +11,8 @@ from typing import Callable
 
 from app.ffmpeg import get_ffmpeg_path, get_ffprobe_path
 from app.models import Book, Patch
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str, dict], None]
 
@@ -70,12 +74,16 @@ def generate_segment(
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
+    marquee_path: str | None = None,
+    marquee_meta: dict | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
 
     image_type: 'none' (static), 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'
     music_path: optional background music file (looped, mixed at music_volume ratio)
+    marquee_path: optional ticker strip PNG (3× wide of video, scrolls horizontally)
+    marquee_meta: dict with marquee_height, speed_px_per_sec, scroll_unit_px
 
     on_progress: optional callback(event: str, fields: dict) for progress logging.
     Events: segment.start, segment.ffmpeg_start, segment.ffmpeg_done, segment.done,
@@ -83,12 +91,15 @@ def generate_segment(
     """
     if music_path is not None and not Path(music_path).exists():
         raise FileNotFoundError(f"music file not found: {music_path}")
+    if marquee_path is not None and not Path(marquee_path).exists():
+        raise FileNotFoundError(f"marquee band not found: {marquee_path}")
 
     video_codec = "h264_nvenc" if use_nvenc else "libx264"
     width, height = resolution
 
     _emit(on_progress, "segment.start", path=out_path, image_type=image_type,
-          resolution=f"{width}x{height}", fps=fps, codec=video_codec)
+          resolution=f"{width}x{height}", fps=fps, codec=video_codec,
+          has_marquee=bool(marquee_path))
 
     if use_nvenc:
         quality_args = ["-cq", str(crf)]
@@ -97,42 +108,35 @@ def generate_segment(
         quality_args = ["-crf", str(crf)]
         tune_args = ["-tune", "stillimage"]
 
+    inputs = [
+        "-loop", "1", "-i", image_path,
+        "-i", audio_path,
+    ]
+    next_idx = 2
+    music_idx: int | None = None
+    marquee_idx: int | None = None
+    if music_path:
+        inputs.extend(["-stream_loop", "-1", "-i", music_path])
+        music_idx = next_idx
+        next_idx += 1
+    has_marquee = bool(marquee_path and marquee_meta)
+    if has_marquee:
+        inputs.extend(["-loop", "1", "-i", marquee_path])
+        marquee_idx = next_idx
+        next_idx += 1
+
     if image_type == "none":
-        if music_path:
-            cmd = [
-                get_ffmpeg_path(), "-y",
-                "-loop", "1", "-i", image_path,
-                "-i", audio_path,
-                "-stream_loop", "-1", "-i", music_path,
-                "-filter_complex",
-                f"[2:a]volume={music_volume}[music];[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]",
-                "-map", "0:v", "-map", "[aout]",
-                "-c:v", video_codec,
-                *tune_args,
-                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-                "-r", str(fps),
-                "-c:a", "aac", "-b:a", audio_bitrate,
-                "-pix_fmt", "yuv420p",
-                *quality_args,
-                "-shortest",
-                out_path,
-            ]
-        else:
-            cmd = [
-                get_ffmpeg_path(), "-y",
-                "-loop", "1", "-i", image_path,
-                "-i", audio_path,
-                "-c:v", video_codec,
-                *tune_args,
-                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-                "-r", str(fps),
-                "-c:a", "aac", "-b:a", audio_bitrate,
-                "-pix_fmt", "yuv420p",
-                *quality_args,
-                "-shortest",
-                out_path,
-            ]
+        base_vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        )
     else:
+        if has_marquee:
+            logger.warning(
+                "video_gen: Ken Burns + marquee unsupported - disabling marquee for %s",
+                out_path,
+            )
+            has_marquee = False
         _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
         probe = subprocess.run(
             [get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
@@ -140,42 +144,69 @@ def generate_segment(
             capture_output=True, text=True,
         )
         duration = float(probe.stdout.strip()) if probe.stdout.strip() else 10.0
-
         zp_filter = _build_zoompan_filter(image_type, width, height, fps, duration)
-        vf = f"{zp_filter},format=yuv420p"
+        base_vf = f"{zp_filter},format=yuv420p"
 
-        if music_path:
-            cmd = [
-                get_ffmpeg_path(), "-y",
-                "-loop", "1", "-i", image_path,
-                "-i", audio_path,
-                "-stream_loop", "-1", "-i", music_path,
-                "-filter_complex",
-                f"[2:a]volume={music_volume}[music];[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]",
-                "-map", "0:v", "-map", "[aout]",
-                "-vf", vf,
-                "-c:v", video_codec,
-                *tune_args,
-                "-c:a", "aac", "-b:a", audio_bitrate,
-                "-pix_fmt", "yuv420p",
-                *quality_args,
-                "-shortest",
-                out_path,
-            ]
-        else:
-            cmd = [
-                get_ffmpeg_path(), "-y",
-                "-loop", "1", "-i", image_path,
-                "-i", audio_path,
-                "-vf", vf,
-                "-c:v", video_codec,
-                *tune_args,
-                "-c:a", "aac", "-b:a", audio_bitrate,
-                "-pix_fmt", "yuv420p",
-                *quality_args,
-                "-shortest",
-                out_path,
-            ]
+    audio_chains: list[str] = []
+    if music_idx is not None:
+        audio_chains.append(f"[{music_idx}:a]volume={music_volume}[music]")
+        audio_chains.append("[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]")
+        audio_map_label = "[aout]"
+    else:
+        audio_map_label = "1:a"
+
+    if has_marquee and marquee_idx is not None:
+        band_h = int(marquee_meta.get("marquee_height", 60))
+        speed = int(marquee_meta.get("speed_px_per_sec", 80))
+        scroll_unit = max(1, int(marquee_meta.get("scroll_unit_px", width)))
+        band_vf = f"crop={width}:{band_h}:x='(t*{speed})%{scroll_unit}':y=0"
+        bg_chain = f"[0:v]{base_vf}[bg]"
+        band_chain = f"[{marquee_idx}:v]{band_vf}[band]"
+        overlay_chain = "[bg][band]overlay=0:0[outv]"
+        chains = audio_chains + [bg_chain, band_chain, overlay_chain]
+        cmd = [
+            get_ffmpeg_path(), "-y",
+            *inputs,
+            "-filter_complex", ";".join(chains),
+            "-map", "[outv]",
+            "-map", audio_map_label,
+            "-c:v", video_codec,
+            *tune_args,
+            "-c:a", "aac", "-b:a", audio_bitrate,
+            "-pix_fmt", "yuv420p",
+            *quality_args,
+            "-shortest",
+            out_path,
+        ]
+    elif music_idx is not None:
+        chains = audio_chains + [f"[0:v]{base_vf}"]
+        cmd = [
+            get_ffmpeg_path(), "-y",
+            *inputs,
+            "-filter_complex", ";".join(chains),
+            "-map", "0:v",
+            "-map", audio_map_label,
+            "-c:v", video_codec,
+            *tune_args,
+            "-c:a", "aac", "-b:a", audio_bitrate,
+            "-pix_fmt", "yuv420p",
+            *quality_args,
+            "-shortest",
+            out_path,
+        ]
+    else:
+        cmd = [
+            get_ffmpeg_path(), "-y",
+            *inputs,
+            "-vf", base_vf,
+            "-c:v", video_codec,
+            *tune_args,
+            "-c:a", "aac", "-b:a", audio_bitrate,
+            "-pix_fmt", "yuv420p",
+            *quality_args,
+            "-shortest",
+            out_path,
+        ]
 
     _emit(on_progress, "segment.ffmpeg_start", path=out_path)
     t0 = time.monotonic()
@@ -312,6 +343,18 @@ def generate_full_video(
                 _emit(on_progress, event, patch_index=_p.patch_index,
                       patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
+            # Resolve marquee band + meta if they exist for this patch.
+            marquee_p = str(image_overlay.get_marquee_path(book.id, patch.id))
+            marquee_m_p = image_overlay.get_marquee_meta_path(book.id, patch.id)
+            seg_marquee_path: str | None = None
+            seg_marquee_meta: dict | None = None
+            if Path(marquee_p).exists() and marquee_m_p.exists():
+                try:
+                    seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
+                    seg_marquee_path = marquee_p
+                except Exception as exc:
+                    logger.warning("video_gen: invalid marquee meta for patch %s: %s", patch.id, exc)
+
             generate_segment(
                 image, patch.audio_path, seg_path,
                 image_type=anim,
@@ -320,6 +363,8 @@ def generate_full_video(
                 use_nvenc=use_nvenc,
                 music_path=music_path,
                 music_volume=music_volume,
+                marquee_path=seg_marquee_path,
+                marquee_meta=seg_marquee_meta,
                 on_progress=_seg_progress,
             )
             segment_paths.append(seg_path)

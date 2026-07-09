@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -168,6 +169,9 @@ def book_detail(request: Request, book_id: int):
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
 
+    from app import image_overlay
+    overlay_cfg = image_overlay.parse_overlay_config(book.overlay_config) if book else image_overlay.get_default_overlay_config()
+
     return templates.TemplateResponse(
         request, "book_detail.html", {
             "book": book,
@@ -182,6 +186,7 @@ def book_detail(request: Request, book_id: int):
             "music_list": music_list,
             "current_music": current_music,
             "backgrounds": _list_backgrounds(),
+            "overlay_cfg": overlay_cfg,
         }
     )
 
@@ -275,6 +280,107 @@ def update_book_music(
         except Exception:
             pass
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.post("/books/{book_id}/overlay-config")
+def update_overlay_config(
+    request: Request,
+    book_id: int,
+    position: str = Form(default="top"),
+    alignment: str = Form(default="center"),
+    font_size: int = Form(default=52),
+    text_color: str = Form(default="#FFFFFF"),
+    shadow_enabled: str = Form(default=""),
+    shadow_color: str = Form(default="#000000"),
+    shadow_offset: int = Form(default=3),
+    box_enabled: str = Form(default=""),
+    box_color: str = Form(default="#000000"),
+    box_opacity: int = Form(default=60),
+    box_padding_x: int = Form(default=24),
+    box_padding_y: int = Form(default=12),
+    box_radius: int = Form(default=12),
+    margin: int = Form(default=40),
+    marquee_enabled: str = Form(default=""),
+    marquee_height: int = Form(default=60),
+    marquee_bg_color: str = Form(default="#000000"),
+    marquee_bg_opacity: int = Form(default=70),
+    marquee_text_color: str = Form(default="#FFFFFF"),
+    marquee_font_size: int = Form(default=32),
+    marquee_speed: int = Form(default=80),
+):
+    from app import image_overlay
+
+    cfg = image_overlay.get_default_overlay_config()
+    cfg["position"] = position if position in ("top", "center", "bottom") else "top"
+    cfg["alignment"] = alignment if alignment in ("left", "center", "right") else "center"
+    cfg["font_size"] = max(12, min(200, font_size))
+    cfg["text_color"] = text_color or "#FFFFFF"
+    cfg["margin"] = max(0, min(200, margin))
+    cfg["shadow"] = {
+        "enabled": shadow_enabled == "on",
+        "color": shadow_color or "#000000",
+        "offset": max(0, min(20, shadow_offset)),
+    }
+    cfg["box"] = {
+        "enabled": box_enabled == "on",
+        "color": box_color or "#000000",
+        "opacity": max(0, min(100, box_opacity)),
+        "padding_x": max(0, min(200, box_padding_x)),
+        "padding_y": max(0, min(200, box_padding_y)),
+        "radius": max(0, min(200, box_radius)),
+    }
+    cfg["marquee"] = {
+        "enabled": marquee_enabled == "on",
+        "height": max(20, min(200, marquee_height)),
+        "bg_color": marquee_bg_color or "#000000",
+        "bg_opacity": max(0, min(100, marquee_bg_opacity)),
+        "text_color": marquee_text_color or "#FFFFFF",
+        "font_size": max(12, min(120, marquee_font_size)),
+        "speed_px_per_sec": max(10, min(500, marquee_speed)),
+    }
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        conn.execute(
+            "UPDATE book SET overlay_config = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(cfg, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), book_id),
+        )
+        conn.commit()
+        book = repository.get_book(conn, book_id)
+        patches = repository.list_patches(conn, book_id)
+
+    for patch in patches:
+        try:
+            image_overlay.render_patch_overlay(book, patch, cfg, None)
+        except Exception as exc:
+            logger.warning("overlay-config: re-render failed for patch %s: %s", patch.id, exc)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.get("/books/{book_id}/overlay-preview")
+def overlay_preview(request: Request, book_id: int):
+    from app import image_overlay
+    from io import BytesIO
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        patches = repository.list_patches(conn, book_id)
+    sample_patch = next((p for p in patches if p.audio_path), None) or (patches[0] if patches else None)
+    if sample_patch is None:
+        raise HTTPException(status_code=400, detail="chưa có patch để preview")
+    bg = image_overlay._resolve_background(book)
+    if bg is None:
+        raise HTTPException(status_code=400, detail="chưa có background image")
+    from PIL import Image
+    img = Image.open(str(bg)).convert("RGB")
+    cfg = image_overlay.parse_overlay_config(book.overlay_config)
+    img = image_overlay.render_overlay(img, [f"{book.title} - {sample_patch.name or sample_patch.patch_index}"], cfg)
+    buf = BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return Response(content=buf.getvalue(), media_type="image/png")
 
 
 @router.post("/books/{book_id}/delete")

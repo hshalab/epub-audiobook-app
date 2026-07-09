@@ -57,6 +57,13 @@ def test_decimal():
     assert normalize_numbers("1000,001") == "một nghìn phẩy một"
 
 
+def test_dot_decimal():
+    assert normalize_numbers("125.3") == "một trăm hai mươi lăm phẩy ba"
+    assert normalize_numbers("3.14") == "ba phẩy mười bốn"
+    assert normalize_numbers("0.5") == "không phẩy năm"
+    assert normalize_numbers("100.75") == "một trăm phẩy bảy mươi lăm"
+
+
 def test_plain_integer_longer_than_four_digits():
     # Numbers with >= 5 digits are read digit-by-digit in pairs from right.
     assert normalize_numbers("50000") == "năm, không không, không không"
