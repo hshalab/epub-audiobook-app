@@ -298,6 +298,57 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tupl
     return int(x0), int(y0), int(box_w), int(box_h)
 
 
+def overlay_cfg_from_values(values) -> dict:
+    """Build a clamped overlay config from HTML form fields or query params.
+
+    Checkbox fields arrive as "on" when checked and are absent when unchecked,
+    so a missing checkbox means disabled. Shared by every studio-style live
+    preview + save endpoint (book detail, video creator) so they all interpret
+    the same field names identically.
+    """
+
+    def _int(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            val = int(values.get(name, default))
+        except (TypeError, ValueError):
+            val = default
+        return max(lo, min(hi, val))
+
+    cfg = get_default_overlay_config()
+    position = values.get("position") or "top"
+    alignment = values.get("alignment") or "center"
+    cfg["position"] = position if position in ("top", "center", "bottom") else "top"
+    cfg["alignment"] = alignment if alignment in ("left", "center", "right") else "center"
+    cfg["font_size"] = _int("font_size", 52, 12, 200)
+    cfg["text_color"] = values.get("text_color") or "#FFFFFF"
+    cfg["margin"] = _int("margin", 40, 0, 200)
+    cfg["offset_x"] = _int("offset_x", 0, -4000, 4000)
+    cfg["offset_y"] = _int("offset_y", 0, -4000, 4000)
+    cfg["shadow"] = {
+        "enabled": values.get("shadow_enabled") == "on",
+        "color": values.get("shadow_color") or "#000000",
+        "offset": _int("shadow_offset", 3, 0, 20),
+    }
+    cfg["box"] = {
+        "enabled": values.get("box_enabled") == "on",
+        "color": values.get("box_color") or "#000000",
+        "opacity": _int("box_opacity", 60, 0, 100),
+        "padding_x": _int("box_padding_x", 24, 0, 200),
+        "padding_y": _int("box_padding_y", 12, 0, 200),
+        "radius": _int("box_radius", 12, 0, 200),
+    }
+    cfg["marquee"] = {
+        "enabled": values.get("marquee_enabled") == "on",
+        "height": _int("marquee_height", 60, 20, 200),
+        "bg_color": values.get("marquee_bg_color") or "#000000",
+        "bg_opacity": _int("marquee_bg_opacity", 70, 0, 100),
+        "text_color": values.get("marquee_text_color") or "#FFFFFF",
+        "font_size": _int("marquee_font_size", 32, 12, 120),
+        "speed_px_per_sec": _int("marquee_speed", 80, 10, 500),
+    }
+    return cfg
+
+
 def build_overlay_lines(image: "Image.Image", text: str, cfg: dict) -> list[str]:
     """Wrap overlay text against the image width, same as render_patch_overlay."""
     from PIL import ImageDraw

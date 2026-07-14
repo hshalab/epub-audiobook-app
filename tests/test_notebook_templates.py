@@ -1,10 +1,12 @@
 """Regression tests for the exported Colab/Kaggle notebook templates.
 
-Kaggle images ship the google.colab package, so `from google.colab import drive`
-SUCCEEDS on Kaggle and drive.mount() then raises NotImplementedError - meaning
-`except ImportError` can never be used to tell the two platforms apart. Every
-cell that mounts Drive must therefore detect Kaggle first (via the /kaggle
-mount) and only touch Drive on real Colab.
+The platform is chosen by ONE manual global flag, IS_KAGGLE, defined in the
+first code cell (True = Kaggle, False = Colab). No cell may auto-detect the
+platform: Kaggle images ship the google.colab package, so `from google.colab
+import drive` SUCCEEDS on Kaggle and drive.mount() then raises
+NotImplementedError - `except ImportError` can never tell the two platforms
+apart, and per-cell re-detection drifted between cells. Every cell that mounts
+Drive must therefore be guarded by the IS_KAGGLE global instead.
 
 The voice reference clip is also mandatory: the manifest-loading cell must stop
 the run when the clip is missing instead of silently synthesizing with a random
@@ -30,6 +32,20 @@ def _code_cells(path: Path) -> list[str]:
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_is_kaggle_is_a_manual_global_set_in_cell_1(template):
+    cells = _code_cells(template)
+    assert "IS_KAGGLE = False" in cells[0], (
+        f"{template.name}: the first code cell must define the global "
+        "IS_KAGGLE = True/False flag used by every other cell"
+    )
+    for src in cells:
+        assert 'os.path.isdir("/kaggle")' not in src, (
+            f"{template.name}: cells must use the global IS_KAGGLE flag from "
+            "Cell 1 instead of auto-detecting the platform per cell"
+        )
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
 def test_drive_mount_never_guarded_by_importerror(template):
     for src in _code_cells(template):
         if "drive.mount(" in src:
@@ -40,16 +56,16 @@ def test_drive_mount_never_guarded_by_importerror(template):
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
-def test_drive_mount_cells_detect_kaggle_first(template):
+def test_drive_mount_cells_guarded_by_is_kaggle(template):
     for src in _code_cells(template):
         if "drive.mount(" not in src:
             continue
-        assert "/kaggle" in src, (
-            f"{template.name}: a cell mounting Drive must check for Kaggle "
-            "so 'Run all' works on both platforms"
+        assert "IS_KAGGLE" in src, (
+            f"{template.name}: a cell mounting Drive must branch on the "
+            "global IS_KAGGLE flag so 'Run all' works on both platforms"
         )
-        assert src.index("/kaggle") < src.index("drive.mount("), (
-            f"{template.name}: the Kaggle check must come BEFORE drive.mount()"
+        assert src.index("IS_KAGGLE") < src.index("drive.mount("), (
+            f"{template.name}: the IS_KAGGLE check must come BEFORE drive.mount()"
         )
 
 

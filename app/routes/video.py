@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app import image_overlay, repository, video_gen
@@ -123,21 +123,26 @@ def _resolve_background_image(bg_path: str | None) -> Path | None:
     return None
 
 
+def _overlay_values_with_defaults(values) -> dict:
+    """Video Creator's overlay UI only exposes text/position/size/color/drag
+    offset - no shadow/box/marquee toggles. Force shadow on (matching the
+    always-on shadow this page has always rendered) so reusing the shared
+    config builder doesn't silently drop it for missing fields."""
+    merged = dict(values)
+    merged.setdefault("shadow_enabled", "on")
+    return merged
+
+
 def _render_overlay_for_batch(
     bg_path: Path, text: str, overlay_opts: dict, out_path: Path,
 ) -> Path | None:
     """Render user text onto a copy of the background. None on failure (caller
     falls back to the plain background rather than failing the video)."""
     try:
-        from PIL import Image, ImageDraw
-        cfg = image_overlay.get_default_overlay_config()
-        cfg["position"] = overlay_opts.get("position", "top")
-        cfg["font_size"] = int(overlay_opts.get("font_size", 52))
-        cfg["text_color"] = overlay_opts.get("text_color", "#FFFFFF")
+        from PIL import Image
+        cfg = image_overlay.overlay_cfg_from_values(_overlay_values_with_defaults(overlay_opts))
         img = Image.open(str(bg_path)).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        font = image_overlay._load_font(None, cfg["font_size"])
-        lines = image_overlay._wrap_lines(draw, text, font, img.size[0] - 80)
+        lines = image_overlay.build_overlay_lines(img, text, cfg)
         image_overlay.render_overlay(img, lines, cfg)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(out_path), "PNG")
@@ -503,6 +508,74 @@ def get_batch_progress(batch_id: str):
     return JSONResponse({"jobs": jobs})
 
 
+_AUDIO_MIME_MAP = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg"}
+
+
+@router.get("/video/batch/{batch_id}/audio/{index}")
+def serve_batch_audio(batch_id: str, index: int):
+    """Stream one uploaded batch audio file, for the studio's mix-preview player."""
+    meta_path = _TMP_DIR / batch_id / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found or expired")
+    with open(meta_path) as mf:
+        meta = json.load(mf)
+    finfo = next((f for f in meta["files"] if f["index"] == index), None)
+    if finfo is None:
+        raise HTTPException(status_code=404, detail="File not found in batch")
+    p = Path(finfo["path"])
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Audio file missing")
+    media = _AUDIO_MIME_MAP.get(p.suffix.lower(), "application/octet-stream")
+    return FileResponse(str(p), media_type=media)
+
+
+@router.get("/video/overlay-preview")
+def overlay_preview(
+    background_path: str = "",
+    text: str = "",
+    position: str = "top",
+    font_size: int = 52,
+    text_color: str = "#FFFFFF",
+    offset_x: int = 0,
+    offset_y: int = 0,
+):
+    """Render a live overlay preview for the studio's drag-to-position box.
+
+    Mirrors the book detail studio's /books/{id}/overlay-preview: same
+    X-Overlay-Rect response header, same underlying config builder, so the
+    text the user sees here is exactly what _render_overlay_for_batch bakes
+    into the final video for the same parameters.
+    """
+    from io import BytesIO
+
+    bg = _safe_background_path(background_path) or _resolve_background_image(None)
+    if bg is None:
+        raise HTTPException(status_code=400, detail="no background image available")
+
+    values = _overlay_values_with_defaults({
+        "position": position, "font_size": font_size, "text_color": text_color,
+        "offset_x": offset_x, "offset_y": offset_y,
+    })
+    cfg = image_overlay.overlay_cfg_from_values(values)
+
+    from PIL import Image
+    img = Image.open(str(bg)).convert("RGB")
+    label = text.strip() or "Tên video preview"
+    lines = image_overlay.build_overlay_lines(img, label, cfg)
+    img, rect = image_overlay.render_overlay_with_rect(img, lines, cfg)
+    buf = BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    rect_header = json.dumps({
+        "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
+        "img_w": img.size[0], "img_h": img.size[1],
+    })
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"X-Overlay-Rect": rect_header, "Cache-Control": "no-store"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Background image management
 # ---------------------------------------------------------------------------
@@ -524,13 +597,12 @@ def list_backgrounds():
     return JSONResponse({"backgrounds": items})
 
 
-@router.get("/video/backgrounds/preview")
-def preview_background(path: str = ""):
-    """Serve a background image file for the Configure Each File preview thumbnail.
-    Only paths inside the backgrounds dir or matching the configured default are
-    allowed; everything else returns 404 to avoid serving arbitrary disk files."""
+def _safe_background_path(path: str) -> Path | None:
+    """Resolve a background image path, restricted to the backgrounds dir or
+    the configured default. Returns None (never raises) for anything else, so
+    callers can fall back to the default background instead of erroring."""
     if not path:
-        raise HTTPException(status_code=400, detail="path query parameter required")
+        return None
     p = Path(path)
     if not p.is_absolute():
         p = (Path(settings.data_root) / path).resolve()
@@ -540,11 +612,23 @@ def preview_background(path: str = ""):
     try:
         p_resolved = p.resolve()
     except OSError:
-        raise HTTPException(status_code=400, detail="invalid path")
+        return None
     if not any(p_resolved == root or root in p_resolved.parents for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="path not allowed")
-
+        return None
     if not p_resolved.exists() or not p_resolved.is_file():
+        return None
+    return p_resolved
+
+
+@router.get("/video/backgrounds/preview")
+def preview_background(path: str = ""):
+    """Serve a background image file for the Configure Each File preview thumbnail.
+    Only paths inside the backgrounds dir or matching the configured default are
+    allowed; everything else returns 404 to avoid serving arbitrary disk files."""
+    if not path:
+        raise HTTPException(status_code=400, detail="path query parameter required")
+    p_resolved = _safe_background_path(path)
+    if p_resolved is None:
         raise HTTPException(status_code=404, detail="background not found")
 
     media = "image/jpeg"

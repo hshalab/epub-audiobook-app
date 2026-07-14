@@ -72,6 +72,100 @@
         <button type="button" class="btn-sm btn-outline" id="btn-upload-bg">Upload</button>
     </div>
 
+    <!-- Studio: live overlay preview + drag-to-position + audio mix check -->
+    <div class="card" id="studio-card">
+        <style>
+            #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
+            @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
+            .studio-section { border:1px solid var(--border-color); border-radius:var(--radius-md); padding:var(--space-md); }
+            .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
+            #ov-drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
+            #ov-drag-rect:hover, #ov-drag-rect.dragging { background:rgba(56,189,248,.22); }
+        </style>
+        <div class="card-header">
+            <h3 style="margin:0">Studio — Preview overlay &amp; nghe thử mix</h3>
+        </div>
+        <div id="studio-grid">
+            <div style="position:sticky;top:var(--space-md);display:flex;flex-direction:column;gap:var(--space-md)">
+                <div>
+                    <div class="form-group" style="margin:0 0 var(--space-sm) 0">
+                        <label for="preview-row-select">Preview với file</label>
+                        <select id="preview-row-select"></select>
+                    </div>
+                    <div id="ov-preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden">
+                        <img id="ov-preview" alt="Preview" style="width:100%;display:block">
+                        <div id="ov-drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
+                    </div>
+                    <p id="ov-preview-empty" style="display:none;margin:var(--space-sm) 0 0 0;color:var(--text-muted)">Chưa có ảnh nền để preview — upload file trước.</p>
+                    <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
+                        Kéo khung chữ trên ảnh để chỉnh vị trí. Thay đổi ở cột phải cập nhật preview ngay.
+                    </p>
+                </div>
+
+                <div class="studio-section">
+                    <h4>Nghe thử mix (audio chính + nhạc nền)</h4>
+                    <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+                        <button type="button" id="mix-play" class="btn-outline btn-sm">&#9654; Nghe thử</button>
+                        <select id="mix-ref" style="flex:1;min-width:160px"></select>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm)">
+                        <input type="range" id="mix-seek" min="0" max="100" value="0" step="0.1" style="flex:1" disabled>
+                        <span id="mix-time" style="font-size:var(--font-size-xs);color:var(--text-muted);min-width:96px;text-align:right">0:00 / 0:00</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:var(--space-md);margin-top:var(--space-sm);flex-wrap:wrap">
+                        <span style="font-size:var(--font-size-sm);white-space:nowrap">Audio chính: <strong>100%</strong></span>
+                        <label for="cfg-music-volume" style="display:flex;align-items:center;gap:var(--space-xs);flex:1;min-width:200px;font-size:var(--font-size-sm);font-weight:500">
+                            Nhạc nền: <span id="music-vol-val">15%</span>
+                            <input type="range" id="cfg-music-volume" min="0" max="100" value="15" style="flex:1"
+                                   oninput="document.getElementById('music-vol-val').textContent=this.value+'%'">
+                        </label>
+                    </div>
+                    <div class="form-group" style="margin:var(--space-sm) 0 0 0">
+                        <label for="cfg-music">Chọn nhạc nền</label>
+                        <select id="cfg-music">
+                            <option value="">-- Không dùng --</option>
+                        </select>
+                    </div>
+                    <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
+                        Tỉ lệ nghe thử giống lúc render video: audio chính giữ 100%, nhạc nền theo % ở trên và tự loop.
+                    </p>
+                </div>
+            </div>
+
+            <div class="studio-section">
+                <h4>Text overlay</h4>
+                <input type="hidden" id="cfg-overlay-offset-x" value="0">
+                <input type="hidden" id="cfg-overlay-offset-y" value="0">
+                <div class="form-group">
+                    <label for="cfg-overlay-text">Text overlay (để trống = không có chữ)</label>
+                    <input type="text" id="cfg-overlay-text" placeholder="VD: Tên sách - Tập 1" maxlength="200">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="cfg-overlay-position">Vị trí chữ</label>
+                        <select id="cfg-overlay-position">
+                            <option value="top" selected>Trên</option>
+                            <option value="center">Giữa</option>
+                            <option value="bottom">Dưới</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-overlay-size">Cỡ chữ</label>
+                        <input type="number" id="cfg-overlay-size" min="12" max="200" value="52">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg-overlay-color">Màu chữ</label>
+                        <input type="color" id="cfg-overlay-color" value="#FFFFFF">
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm);font-size:var(--font-size-xs);color:var(--text-muted)">
+                    <span>Offset kéo: <code id="ov-offset-label">0, 0</code> px</span>
+                    <button type="button" id="ov-offset-reset" class="btn-outline btn-sm">Reset vị trí</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Step 3: Config -->
     <h3>3. Video Config (applied to all selected)</h3>
     <div class="video-creator-form">
@@ -125,41 +219,6 @@
                 <input type="range" name="crf" min="18" max="28" value="23" id="cfg-crf"
                        oninput="document.getElementById('crf-val').textContent=this.value">
                 <span id="crf-val">23</span>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="cfg-music">Nhạc nền</label>
-                <select id="cfg-music">
-                    <option value="">-- Không dùng --</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-music-volume">Volume nhạc: <span id="music-vol-val">15%</span></label>
-                <input type="range" id="cfg-music-volume" min="0" max="100" value="15"
-                       oninput="document.getElementById('music-vol-val').textContent=this.value+'%'">
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-group" style="flex:2">
-                <label for="cfg-overlay-text">Text overlay (để trống = không có chữ)</label>
-                <input type="text" id="cfg-overlay-text" placeholder="VD: Tên sách - Tập 1" maxlength="200">
-            </div>
-            <div class="form-group">
-                <label for="cfg-overlay-position">Vị trí chữ</label>
-                <select id="cfg-overlay-position">
-                    <option value="top" selected>Trên</option>
-                    <option value="center">Giữa</option>
-                    <option value="bottom">Dưới</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-overlay-size">Cỡ chữ</label>
-                <input type="number" id="cfg-overlay-size" min="12" max="200" value="52">
-            </div>
-            <div class="form-group">
-                <label for="cfg-overlay-color">Màu chữ</label>
-                <input type="color" id="cfg-overlay-color" value="#FFFFFF">
             </div>
         </div>
     </div>
@@ -346,6 +405,7 @@
         refreshBgSelects();
         refreshAllPreviews();
         updateSelectedCount();
+        refreshStudioFileLists(files);
 
         tbody.querySelectorAll('.row-check').forEach(cb => {
             cb.addEventListener('change', updateSelectedCount);
@@ -359,6 +419,7 @@
         tbody.querySelectorAll('.bg-select').forEach(sel => {
             sel.addEventListener('change', function() {
                 updatePreview(this.dataset.index);
+                if (window.__studioOnRowBgChanged) window.__studioOnRowBgChanged(this.dataset.index);
             });
         });
 
@@ -380,6 +441,7 @@
                     const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
                     sel.value = data.path;
                     updatePreview(idx);
+                    if (window.__studioOnRowBgChanged) window.__studioOnRowBgChanged(idx);
                     statusEl.textContent = 'Ready';
                 } catch(e) {
                     statusEl.textContent = 'BG upload failed';
@@ -511,6 +573,7 @@
             const data = await res.json();
             batchId = data.batch_id;
             batchFiles = data.files;
+            if (window.__studioSetBatchId) window.__studioSetBatchId(batchId);
             if (data.errors.length) {
                 alert('Some files skipped:\n' + data.errors.join('\n'));
             }
@@ -570,6 +633,8 @@
                 position: document.getElementById('cfg-overlay-position').value,
                 font_size: parseInt(document.getElementById('cfg-overlay-size').value) || 52,
                 text_color: document.getElementById('cfg-overlay-color').value,
+                offset_x: parseInt(document.getElementById('cfg-overlay-offset-x').value, 10) || 0,
+                offset_y: parseInt(document.getElementById('cfg-overlay-offset-y').value, 10) || 0,
             } : null,
         };
 
@@ -647,6 +712,288 @@
 
     loadBackgrounds();
     loadMusicList();
+
+    // Keeps the studio's "preview với file" and "audio chính" dropdowns in
+    // sync with the uploaded batch, and kicks off an initial preview render.
+    function refreshStudioFileLists(files) {
+        const previewRowSelect = document.getElementById('preview-row-select');
+        if (previewRowSelect) {
+            const prev = previewRowSelect.value;
+            previewRowSelect.innerHTML = '';
+            files.forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f.index;
+                opt.textContent = f.name;
+                previewRowSelect.appendChild(opt);
+            });
+            if (files.some(f => String(f.index) === prev)) previewRowSelect.value = prev;
+        }
+        if (window.__studioRepopulateMixRef) window.__studioRepopulateMixRef(files);
+        if (window.__studioRefreshPreview) window.__studioRefreshPreview();
+    }
+    window.refreshStudioFileLists = refreshStudioFileLists;
+})();
+
+// --- Studio: live overlay preview + drag-to-position (mirrors the book
+//     detail studio's /books/{id}/overlay-preview against /video/overlay-preview) ---
+(function() {
+    const ovImg = document.getElementById('ov-preview');
+    const ovEmpty = document.getElementById('ov-preview-empty');
+    const dragRect = document.getElementById('ov-drag-rect');
+    const previewRowSelect = document.getElementById('preview-row-select');
+    const offX = document.getElementById('cfg-overlay-offset-x');
+    const offY = document.getElementById('cfg-overlay-offset-y');
+    const offsetLabel = document.getElementById('ov-offset-label');
+    if (!ovImg || !previewRowSelect) return;
+
+    let rect = null;
+    let objectUrl = null;
+    let refreshTimer = null;
+    let refreshing = false;
+    let refreshQueued = false;
+
+    function currentBgPath() {
+        const idx = previewRowSelect.value;
+        if (idx === '') return '';
+        const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
+        return sel ? sel.value : '';
+    }
+
+    function previewParams() {
+        const params = new URLSearchParams();
+        params.set('background_path', currentBgPath());
+        params.set('text', document.getElementById('cfg-overlay-text').value);
+        params.set('position', document.getElementById('cfg-overlay-position').value);
+        params.set('font_size', document.getElementById('cfg-overlay-size').value || '52');
+        params.set('text_color', document.getElementById('cfg-overlay-color').value);
+        params.set('offset_x', offX.value || '0');
+        params.set('offset_y', offY.value || '0');
+        params.set('t', Date.now());
+        return params;
+    }
+
+    function positionRect() {
+        if (!rect || !rect.img_w || !rect.img_h) { dragRect.style.display = 'none'; return; }
+        dragRect.style.display = 'block';
+        dragRect.style.left = (rect.x / rect.img_w * 100) + '%';
+        dragRect.style.top = (rect.y / rect.img_h * 100) + '%';
+        dragRect.style.width = (rect.w / rect.img_w * 100) + '%';
+        dragRect.style.height = (rect.h / rect.img_h * 100) + '%';
+        dragRect.style.transform = '';
+    }
+
+    async function refreshPreview() {
+        if (previewRowSelect.options.length === 0) return;
+        if (refreshing) { refreshQueued = true; return; }
+        refreshing = true;
+        try {
+            const res = await fetch('/video/overlay-preview?' + previewParams());
+            if (!res.ok) {
+                ovEmpty.style.display = 'block';
+                dragRect.style.display = 'none';
+                return;
+            }
+            ovEmpty.style.display = 'none';
+            const header = res.headers.get('X-Overlay-Rect');
+            rect = header ? JSON.parse(header) : null;
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            ovImg.onload = function() {
+                if (objectUrl && objectUrl !== url) URL.revokeObjectURL(objectUrl);
+                objectUrl = url;
+                positionRect();
+            };
+            ovImg.src = url;
+            offsetLabel.textContent = `${offX.value || 0}, ${offY.value || 0}`;
+        } catch (_) {
+        } finally {
+            refreshing = false;
+            if (refreshQueued) { refreshQueued = false; refreshPreview(); }
+        }
+    }
+
+    function scheduleRefresh() {
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(refreshPreview, 250);
+    }
+
+    ['cfg-overlay-text', 'cfg-overlay-size', 'cfg-overlay-color'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.addEventListener('input', scheduleRefresh); el.addEventListener('change', scheduleRefresh); }
+    });
+    // Changing the anchor position resets the drag offset so the text snaps
+    // to the chosen spot predictably instead of keeping a stale nudge.
+    document.getElementById('cfg-overlay-position').addEventListener('change', () => {
+        offX.value = 0; offY.value = 0; scheduleRefresh();
+    });
+    previewRowSelect.addEventListener('change', () => { offX.value = 0; offY.value = 0; scheduleRefresh(); });
+    document.getElementById('ov-offset-reset').addEventListener('click', () => {
+        offX.value = 0; offY.value = 0; scheduleRefresh();
+    });
+
+    // Drag the text block; on release the delta is folded into offset_x/y and
+    // the server re-renders (it applies the same clamping as the final render).
+    let drag = null;
+    dragRect.addEventListener('pointerdown', (e) => {
+        if (!rect) return;
+        e.preventDefault();
+        dragRect.setPointerCapture(e.pointerId);
+        dragRect.classList.add('dragging');
+        drag = { startX: e.clientX, startY: e.clientY, dx: 0, dy: 0 };
+    });
+    dragRect.addEventListener('pointermove', (e) => {
+        if (!drag || !rect) return;
+        const scale = rect.img_w / ovImg.clientWidth;
+        let dx = (e.clientX - drag.startX) * scale;
+        let dy = (e.clientY - drag.startY) * scale;
+        dx = Math.max(-rect.x, Math.min(rect.img_w - rect.w - rect.x, dx));
+        dy = Math.max(-rect.y, Math.min(rect.img_h - rect.h - rect.y, dy));
+        drag.dx = dx;
+        drag.dy = dy;
+        dragRect.style.transform = `translate(${dx / scale}px, ${dy / scale}px)`;
+    });
+    dragRect.addEventListener('pointerup', () => {
+        if (!drag) return;
+        offX.value = Math.round((parseInt(offX.value, 10) || 0) + drag.dx);
+        offY.value = Math.round((parseInt(offY.value, 10) || 0) + drag.dy);
+        drag = null;
+        dragRect.classList.remove('dragging');
+        refreshPreview();
+    });
+    dragRect.addEventListener('pointercancel', () => {
+        drag = null;
+        dragRect.classList.remove('dragging');
+        positionRect();
+    });
+
+    window.__studioRefreshPreview = refreshPreview;
+    window.__studioOnRowBgChanged = function(idx) {
+        if (String(idx) === previewRowSelect.value) scheduleRefresh();
+    };
+})();
+
+// --- Mix check: audio chính (uploaded file) at 100% + looping background
+//     music at the configured ratio, mirroring the ffmpeg amix used at render time ---
+(function() {
+    const playBtn = document.getElementById('mix-play');
+    const refSelect = document.getElementById('mix-ref');
+    const seek = document.getElementById('mix-seek');
+    const timeLabel = document.getElementById('mix-time');
+    const musicSelect = document.getElementById('cfg-music');
+    const volSlider = document.getElementById('cfg-music-volume');
+    if (!playBtn || !refSelect) return;
+
+    const refAudio = new Audio();
+    refAudio.preload = 'metadata';
+    const musicAudio = new Audio();
+    musicAudio.loop = true;
+    musicAudio.preload = 'none';
+    let playing = false;
+    let seekDragging = false;
+    let currentBatchId = null;
+
+    function refUrl() {
+        if (!refSelect.value || currentBatchId == null) return '';
+        return `/video/batch/${currentBatchId}/audio/${refSelect.value}`;
+    }
+    function musicUrl() {
+        return musicSelect.value ? `/music/${musicSelect.value}/file` : '';
+    }
+    function applyVolume() {
+        musicAudio.volume = Math.max(0, Math.min(100, parseInt(volSlider.value, 10) || 0)) / 100;
+    }
+    function fmt(sec) {
+        if (!isFinite(sec) || sec < 0) return '0:00';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return `${m}:${String(s).padStart(2, '0')}`;
+    }
+    function stopMix() {
+        refAudio.pause();
+        musicAudio.pause();
+        playing = false;
+        playBtn.innerHTML = '&#9654; Nghe thử';
+    }
+    async function startMix() {
+        const hasRef = !!refUrl();
+        const hasMusic = !!musicUrl();
+        if (!hasRef && !hasMusic) {
+            alert('Chưa có audio chính hoặc nhạc nền để nghe thử.');
+            return;
+        }
+        applyVolume();
+        try {
+            if (hasRef) {
+                if (refAudio.getAttribute('data-src') !== refUrl()) {
+                    refAudio.src = refUrl();
+                    refAudio.setAttribute('data-src', refUrl());
+                }
+                await refAudio.play();
+            }
+            if (hasMusic) {
+                if (musicAudio.getAttribute('data-src') !== musicUrl()) {
+                    musicAudio.src = musicUrl();
+                    musicAudio.setAttribute('data-src', musicUrl());
+                }
+                await musicAudio.play();
+            }
+            playing = true;
+            playBtn.innerHTML = '&#10074;&#10074; Tạm dừng';
+        } catch (_) {
+            stopMix();
+        }
+    }
+    playBtn.addEventListener('click', () => { playing ? stopMix() : startMix(); });
+
+    volSlider.addEventListener('input', applyVolume);
+    refSelect.addEventListener('change', () => {
+        const wasPlaying = playing;
+        stopMix();
+        seek.value = 0;
+        if (wasPlaying) startMix();
+    });
+    musicSelect.addEventListener('change', () => {
+        const wasPlaying = playing;
+        stopMix();
+        if (wasPlaying) startMix();
+    });
+
+    refAudio.addEventListener('loadedmetadata', () => {
+        seek.disabled = !isFinite(refAudio.duration);
+        if (isFinite(refAudio.duration)) seek.max = refAudio.duration;
+        timeLabel.textContent = `${fmt(refAudio.currentTime)} / ${fmt(refAudio.duration)}`;
+    });
+    refAudio.addEventListener('timeupdate', () => {
+        if (!seekDragging) seek.value = refAudio.currentTime;
+        timeLabel.textContent = `${fmt(refAudio.currentTime)} / ${fmt(refAudio.duration)}`;
+    });
+    refAudio.addEventListener('ended', stopMix);
+    seek.addEventListener('input', () => {
+        seekDragging = true;
+        timeLabel.textContent = `${fmt(parseFloat(seek.value) || 0)} / ${fmt(refAudio.duration)}`;
+    });
+    seek.addEventListener('change', () => {
+        refAudio.currentTime = parseFloat(seek.value) || 0;
+        seekDragging = false;
+    });
+
+    window.__studioSetBatchId = function(id) { currentBatchId = id; stopMix(); };
+    window.__studioRepopulateMixRef = function(files) {
+        refSelect.innerHTML = '';
+        if (!files.length) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '— Chưa có file —';
+            refSelect.appendChild(opt);
+            return;
+        }
+        files.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.index;
+            opt.textContent = f.name;
+            refSelect.appendChild(opt);
+        });
+    };
 })();
 
 async function uploadToYouTube(videoUrl, videoName) {
