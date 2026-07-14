@@ -30,6 +30,7 @@
                 <th>Tên</th>
                 <th>Thời lượng</th>
                 <th>Preview</th>
+                <th>Đổi tên</th>
                 <th></th>
             </tr>
         </thead>
@@ -48,6 +49,13 @@
                     <audio controls preload="none" style="height:28px;vertical-align:middle">
                         <source src="/music/{{ m.id }}/file">
                     </audio>
+                </td>
+                <td>
+                    <form method="post" action="/music/{{ m.id }}/rename" style="display:flex;gap:var(--space-sm)">
+                        <input type="text" name="name" placeholder="Tên mới" required
+                               style="min-width:120px">
+                        <button type="submit" class="btn-sm">Đổi tên</button>
+                    </form>
                 </td>
                 <td>
                     <form method="post" action="/music/{{ m.id }}/delete" style="display:inline" onsubmit="return confirm('Xóa nhạc này?')">

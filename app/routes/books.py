@@ -172,6 +172,13 @@ def book_detail(request: Request, book_id: int):
     from app import image_overlay
     overlay_cfg = image_overlay.parse_overlay_config(book.overlay_config) if book else image_overlay.get_default_overlay_config()
 
+    from app.routes.voices import ALLOWED_AUDIO_EXTENSIONS as _voice_exts, _voices_dir
+    voices = [
+        f.name for f in sorted(_voices_dir().iterdir())
+        if f.is_file() and f.suffix.lower() in _voice_exts
+    ]
+    current_voice_name = Path(book.voice_clip_path).name if book and book.voice_clip_path else None
+
     return templates.TemplateResponse(
         request, "book_detail.html", {
             "book": book,
@@ -187,6 +194,8 @@ def book_detail(request: Request, book_id: int):
             "current_music": current_music,
             "backgrounds": _list_backgrounds(),
             "overlay_cfg": overlay_cfg,
+            "voices": voices,
+            "current_voice_name": current_voice_name,
         }
     )
 
@@ -282,62 +291,63 @@ def update_book_music(
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
-@router.post("/books/{book_id}/overlay-config")
-def update_overlay_config(
-    request: Request,
-    book_id: int,
-    position: str = Form(default="top"),
-    alignment: str = Form(default="center"),
-    font_size: int = Form(default=52),
-    text_color: str = Form(default="#FFFFFF"),
-    shadow_enabled: str = Form(default=""),
-    shadow_color: str = Form(default="#000000"),
-    shadow_offset: int = Form(default=3),
-    box_enabled: str = Form(default=""),
-    box_color: str = Form(default="#000000"),
-    box_opacity: int = Form(default=60),
-    box_padding_x: int = Form(default=24),
-    box_padding_y: int = Form(default=12),
-    box_radius: int = Form(default=12),
-    margin: int = Form(default=40),
-    marquee_enabled: str = Form(default=""),
-    marquee_height: int = Form(default=60),
-    marquee_bg_color: str = Form(default="#000000"),
-    marquee_bg_opacity: int = Form(default=70),
-    marquee_text_color: str = Form(default="#FFFFFF"),
-    marquee_font_size: int = Form(default=32),
-    marquee_speed: int = Form(default=80),
-):
+def _overlay_cfg_from_values(values) -> dict:
+    """Build a clamped overlay config from HTML form fields or query params.
+
+    Checkbox fields arrive as "on" when checked and are absent when unchecked,
+    so a missing checkbox means disabled. Shared by the save endpoint and the
+    live studio preview so both interpret the same field names identically.
+    """
     from app import image_overlay
 
+    def _int(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            val = int(values.get(name, default))
+        except (TypeError, ValueError):
+            val = default
+        return max(lo, min(hi, val))
+
     cfg = image_overlay.get_default_overlay_config()
+    position = values.get("position") or "top"
+    alignment = values.get("alignment") or "center"
     cfg["position"] = position if position in ("top", "center", "bottom") else "top"
     cfg["alignment"] = alignment if alignment in ("left", "center", "right") else "center"
-    cfg["font_size"] = max(12, min(200, font_size))
-    cfg["text_color"] = text_color or "#FFFFFF"
-    cfg["margin"] = max(0, min(200, margin))
+    cfg["font_size"] = _int("font_size", 52, 12, 200)
+    cfg["text_color"] = values.get("text_color") or "#FFFFFF"
+    cfg["margin"] = _int("margin", 40, 0, 200)
+    cfg["offset_x"] = _int("offset_x", 0, -4000, 4000)
+    cfg["offset_y"] = _int("offset_y", 0, -4000, 4000)
     cfg["shadow"] = {
-        "enabled": shadow_enabled == "on",
-        "color": shadow_color or "#000000",
-        "offset": max(0, min(20, shadow_offset)),
+        "enabled": values.get("shadow_enabled") == "on",
+        "color": values.get("shadow_color") or "#000000",
+        "offset": _int("shadow_offset", 3, 0, 20),
     }
     cfg["box"] = {
-        "enabled": box_enabled == "on",
-        "color": box_color or "#000000",
-        "opacity": max(0, min(100, box_opacity)),
-        "padding_x": max(0, min(200, box_padding_x)),
-        "padding_y": max(0, min(200, box_padding_y)),
-        "radius": max(0, min(200, box_radius)),
+        "enabled": values.get("box_enabled") == "on",
+        "color": values.get("box_color") or "#000000",
+        "opacity": _int("box_opacity", 60, 0, 100),
+        "padding_x": _int("box_padding_x", 24, 0, 200),
+        "padding_y": _int("box_padding_y", 12, 0, 200),
+        "radius": _int("box_radius", 12, 0, 200),
     }
     cfg["marquee"] = {
-        "enabled": marquee_enabled == "on",
-        "height": max(20, min(200, marquee_height)),
-        "bg_color": marquee_bg_color or "#000000",
-        "bg_opacity": max(0, min(100, marquee_bg_opacity)),
-        "text_color": marquee_text_color or "#FFFFFF",
-        "font_size": max(12, min(120, marquee_font_size)),
-        "speed_px_per_sec": max(10, min(500, marquee_speed)),
+        "enabled": values.get("marquee_enabled") == "on",
+        "height": _int("marquee_height", 60, 20, 200),
+        "bg_color": values.get("marquee_bg_color") or "#000000",
+        "bg_opacity": _int("marquee_bg_opacity", 70, 0, 100),
+        "text_color": values.get("marquee_text_color") or "#FFFFFF",
+        "font_size": _int("marquee_font_size", 32, 12, 120),
+        "speed_px_per_sec": _int("marquee_speed", 80, 10, 500),
     }
+    return cfg
+
+
+@router.post("/books/{book_id}/overlay-config")
+async def update_overlay_config(request: Request, book_id: int):
+    from app import image_overlay
+
+    values = await request.form()
+    cfg = _overlay_cfg_from_values(values)
 
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
@@ -361,6 +371,16 @@ def update_overlay_config(
 
 @router.get("/books/{book_id}/overlay-preview")
 def overlay_preview(request: Request, book_id: int):
+    """Render the overlay preview PNG.
+
+    Without params it renders the saved config. With `live=1` the remaining
+    query params (same names as the overlay form fields) override the saved
+    config, so the studio can preview unsaved edits. `background_path` (must
+    be a known background) previews a different image before saving it.
+
+    The response carries an `X-Overlay-Rect` header with the drawn text-block
+    rect so the studio can place its drag handle exactly on the text.
+    """
     from app import image_overlay
     from io import BytesIO
     with locked_conn(request) as conn:
@@ -369,18 +389,44 @@ def overlay_preview(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail="book not found")
         patches = repository.list_patches(conn, book_id)
     sample_patch = next((p for p in patches if p.audio_path), None) or (patches[0] if patches else None)
-    if sample_patch is None:
-        raise HTTPException(status_code=400, detail="chưa có patch để preview")
-    bg = image_overlay._resolve_background(book)
+    patch_label = (sample_patch.name or str(sample_patch.patch_index)) if sample_patch else "Patch 1"
+
+    params = request.query_params
+    if params.get("live"):
+        cfg = _overlay_cfg_from_values(params)
+    else:
+        cfg = image_overlay.parse_overlay_config(book.overlay_config)
+
+    bg = None
+    requested_bg = params.get("background_path", "").strip()
+    if requested_bg:
+        allowed = {item["path"] for item in _list_backgrounds()}
+        if requested_bg in allowed and Path(requested_bg).exists():
+            bg = Path(requested_bg)
+    if bg is None:
+        bg = image_overlay._resolve_background(book)
     if bg is None:
         raise HTTPException(status_code=400, detail="chưa có background image")
+
     from PIL import Image
     img = Image.open(str(bg)).convert("RGB")
-    cfg = image_overlay.parse_overlay_config(book.overlay_config)
-    img = image_overlay.render_overlay(img, [f"{book.title} - {sample_patch.name or sample_patch.patch_index}"], cfg)
+    text = f"{book.title} - {patch_label}"
+    lines = image_overlay.build_overlay_lines(img, text, cfg)
+    img, rect = image_overlay.render_overlay_with_rect(img, lines, cfg)
+    marquee_cfg = cfg.get("marquee") or {}
+    if marquee_cfg.get("enabled"):
+        img = image_overlay.composite_marquee_preview(img, text, marquee_cfg)
     buf = BytesIO()
     img.save(buf, "PNG", optimize=True)
-    return Response(content=buf.getvalue(), media_type="image/png")
+    rect_header = json.dumps({
+        "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
+        "img_w": img.size[0], "img_h": img.size[1],
+    })
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"X-Overlay-Rect": rect_header, "Cache-Control": "no-store"},
+    )
 
 
 @router.post("/books/{book_id}/delete")
@@ -390,6 +436,36 @@ def delete_book(request: Request, book_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail=f"book {book_id} not found")
     return RedirectResponse(url="/books", status_code=303)
+
+
+@router.post("/books/{book_id}/voice-select")
+def select_voice(
+    request: Request, book_id: int,
+    voice_name: str = Form(default=""),
+):
+    """Set the book's TTS reference voice clone from the /voices library.
+
+    This is the same file the studio's mix preview plays — picking it there
+    both previews it and sets book.voice_clip_path, which the worker passes
+    to the TTS engine as reference_wav_path.
+    """
+    from app.routes.voices import ALLOWED_AUDIO_EXTENSIONS as _voice_exts, _voices_dir
+
+    name = voice_name.strip()
+    path: str | None = None
+    if name:
+        candidate = _voices_dir() / name
+        if "/" in name or "\\" in name or ".." in name or candidate.suffix.lower() not in _voice_exts:
+            raise HTTPException(status_code=400, detail="Tên voice không hợp lệ")
+        if not candidate.exists():
+            raise HTTPException(status_code=400, detail="Không tìm thấy voice")
+        path = str(candidate)
+
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        repository.set_book_voice_clip(conn, book_id, path)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
 @router.post("/books/{book_id}/background-image-select")

@@ -35,6 +35,21 @@ def _sanitize_name(name: str) -> str:
     return re.sub(r"[^\w\- ]", "", name).strip()
 
 
+def _voice_clip_or_raise(book: Book) -> Path:
+    """The voice reference clip is mandatory for Colab/Kaggle exports: without it
+    VoxCPM picks a different random voice per chunk/session, so chunks synthesized
+    remotely would not match each other (or audio already generated locally).
+    Called before any package files are written so a refused export leaves nothing
+    behind."""
+    if not book.voice_clip_path or not Path(book.voice_clip_path).exists():
+        raise ValueError(
+            f"book '{book.title}' has no voice reference clip - upload one on the "
+            "book page before exporting, so every chunk is synthesized with the "
+            "same voice"
+        )
+    return Path(book.voice_clip_path)
+
+
 def _write_patch_files(
     conn: sqlite3.Connection,
     book: Book,
@@ -131,15 +146,14 @@ def build_export_package(
     book = repository.get_book(conn, patch.book_id)
     if book is None:
         raise ValueError(f"book {patch.book_id} not found")
+    voice_clip = _voice_clip_or_raise(book)
 
     _TMP_DIR.mkdir(parents=True, exist_ok=True)
     package_dir = _TMP_DIR / f"patch_{patch.id}_{uuid.uuid4().hex[:8]}"
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    reference_wav_name = None
-    if book.voice_clip_path and Path(book.voice_clip_path).exists():
-        reference_wav_name = "reference" + Path(book.voice_clip_path).suffix
-        shutil.copyfile(book.voice_clip_path, package_dir / reference_wav_name)
+    reference_wav_name = "reference" + voice_clip.suffix
+    shutil.copyfile(voice_clip, package_dir / reference_wav_name)
 
     overlay_path = image_overlay.ensure_patch_overlay(
         book, patch, settings.default_font_path or None
@@ -235,6 +249,7 @@ def build_batch_export_package(
     book = repository.get_book(conn, patches[0].book_id)
     if book is None:
         raise ValueError(f"book {patches[0].book_id} not found")
+    voice_clip = _voice_clip_or_raise(book)
 
     patches = sorted(patches, key=lambda p: p.patch_index)
 
@@ -242,10 +257,8 @@ def build_batch_export_package(
     package_dir = _TMP_DIR / f"batch_{uuid.uuid4().hex[:8]}"
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    reference_wav_name = None
-    if book.voice_clip_path and Path(book.voice_clip_path).exists():
-        reference_wav_name = "reference" + Path(book.voice_clip_path).suffix
-        shutil.copyfile(book.voice_clip_path, package_dir / reference_wav_name)
+    reference_wav_name = "reference" + voice_clip.suffix
+    shutil.copyfile(voice_clip, package_dir / reference_wav_name)
 
     music_rel = _copy_music_to_package(book, conn, package_dir)
 
@@ -253,7 +266,7 @@ def build_batch_export_package(
     patch_entries = []
     for patch in patches:
         folder_rel = f"patches/patch_{patch.patch_index:03d}"
-        reference_rel = f"../../{reference_wav_name}" if reference_wav_name else None
+        reference_rel = f"../../{reference_wav_name}"
         overlay_path = image_overlay.ensure_patch_overlay(book, patch, font_path)
         manifest = _write_patch_files(
             conn, book, patch, package_dir / folder_rel, reference_rel, overlay_path

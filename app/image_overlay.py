@@ -54,6 +54,8 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
         "speed_px_per_sec": 80,  # horizontal scroll speed
     },
     "margin": 40,             # distance from image edge
+    "offset_x": 0,            # px nudge applied after anchoring (drag-to-position)
+    "offset_y": 0,
 }
 
 
@@ -214,7 +216,8 @@ def _draw_with_shadow(draw, xy: tuple[float, float], text: str, font, fill, shad
     draw.text(xy, text, font=font, fill=fill)
 
 
-def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color):
+def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color) -> tuple[int, int, int, int]:
+    """Draw the text block and return its rect (x, y, w, h) in image pixels."""
     width, height = img.size
     font_size = int(cfg.get("font_size", 52))
     font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
@@ -245,31 +248,32 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color):
     else:  # center
         x0 = (width - box_w) // 2
 
+    x0 += int(cfg.get("offset_x", 0) or 0)
+    y0 += int(cfg.get("offset_y", 0) or 0)
+    # Keep the block inside the image so a stale drag offset can't push it off-frame.
+    x0 = max(0, min(width - box_w, x0))
+    y0 = max(0, min(height - box_h, y0))
+
     if box_cfg.get("enabled"):
+        from PIL import Image, ImageDraw
         box_color = _hex_to_rgb(box_cfg.get("color", "#000000"))
         opacity = max(0, min(100, int(box_cfg.get("opacity", 60)))) / 100.0
         radius = int(box_cfg.get("radius", 0))
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ldraw = ImageDraw.Draw(layer)
         if radius > 0:
-            from PIL import ImageDraw
-            layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            ldraw = ImageDraw.Draw(layer)
             ldraw.rounded_rectangle(
                 (x0, y0, x0 + box_w, y0 + box_h),
                 radius=radius,
                 fill=(*box_color, int(255 * opacity)),
             )
-            img.paste(layer, (0, 0), layer)
-            draw = ImageDraw.Draw(img)
         else:
-            from PIL import ImageDraw
-            layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            ldraw = ImageDraw.Draw(layer)
             ldraw.rectangle(
                 (x0, y0, x0 + box_w, y0 + box_h),
                 fill=(*box_color, int(255 * opacity)),
             )
-            img.paste(layer, (0, 0), layer)
-            draw = ImageDraw.Draw(img)
+        img.paste(layer, (0, 0), layer)
+        draw = ImageDraw.Draw(img)
 
     try:
         line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + 8
@@ -291,6 +295,36 @@ def _draw_text_block(img, draw, lines: list[str], cfg: dict, text_color):
         _draw_with_shadow(draw, (lx, y), line, font, text_color, cfg.get("shadow", {}))
         y += line_height
 
+    return int(x0), int(y0), int(box_w), int(box_h)
+
+
+def build_overlay_lines(image: "Image.Image", text: str, cfg: dict) -> list[str]:
+    """Wrap overlay text against the image width, same as render_patch_overlay."""
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(image)
+    font_size = int(cfg.get("font_size", 52))
+    font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
+    return _wrap_lines(draw, text, font, image.size[0] - 80)
+
+
+def render_overlay_with_rect(
+    image: "Image.Image",
+    lines: list[str],
+    cfg: dict,
+) -> tuple["Image.Image", tuple[int, int, int, int]]:
+    """Render an overlay onto an in-memory PIL image.
+
+    Returns (mutated image, text-block rect) — the rect is what the studio
+    preview uses as its drag handle.
+    """
+    from PIL import ImageDraw
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    draw = ImageDraw.Draw(image)
+    text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
+    rect = _draw_text_block(image, draw, lines, cfg, text_color)
+    return image, rect
+
 
 def render_overlay(
     image: "Image.Image",
@@ -301,12 +335,18 @@ def render_overlay(
 
     Public for the live preview endpoint.
     """
-    from PIL import Image, ImageDraw
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    draw = ImageDraw.Draw(image)
-    text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
-    _draw_text_block(image, draw, lines, cfg, text_color)
+    image, _ = render_overlay_with_rect(image, lines, cfg)
+    return image
+
+
+def composite_marquee_preview(image: "Image.Image", text: str, marquee_cfg: dict) -> "Image.Image":
+    """Paste one visible window of the marquee band at the top of the image —
+    the same spot FFmpeg overlays it (overlay=0:0) — so the studio preview
+    matches the rendered video."""
+    band_h = int(marquee_cfg.get("height", 60))
+    band = _render_marquee_band(text, image.size[0], band_h, marquee_cfg)
+    window = band.crop((0, 0, image.size[0], band_h))
+    image.paste(window, (0, 0), window)
     return image
 
 
@@ -379,14 +419,12 @@ def render_patch_overlay(
     patch_label = patch.name or str(patch.patch_index)
     text = f"{book.title} - {patch_label}"
 
+    from PIL import Image, ImageDraw
     img = Image.open(str(bg)).convert("RGB")
-    from PIL import ImageDraw
     draw = ImageDraw.Draw(img)
     width = img.size[0]
 
-    font_size = int(cfg.get("font_size", 52))
-    font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
-    lines = _wrap_lines(draw, text, font, width - 80)
+    lines = build_overlay_lines(img, text, cfg)
     text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
     _draw_text_block(img, draw, lines, cfg, text_color)
 

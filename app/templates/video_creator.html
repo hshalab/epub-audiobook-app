@@ -127,6 +127,41 @@
                 <span id="crf-val">23</span>
             </div>
         </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="cfg-music">Nhạc nền</label>
+                <select id="cfg-music">
+                    <option value="">-- Không dùng --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-music-volume">Volume nhạc: <span id="music-vol-val">15%</span></label>
+                <input type="range" id="cfg-music-volume" min="0" max="100" value="15"
+                       oninput="document.getElementById('music-vol-val').textContent=this.value+'%'">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:2">
+                <label for="cfg-overlay-text">Text overlay (để trống = không có chữ)</label>
+                <input type="text" id="cfg-overlay-text" placeholder="VD: Tên sách - Tập 1" maxlength="200">
+            </div>
+            <div class="form-group">
+                <label for="cfg-overlay-position">Vị trí chữ</label>
+                <select id="cfg-overlay-position">
+                    <option value="top" selected>Trên</option>
+                    <option value="center">Giữa</option>
+                    <option value="bottom">Dưới</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-overlay-size">Cỡ chữ</label>
+                <input type="number" id="cfg-overlay-size" min="12" max="200" value="52">
+            </div>
+            <div class="form-group">
+                <label for="cfg-overlay-color">Màu chữ</label>
+                <input type="color" id="cfg-overlay-color" value="#FFFFFF">
+            </div>
+        </div>
     </div>
 
     <button type="button" class="btn-primary" id="btn-generate" style="font-size:1rem;padding:0.6rem 2rem">Generate Selected Videos</button>
@@ -179,6 +214,18 @@
     font-size: 0.85em;
     margin-left: 0.4rem;
 }
+.step-log { margin-top: 0.3rem; font-size: 0.8rem; }
+.step-log summary { cursor: pointer; color: var(--text-muted); }
+.step-log-body {
+    margin-top: 0.3rem; padding: 0.4rem 0.6rem;
+    background: var(--bg-secondary, rgba(128,128,128,0.08));
+    border-radius: 6px; font-family: monospace;
+    max-height: 220px; overflow-y: auto;
+}
+.step-log-line { white-space: nowrap; }
+.step-t { color: var(--text-muted); margin-right: 0.4rem; }
+.step-e { font-weight: 600; margin-right: 0.4rem; }
+.step-d { color: var(--text-muted); }
 </style>
 
 <script>
@@ -189,6 +236,8 @@
         backgrounds: '/video/backgrounds',
         uploadBg: '/video/upload-background',
         previewBg: '/video/backgrounds/preview',
+        musicList: '/music/list',
+        progress: '/video/progress/',
     };
 
     let batchId = null;
@@ -223,6 +272,26 @@
             refreshBgSelects();
             refreshAllPreviews();
         } catch(e) { console.error('Failed to load backgrounds', e); }
+    }
+
+    async function loadMusicList() {
+        try {
+            const res = await fetch(API.musicList);
+            const data = await res.json();
+            const sel = document.getElementById('cfg-music');
+            (data.music || []).forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                let label = m.name;
+                if (m.duration_sec) {
+                    const mins = Math.floor(m.duration_sec / 60);
+                    const secs = String(Math.round(m.duration_sec % 60)).padStart(2, '0');
+                    label += ` (${mins}:${secs})`;
+                }
+                opt.textContent = label;
+                sel.appendChild(opt);
+            });
+        } catch(e) { console.error('Failed to load music list', e); }
     }
 
     function refreshBgSelects() {
@@ -375,6 +444,56 @@
         return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
     }
 
+    const EVENT_LABELS = {
+        'job.start': 'Bắt đầu...',
+        'music.resolved': 'Đã chọn nhạc nền',
+        'overlay.rendered': 'Đã render text overlay',
+        'overlay.failed_fallback': 'Overlay lỗi — dùng ảnh gốc',
+        'segment.start': 'Chuẩn bị FFmpeg...',
+        'segment.probe_duration': 'Đo thời lượng audio...',
+        'segment.ffmpeg_start': 'FFmpeg đang chạy...',
+        'segment.ffmpeg_done': 'FFmpeg xong, đang hoàn tất...',
+        'segment.done': 'Encode xong',
+        'segment.failed': 'FFmpeg lỗi',
+        'job.done': 'Hoàn thành',
+        'job.failed': 'Lỗi',
+    };
+
+    let progressTimer = null;
+
+    function startProgressPolling() {
+        stopProgressPolling();
+        progressTimer = setInterval(async () => {
+            if (!batchId) return;
+            try {
+                const res = await fetch(API.progress + batchId);
+                const data = await res.json();
+                Object.entries(data.jobs || {}).forEach(([idx, job]) => {
+                    const statusEl = document.querySelector(`[data-status="${idx}"]`);
+                    if (!statusEl || job.status !== 'running') return;
+                    const last = job.steps[job.steps.length - 1];
+                    if (last) {
+                        statusEl.textContent = EVENT_LABELS[last.event] || last.event;
+                        statusEl.className = 'status-pending';
+                        statusEl.title = last.t + ' ' + last.event + ' ' + last.detail;
+                    }
+                });
+            } catch(e) { /* polling is best-effort */ }
+        }, 1000);
+    }
+
+    function stopProgressPolling() {
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    }
+
+    function stepLogHtml(steps) {
+        return (steps || []).map(s =>
+            `<div class="step-log-line"><span class="step-t">${escHtml(s.t)}</span> ` +
+            `<span class="step-e">${escHtml(s.event)}</span> ` +
+            `<span class="step-d">${escHtml(s.detail)}</span></div>`
+        ).join('');
+    }
+
     document.getElementById('upload-form').addEventListener('submit', async function(e) {
         e.preventDefault();
         const input = document.getElementById('audio-files');
@@ -435,6 +554,8 @@
             backgrounds_map[sel.dataset.index] = sel.value || null;
         });
 
+        const musicSel = document.getElementById('cfg-music');
+        const overlayText = document.getElementById('cfg-overlay-text').value.trim();
         const config = {
             resolution: document.getElementById('cfg-resolution').value,
             fps: parseInt(document.getElementById('cfg-fps').value),
@@ -442,6 +563,14 @@
             audio_bitrate: document.getElementById('cfg-audio-bitrate').value,
             image_type: document.getElementById('cfg-image-type').value,
             crf: parseInt(document.getElementById('cfg-crf').value),
+            music_id: musicSel.value ? parseInt(musicSel.value) : null,
+            music_volume: parseInt(document.getElementById('cfg-music-volume').value),
+            overlay: overlayText ? {
+                text: overlayText,
+                position: document.getElementById('cfg-overlay-position').value,
+                font_size: parseInt(document.getElementById('cfg-overlay-size').value) || 52,
+                text_color: document.getElementById('cfg-overlay-color').value,
+            } : null,
         };
 
         const btn = this;
@@ -451,6 +580,7 @@
         document.getElementById('step-results').style.display = '';
         const resultsList = document.getElementById('results-list');
         resultsList.innerHTML = '<p>Processing...</p>';
+        startProgressPolling();
 
         try {
             const res = await fetch(API.generateBatch, {
@@ -460,6 +590,11 @@
             });
             const data = await res.json();
             resultsList.innerHTML = '';
+            let finalJobs = {};
+            try {
+                const progRes = await fetch(API.progress + batchId);
+                finalJobs = (await progRes.json()).jobs || {};
+            } catch(e) { /* log unavailable */ }
             data.results.forEach(r => {
                 const div = document.createElement('div');
                 div.className = 'result-item';
@@ -491,17 +626,27 @@
                         timeEl.innerHTML = `${now}${elapsed ? ` <span class="time-elapsed">(${escHtml(elapsed)})</span>` : ''}`;
                     }
                 }
+                const job = finalJobs[String(r.index)];
+                if (job && job.steps && job.steps.length) {
+                    const details = document.createElement('details');
+                    details.className = 'step-log';
+                    details.innerHTML = '<summary>Log các bước (' + job.steps.length + ')</summary>'
+                        + '<div class="step-log-body">' + stepLogHtml(job.steps) + '</div>';
+                    div.appendChild(details);
+                }
                 resultsList.appendChild(div);
             });
         } catch(err) {
             resultsList.innerHTML = `<div class="error-block"><p style="margin:0">${escHtml(err.message)}</p></div>`;
         } finally {
+            stopProgressPolling();
             btn.disabled = false;
             btn.textContent = 'Generate Selected Videos';
         }
     });
 
     loadBackgrounds();
+    loadMusicList();
 })();
 
 async function uploadToYouTube(videoUrl, videoName) {

@@ -15,21 +15,55 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app import video_gen
+from app import image_overlay, repository, video_gen
 from app.config import settings
+from app.deps import locked_conn
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
 
+# In-memory step progress for debug UI, keyed by "{batch_id}:{idx}" or job_id.
+# Best-effort: lost on restart, purged after 1h alongside tmp files.
+_progress_store: dict[str, dict] = {}
 
-def _make_progress_logger(prefix: str, **base_fields) -> video_gen.ProgressCallback:
+
+def _record_step(job_key: str, event: str, fields: dict) -> None:
+    entry = _progress_store.setdefault(
+        job_key, {"status": "running", "steps": [], "updated_at": 0.0}
+    )
+    detail = " ".join(f"{k}={v}" for k, v in fields.items())
+    entry["steps"].append({
+        "t": datetime.now().strftime("%H:%M:%S"),
+        "event": event,
+        "detail": detail,
+    })
+    if event.endswith(".failed"):
+        entry["status"] = "error"
+    elif event == "job.done":
+        entry["status"] = "done"
+    entry["updated_at"] = time.time()
+
+
+def _cleanup_progress_store(max_age_seconds: int = 3600) -> None:
+    now = time.time()
+    stale = [k for k, v in _progress_store.items()
+             if (now - v.get("updated_at", 0)) > max_age_seconds]
+    for k in stale:
+        _progress_store.pop(k, None)
+
+
+def _make_progress_logger(
+    prefix: str, job_key: str | None = None, **base_fields
+) -> video_gen.ProgressCallback:
     def _on_progress(event: str, fields: dict) -> None:
         parts = [f"event={prefix}.{event}"]
         merged = {**base_fields, **fields}
         for k, v in merged.items():
             parts.append(f"{k}={v}")
         logger.info(" ".join(parts))
+        if job_key is not None:
+            _record_step(job_key, event, fields)
     return _on_progress
 
 _TMP_DIR = Path(settings.data_root) / "tmp" / "video_creator"
@@ -48,6 +82,7 @@ VALID_IMAGE_TYPES = {"none", "zoom-in", "zoom-out", "pan-left", "pan-right"}
 
 def _cleanup_old_tmp_files(max_age_seconds: int = 3600) -> None:
     """Delete tmp files older than max_age_seconds. Best-effort."""
+    _cleanup_progress_store(max_age_seconds)
     if not _TMP_DIR.exists():
         return
     now = time.time()
@@ -86,6 +121,30 @@ def _resolve_background_image(bg_path: str | None) -> Path | None:
     if Path(default).exists():
         return Path(default)
     return None
+
+
+def _render_overlay_for_batch(
+    bg_path: Path, text: str, overlay_opts: dict, out_path: Path,
+) -> Path | None:
+    """Render user text onto a copy of the background. None on failure (caller
+    falls back to the plain background rather than failing the video)."""
+    try:
+        from PIL import Image, ImageDraw
+        cfg = image_overlay.get_default_overlay_config()
+        cfg["position"] = overlay_opts.get("position", "top")
+        cfg["font_size"] = int(overlay_opts.get("font_size", 52))
+        cfg["text_color"] = overlay_opts.get("text_color", "#FFFFFF")
+        img = Image.open(str(bg_path)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        font = image_overlay._load_font(None, cfg["font_size"])
+        lines = image_overlay._wrap_lines(draw, text, font, img.size[0] - 80)
+        image_overlay.render_overlay(img, lines, cfg)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(out_path), "PNG")
+        return out_path
+    except Exception as exc:
+        logger.error("video_creator: overlay render failed: %s", exc)
+        return None
 
 
 def _sanitize_basename(name: str) -> str:
@@ -202,7 +261,8 @@ async def generate_video(
     tmp_out = _TMP_DIR / f"{job_id}.mp4"
 
     progress_cb = _make_progress_logger(
-        "video_creator.single", job_id=job_id, mode="single",
+        "video_creator.single", job_key=f"single:{job_id}",
+        job_id=job_id, mode="single",
     )
     try:
         await asyncio.to_thread(
@@ -331,6 +391,22 @@ async def generate_batch(request: Request):
         raw_cfg.get("crf", 23),
     )
 
+    # Music: resolve library id -> file path (batch-wide, optional)
+    music_path: str | None = None
+    music_volume = max(0, min(100, int(raw_cfg.get("music_volume", 15)))) / 100.0
+    raw_music_id = raw_cfg.get("music_id")
+    if raw_music_id is not None and str(raw_music_id).strip().isdigit():
+        with locked_conn(request) as conn:
+            music = repository.get_music(conn, int(raw_music_id))
+        if music and Path(music.file_path).exists():
+            music_path = music.file_path
+        else:
+            logger.warning("video_creator: music id %s not found/missing on disk", raw_music_id)
+
+    # Overlay: batch-wide optional text
+    overlay_opts = raw_cfg.get("overlay") or {}
+    overlay_text = (overlay_opts.get("text") or "").strip()
+
     files_map = {f["index"]: f for f in meta["files"]}
     _VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -338,27 +414,47 @@ async def generate_batch(request: Request):
 
     for idx in selected:
         idx = int(idx)
+        job_key = f"{batch_id}:{idx}"
+        _progress_store.pop(job_key, None)  # fresh log on regenerate
         finfo = files_map.get(idx)
         if not finfo:
+            _record_step(job_key, "job.failed", {"reason": "file not found in batch"})
             results.append({"index": idx, "status": "error", "message": "File not found in batch"})
             continue
 
         audio_path = Path(finfo["path"])
         if not audio_path.exists():
+            _record_step(job_key, "job.failed", {"reason": "audio file missing"})
             results.append({"index": idx, "status": "error", "message": "Audio file missing"})
             continue
 
         bg_path = backgrounds.get(str(idx))
         image_path = _resolve_background_image(bg_path)
         if image_path is None:
+            _record_step(job_key, "job.failed", {"reason": "no background image"})
             results.append({"index": idx, "status": "error", "message": "No background image available"})
             continue
+
+        _record_step(job_key, "job.start", {"file": finfo["original_name"]})
+        if music_path:
+            _record_step(job_key, "music.resolved", {"path": Path(music_path).name,
+                                                     "volume": music_volume})
+
+        if overlay_text:
+            overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
+            rendered = _render_overlay_for_batch(image_path, overlay_text, overlay_opts, overlay_png)
+            if rendered is not None:
+                image_path = rendered
+                _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
+            else:
+                _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
 
         stem = _sanitize_basename(finfo["original_name"])
         final_path = _unique_video_path(stem)
         tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
         progress_cb = _make_progress_logger(
-            "video_creator.batch", batch_id=batch_id, index=idx, mode="batch",
+            "video_creator.batch", job_key=job_key,
+            batch_id=batch_id, index=idx, mode="batch",
         )
         started = time.time()
         try:
@@ -366,9 +462,12 @@ async def generate_batch(request: Request):
                 video_gen.generate_standalone_video,
                 str(audio_path), str(image_path), str(tmp_out),
                 on_progress=progress_cb,
+                music_path=music_path,
+                music_volume=music_volume,
                 **cfg,
             )
             shutil.move(str(tmp_out), str(final_path))
+            _record_step(job_key, "job.done", {"video": final_path.name})
             completed_at = datetime.now()
             results.append({
                 "index": idx,
@@ -381,6 +480,7 @@ async def generate_batch(request: Request):
             })
         except Exception as exc:
             tmp_out.unlink(missing_ok=True)
+            _record_step(job_key, "job.failed", {"error": str(exc)[:300]})
             results.append({
                 "index": idx,
                 "status": "error",
@@ -389,6 +489,18 @@ async def generate_batch(request: Request):
             })
 
     return JSONResponse({"results": results})
+
+
+@router.get("/video/progress/{batch_id}")
+def get_batch_progress(batch_id: str):
+    """Per-file step progress for a running/finished batch (debug UI)."""
+    prefix = f"{batch_id}:"
+    jobs = {
+        key[len(prefix):]: {"status": v["status"], "steps": v["steps"]}
+        for key, v in _progress_store.items()
+        if key.startswith(prefix)
+    }
+    return JSONResponse({"jobs": jobs})
 
 
 # ---------------------------------------------------------------------------

@@ -1497,6 +1497,12 @@ def get_music(conn: sqlite3.Connection, music_id: int) -> Music | None:
     return _music_from_row(row) if row else None
 
 
+def rename_music(conn: sqlite3.Connection, music_id: int, new_name: str) -> bool:
+    cur = conn.execute("UPDATE music SET name = ? WHERE id = ?", (new_name, music_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def delete_music(conn: sqlite3.Connection, music_id: int) -> bool:
     conn.execute("UPDATE book SET music_id = NULL WHERE music_id = ?", (music_id,))
     cur = conn.execute("DELETE FROM music WHERE id = ?", (music_id,))
@@ -1513,5 +1519,17 @@ def set_book_music(
     conn.execute(
         "UPDATE book SET music_id = ?, music_volume = ?, updated_at = ? WHERE id = ?",
         (music_id, music_volume, _now(), book_id),
+    )
+    conn.commit()
+
+
+def set_book_voice_clip(
+    conn: sqlite3.Connection,
+    book_id: int,
+    voice_clip_path: str | None,
+) -> None:
+    conn.execute(
+        "UPDATE book SET voice_clip_path = ?, updated_at = ? WHERE id = ?",
+        (voice_clip_path, _now(), book_id),
     )
     conn.commit()

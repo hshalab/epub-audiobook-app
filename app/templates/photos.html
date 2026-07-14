@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Photo Library{% endblock %}
+{% block content %}
+<h2>Photo Library</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Quản lý ảnh nền cho video. Ảnh ở đây dùng được trong Video Creator và làm ảnh nền sách; đổi tên file sẽ tự cập nhật các sách đang dùng ảnh đó.</p>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Upload ảnh mới</h3>
+    </div>
+    <form method="post" action="/photos/upload" enctype="multipart/form-data" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0;flex:1;min-width:200px">
+            <label for="photo-file">File ảnh (.jpg .jpeg .png .webp)</label>
+            <input type="file" name="file" id="photo-file" accept=".jpg,.jpeg,.png,.webp" required>
+        </div>
+        <button type="submit" class="btn-primary">Upload</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Thư viện ảnh</h3>
+        <span style="font-size:var(--font-size-sm);color:var(--text-muted)">{{ photos|length }} ảnh</span>
+    </div>
+    {% if photos %}
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Preview</th>
+                <th>Tên file</th>
+                <th>Kích thước</th>
+                <th>Đổi tên</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in photos %}
+            <tr>
+                <td>
+                    <img src="/photos/file/{{ p.name }}" alt="{{ p.name }}"
+                         style="height:48px;max-width:96px;object-fit:cover;border-radius:4px;vertical-align:middle">
+                </td>
+                <td style="word-break:break-all">{{ p.name }}</td>
+                <td>{{ p.size_kb }} KB</td>
+                <td>
+                    <form method="post" action="/photos/rename" style="display:flex;gap:var(--space-sm)">
+                        <input type="hidden" name="old_name" value="{{ p.name }}">
+                        <input type="text" name="new_name" placeholder="Tên mới" required
+                               style="min-width:120px">
+                        <button type="submit" class="btn-sm">Đổi tên</button>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" action="/photos/delete" style="display:inline" onsubmit="return confirm('Xóa ảnh này? Sách đang dùng ảnh sẽ quay về ảnh mặc định.')">
+                        <input type="hidden" name="name" value="{{ p.name }}">
+                        <button type="submit" class="btn-danger btn-sm">Xóa</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p style="margin:0;color:var(--text-muted)">Chưa có ảnh nào. Upload file ảnh ở trên.</p>
+    {% endif %}
+</div>
+{% endblock %}

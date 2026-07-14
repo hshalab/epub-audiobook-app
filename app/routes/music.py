@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -87,6 +87,19 @@ async def upload_music(request: Request, file: UploadFile = File(...)):
     with locked_conn(request) as conn:
         repository.create_music(conn, name=display_name, file_path=str(dest), duration_sec=duration)
 
+    return RedirectResponse(url="/music", status_code=303)
+
+
+@router.post("/music/{music_id}/rename")
+def rename_music(request: Request, music_id: int, name: str = Form(...)):
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Tên không được để trống")
+    with locked_conn(request) as conn:
+        music = repository.get_music(conn, music_id)
+        if music is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy nhạc")
+        repository.rename_music(conn, music_id, new_name)
     return RedirectResponse(url="/music", status_code=303)
 
 

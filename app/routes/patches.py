@@ -24,6 +24,15 @@ templates = Jinja2Templates(directory="app/templates")
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def _build_or_400(build, *args, **kwargs):
+    """Run one of the drive_export.build_* functions, turning its ValueError
+    (no text, missing voice reference clip, ...) into a 400 instead of a 500."""
+    try:
+        return build(*args, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/delete")
 def delete_patch(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:
@@ -270,7 +279,7 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
         # used for the actual Drive folder (folder_name_for_patch has a timestamp, so it must
         # only be called once).
         folder_name = drive_export.folder_name_for_patch(book.title, patch)
-        package_dir = drive_export.build_export_package(conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
+        package_dir = _build_or_400(drive_export.build_export_package, conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
         try:
             service = google_drive.get_drive_service(conn)
             root_id = google_drive.get_or_create_root_folder(service)
@@ -300,7 +309,7 @@ def download_patch_export(request: Request, book_id: int, patch_id: int):
         # Use the same naming convention as the Drive folder so the zip filename
         # matches the folder that would be created on Google Drive.
         folder_name = drive_export.folder_name_for_patch(book.title, patch)
-        zip_path = drive_export.build_export_zip(conn, patch, hf_token=settings.hf_token)
+        zip_path = _build_or_400(drive_export.build_export_zip, conn, patch, hf_token=settings.hf_token)
     return FileResponse(
         str(zip_path),
         media_type="application/zip",
@@ -337,8 +346,9 @@ def download_batch_export(request: Request, book_id: int, patch_ids: list[int] =
         # Same convention as the single-patch download: compute the timestamped name
         # once and bake it into the notebook so its fallback matches the zip filename.
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
-        zip_path = drive_export.build_batch_export_zip(
-            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token
+        zip_path = _build_or_400(
+            drive_export.build_batch_export_zip,
+            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
         )
     return FileResponse(
         str(zip_path),
@@ -355,8 +365,9 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
             raise HTTPException(status_code=400, detail="Google Drive not connected. Connect it at /drive first.")
 
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
-        package_dir, batch_manifest = drive_export.build_batch_export_package(
-            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token
+        package_dir, batch_manifest = _build_or_400(
+            drive_export.build_batch_export_package,
+            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
         )
         try:
             service = google_drive.get_drive_service(conn)

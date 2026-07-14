@@ -179,12 +179,14 @@ def generate_segment(
             out_path,
         ]
     elif music_idx is not None:
-        chains = audio_chains + [f"[0:v]{base_vf}"]
+        # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
+        # consumed by the complex filtergraph.
+        chains = audio_chains + [f"[0:v]{base_vf}[vout]"]
         cmd = [
             get_ffmpeg_path(), "-y",
             *inputs,
             "-filter_complex", ";".join(chains),
-            "-map", "0:v",
+            "-map", "[vout]",
             "-map", audio_map_label,
             "-c:v", video_codec,
             *tune_args,
@@ -406,6 +408,8 @@ def generate_standalone_video(
     audio_bitrate: str = "192k",
     image_type: str = "none",
     crf: int = 23,
+    music_path: str | None = None,
+    music_volume: float = 0.15,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a standalone video from a single audio + image (Video Creator page)."""
@@ -420,5 +424,7 @@ def generate_standalone_video(
         audio_bitrate=audio_bitrate,
         crf=crf,
         use_nvenc=use_nvenc,
+        music_path=music_path,
+        music_volume=music_volume,
         on_progress=on_progress,
     )
