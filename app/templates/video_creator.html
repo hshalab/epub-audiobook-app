@@ -837,15 +837,6 @@
         });
 
         const musicSel = document.getElementById('cfg-music');
-        const overlayText = document.getElementById('cfg-overlay-text').value.trim();
-        const globalOverlay = overlayText ? {
-            text: overlayText,
-            position: document.getElementById('cfg-overlay-position').value,
-            font_size: parseInt(document.getElementById('cfg-overlay-size').value) || 52,
-            text_color: document.getElementById('cfg-overlay-color').value,
-            offset_x: parseInt(document.getElementById('cfg-overlay-offset-x').value, 10) || 0,
-            offset_y: parseInt(document.getElementById('cfg-overlay-offset-y').value, 10) || 0,
-        } : null;
 
         // Build per-file overlay_configs map
         const overlayConfigsMap = {};
@@ -864,7 +855,7 @@
             crf: parseInt(document.getElementById('cfg-crf').value),
             music_id: musicSel.value ? parseInt(musicSel.value) : null,
             music_volume: parseInt(document.getElementById('cfg-music-volume').value),
-            overlay: globalOverlay,
+            overlay: null,
             overlay_configs: Object.keys(overlayConfigsMap).length ? overlayConfigsMap : null
         };
 

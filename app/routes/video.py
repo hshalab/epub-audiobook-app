@@ -451,10 +451,11 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
                       music_path, music_volume, cfg, batch_id):
             async def _task():
                 overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
+                render_path = image_path
                 if effective_overlay_text:
                     rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
                     if rendered is not None:
-                        image_path = rendered
+                        render_path = rendered
                         _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
                     else:
                         _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
@@ -470,7 +471,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
                 try:
                     await asyncio.to_thread(
                         video_gen.generate_standalone_video,
-                        str(audio_path), str(image_path), str(tmp_out),
+                        str(audio_path), str(render_path), str(tmp_out),
                         on_progress=progress_cb,
                         music_path=music_path,
                         music_volume=music_volume,
