@@ -325,12 +325,12 @@ def overlay_cfg_from_values(values) -> dict:
     cfg["offset_x"] = _int("offset_x", 0, -4000, 4000)
     cfg["offset_y"] = _int("offset_y", 0, -4000, 4000)
     cfg["shadow"] = {
-        "enabled": values.get("shadow_enabled") == "on",
+        "enabled": values.get("shadow_enabled") in ("on", "1", "true", True),
         "color": values.get("shadow_color") or "#000000",
         "offset": _int("shadow_offset", 3, 0, 20),
     }
     cfg["box"] = {
-        "enabled": values.get("box_enabled") == "on",
+        "enabled": values.get("box_enabled") in ("on", "1", "true", True),
         "color": values.get("box_color") or "#000000",
         "opacity": _int("box_opacity", 60, 0, 100),
         "padding_x": _int("box_padding_x", 24, 0, 200),
@@ -338,7 +338,7 @@ def overlay_cfg_from_values(values) -> dict:
         "radius": _int("box_radius", 12, 0, 200),
     }
     cfg["marquee"] = {
-        "enabled": values.get("marquee_enabled") == "on",
+        "enabled": values.get("marquee_enabled") in ("on", "1", "true", True),
         "height": _int("marquee_height", 60, 20, 200),
         "bg_color": values.get("marquee_bg_color") or "#000000",
         "bg_opacity": _int("marquee_bg_opacity", 70, 0, 100),

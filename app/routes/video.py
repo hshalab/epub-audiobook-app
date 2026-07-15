@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
@@ -348,7 +348,7 @@ async def upload_batch(
 
 
 @router.post("/video/generate-batch")
-async def generate_batch(request: Request):
+async def generate_batch(request: Request, background_tasks: BackgroundTasks):
     """Generate videos for selected items in a batch.
 
     JSON body:
@@ -368,6 +368,8 @@ async def generate_batch(request: Request):
             "crf": 23
         }
     }
+
+    Returns immediately with job IDs; client should poll /video/progress/{batch_id}
     """
     try:
         body = await request.json()
@@ -408,92 +410,101 @@ async def generate_batch(request: Request):
         else:
             logger.warning("video_creator: music id %s not found/missing on disk", raw_music_id)
 
-    # Overlay: batch-wide optional text
+    # Overlay: batch-wide optional text + per-file overlay_configs
     overlay_opts = raw_cfg.get("overlay") or {}
     overlay_text = (overlay_opts.get("text") or "").strip()
+    overlay_configs: dict = raw_cfg.get("overlay_configs") or {}
 
     files_map = {f["index"]: f for f in meta["files"]}
     _VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict] = []
-
+    # Schedule background tasks for each selected file
     for idx in selected:
         idx = int(idx)
-        job_key = f"{batch_id}:{idx}"
-        _progress_store.pop(job_key, None)  # fresh log on regenerate
         finfo = files_map.get(idx)
         if not finfo:
-            _record_step(job_key, "job.failed", {"reason": "file not found in batch"})
-            results.append({"index": idx, "status": "error", "message": "File not found in batch"})
             continue
-
+        
         audio_path = Path(finfo["path"])
         if not audio_path.exists():
-            _record_step(job_key, "job.failed", {"reason": "audio file missing"})
-            results.append({"index": idx, "status": "error", "message": "Audio file missing"})
             continue
 
         bg_path = backgrounds.get(str(idx))
         image_path = _resolve_background_image(bg_path)
         if image_path is None:
-            _record_step(job_key, "job.failed", {"reason": "no background image"})
-            results.append({"index": idx, "status": "error", "message": "No background image available"})
             continue
 
+        job_key = f"{batch_id}:{idx}"
+        _progress_store.pop(job_key, None)  # fresh log on regenerate
         _record_step(job_key, "job.start", {"file": finfo["original_name"]})
         if music_path:
             _record_step(job_key, "music.resolved", {"path": Path(music_path).name,
                                                      "volume": music_volume})
 
-        if overlay_text:
-            overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
-            rendered = _render_overlay_for_batch(image_path, overlay_text, overlay_opts, overlay_png)
-            if rendered is not None:
-                image_path = rendered
-                _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
-            else:
-                _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
+        # Per-file overlay takes precedence over global overlay
+        per_overlay = overlay_configs.get(str(idx))
+        effective_overlay_text = per_overlay.get("text") if per_overlay else overlay_text
+        effective_overlay_opts = per_overlay if per_overlay else overlay_opts
 
-        stem = _sanitize_basename(finfo["original_name"])
-        final_path = _unique_video_path(stem)
-        tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
-        progress_cb = _make_progress_logger(
-            "video_creator.batch", job_key=job_key,
-            batch_id=batch_id, index=idx, mode="batch",
-        )
-        started = time.time()
-        try:
-            await asyncio.to_thread(
-                video_gen.generate_standalone_video,
-                str(audio_path), str(image_path), str(tmp_out),
-                on_progress=progress_cb,
-                music_path=music_path,
-                music_volume=music_volume,
-                **cfg,
-            )
-            shutil.move(str(tmp_out), str(final_path))
-            _record_step(job_key, "job.done", {"video": final_path.name})
-            completed_at = datetime.now()
-            results.append({
-                "index": idx,
-                "status": "done",
-                "name": final_path.name,
-                "video_url": f"/video/videos/{final_path.name}",
-                "size_mb": round(final_path.stat().st_size / (1024 * 1024), 1),
-                "elapsed_seconds": round(time.time() - started, 1),
-                "completed_at": completed_at.isoformat(timespec="seconds"),
-            })
-        except Exception as exc:
-            tmp_out.unlink(missing_ok=True)
-            _record_step(job_key, "job.failed", {"error": str(exc)[:300]})
-            results.append({
-                "index": idx,
-                "status": "error",
-                "message": str(exc),
-                "elapsed_seconds": round(time.time() - started, 1),
-            })
+        def make_task(idx, finfo, audio_path, image_path, job_key, 
+                      effective_overlay_text, effective_overlay_opts, 
+                      music_path, music_volume, cfg, batch_id):
+            async def _task():
+                overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
+                if effective_overlay_text:
+                    rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
+                    if rendered is not None:
+                        image_path = rendered
+                        _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
+                    else:
+                        _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
 
-    return JSONResponse({"results": results})
+                stem = _sanitize_basename(finfo["original_name"])
+                final_path = _unique_video_path(stem)
+                tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
+                progress_cb = _make_progress_logger(
+                    "video_creator.batch", job_key=job_key,
+                    batch_id=batch_id, index=idx, mode="batch",
+                )
+                started = time.time()
+                try:
+                    await asyncio.to_thread(
+                        video_gen.generate_standalone_video,
+                        str(audio_path), str(image_path), str(tmp_out),
+                        on_progress=progress_cb,
+                        music_path=music_path,
+                        music_volume=music_volume,
+                        **cfg,
+                    )
+                    shutil.move(str(tmp_out), str(final_path))
+                    _record_step(job_key, "job.done", {"video": final_path.name})
+                    completed_at = datetime.now()
+                    # Store result info
+                    _progress_store[job_key]["result"] = {
+                        "index": idx,
+                        "status": "done",
+                        "name": final_path.name,
+                        "video_url": f"/video/videos/{final_path.name}",
+                        "size_mb": round(final_path.stat().st_size / (1024 * 1024), 1),
+                        "elapsed_seconds": round(time.time() - started, 1),
+                        "completed_at": completed_at.isoformat(timespec="seconds"),
+                    }
+                except Exception as exc:
+                    tmp_out.unlink(missing_ok=True)
+                    _record_step(job_key, "job.failed", {"error": str(exc)[:300]})
+                    _progress_store[job_key]["result"] = {
+                        "index": idx,
+                        "status": "error",
+                        "message": str(exc),
+                        "elapsed_seconds": round(time.time() - started, 1),
+                    }
+            return _task
+        
+        background_tasks.add_task(make_task(idx, finfo, audio_path, image_path, job_key,
+                          effective_overlay_text, effective_overlay_opts,
+                          music_path, music_volume, cfg, batch_id))
+
+    return JSONResponse({"batch_id": batch_id, "scheduled": len(selected)})
 
 
 @router.get("/video/progress/{batch_id}")
@@ -501,7 +512,7 @@ def get_batch_progress(batch_id: str):
     """Per-file step progress for a running/finished batch (debug UI)."""
     prefix = f"{batch_id}:"
     jobs = {
-        key[len(prefix):]: {"status": v["status"], "steps": v["steps"]}
+        key[len(prefix):]: {"status": v["status"], "steps": v["steps"], "result": v.get("result")}
         for key, v in _progress_store.items()
         if key.startswith(prefix)
     }
@@ -534,10 +545,28 @@ def overlay_preview(
     background_path: str = "",
     text: str = "",
     position: str = "top",
+    alignment: str = "center",
     font_size: int = 52,
     text_color: str = "#FFFFFF",
+    margin: int = 40,
     offset_x: int = 0,
     offset_y: int = 0,
+    shadow_enabled: str = "off",
+    shadow_color: str = "#000000",
+    shadow_offset: int = 3,
+    box_enabled: str = "off",
+    box_color: str = "#000000",
+    box_opacity: int = 60,
+    box_padding_x: int = 16,
+    box_padding_y: int = 8,
+    box_radius: int = 8,
+    marquee_enabled: str = "off",
+    marquee_height: int = 60,
+    marquee_font_size: int = 36,
+    marquee_text_color: str = "#FFFFFF",
+    marquee_bg_color: str = "#000000",
+    marquee_bg_opacity: int = 80,
+    marquee_speed_px_per_sec: int = 50,
 ):
     """Render a live overlay preview for the studio's drag-to-position box.
 
@@ -552,10 +581,19 @@ def overlay_preview(
     if bg is None:
         raise HTTPException(status_code=400, detail="no background image available")
 
-    values = _overlay_values_with_defaults({
-        "position": position, "font_size": font_size, "text_color": text_color,
-        "offset_x": offset_x, "offset_y": offset_y,
-    })
+    values = {
+        "position": position, "alignment": alignment, "font_size": font_size, "text_color": text_color,
+        "margin": margin, "offset_x": offset_x, "offset_y": offset_y,
+        "shadow_enabled": "on" if shadow_enabled == "1" else "off",
+        "shadow_color": shadow_color, "shadow_offset": shadow_offset,
+        "box_enabled": "on" if box_enabled == "1" else "off",
+        "box_color": box_color, "box_opacity": box_opacity,
+        "box_padding_x": box_padding_x, "box_padding_y": box_padding_y, "box_radius": box_radius,
+        "marquee_enabled": "on" if marquee_enabled == "1" else "off",
+        "marquee_height": marquee_height, "marquee_font_size": marquee_font_size,
+        "marquee_text_color": marquee_text_color, "marquee_bg_color": marquee_bg_color,
+        "marquee_bg_opacity": marquee_bg_opacity, "marquee_speed": marquee_speed_px_per_sec,
+    }
     cfg = image_overlay.overlay_cfg_from_values(values)
 
     from PIL import Image

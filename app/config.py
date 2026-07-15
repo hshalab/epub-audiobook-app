@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Font path for text overlay on patch background images (Pillow).
     # Set to the absolute path of a .ttf/.otf font file supporting Vietnamese.
     # If empty or file not found, Pillow falls back to its built-in bitmap font.
-    default_font_path: str = ""
+    default_font_path: str = str(Path(__file__).parent.parent / "assets" / "fonts" / "Pacifico-Regular.ttf")
 
     # Maximum music file size in MB for uploads to the music library.
     music_max_size_mb: int = 20
