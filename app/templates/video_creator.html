@@ -889,7 +889,6 @@
             if (data.scheduled !== undefined) {
                 resultsList.innerHTML = '<p>Đã lên lịch ' + data.scheduled + ' video. Đang xử lý...</p>';
                 pollBatchResults(batchId, selected);
-                // Don't stop polling or re-enable button yet - wait for completion
             } else {
                 // Old sync behavior fallback
                 resultsList.innerHTML = '';
@@ -943,6 +942,12 @@
                 btn.disabled = false;
                 btn.textContent = 'Generate Selected Videos';
             }
+        } catch(err) {
+            resultsList.innerHTML = `<div class="error-block"><p style="margin:0">${escHtml(err.message)}</p></div>`;
+            stopProgressPolling();
+            btn.disabled = false;
+            btn.textContent = 'Generate Selected Videos';
+        }
     });
 
     loadBackgrounds();
