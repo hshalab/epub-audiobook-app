@@ -59,6 +59,7 @@
         <thead>
             <tr>
                 <th>Created</th>
+                <th>Account</th>
                 <th>Drive folder</th>
                 <th>Status</th>
                 <th>Imported</th>
@@ -69,6 +70,7 @@
         {% for e in exports %}
             <tr>
                 <td>{{ e.created_at }}</td>
+                <td>{{ e.account_email or '—' }}</td>
                 <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
                 <td>{{ e.status }}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
@@ -81,7 +83,7 @@
                 </td>
             </tr>
             {% if e.error_message %}
-            <tr><td colspan="5" class="preview-help">{{ e.error_message }}</td></tr>
+            <tr><td colspan="6" class="preview-help">{{ e.error_message }}</td></tr>
             {% endif %}
         {% endfor %}
         </tbody>

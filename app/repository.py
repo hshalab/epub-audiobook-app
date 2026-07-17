@@ -1393,13 +1393,14 @@ def create_patch_export(
     drive_folder_id: str,
     drive_folder_link: str,
     exported_chunk_count: int,
+    drive_account_id: int | None = None,
 ) -> PatchExport:
     now = _now()
     cur = conn.execute(
-        """INSERT INTO patch_export (patch_id, drive_folder_id, drive_folder_link, status,
-                                      exported_chunk_count, imported_chunk_count, created_at, updated_at)
-           VALUES (?, ?, ?, 'exported', ?, 0, ?, ?)""",
-        (patch_id, drive_folder_id, drive_folder_link, exported_chunk_count, now, now),
+        """INSERT INTO patch_export (patch_id, drive_account_id, drive_folder_id, drive_folder_link,
+                                      status, exported_chunk_count, imported_chunk_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'exported', ?, 0, ?, ?)""",
+        (patch_id, drive_account_id, drive_folder_id, drive_folder_link, exported_chunk_count, now, now),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM patch_export WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -1408,7 +1409,11 @@ def create_patch_export(
 
 def list_patch_exports(conn: sqlite3.Connection, patch_id: int) -> list[PatchExport]:
     rows = conn.execute(
-        "SELECT * FROM patch_export WHERE patch_id = ? ORDER BY id DESC", (patch_id,)
+        """SELECT pe.*, gdc.account_email
+             FROM patch_export pe
+             LEFT JOIN google_drive_credentials gdc ON gdc.id = pe.drive_account_id
+            WHERE pe.patch_id = ? ORDER BY pe.id DESC""",
+        (patch_id,),
     ).fetchall()
     return [_patch_export_from_row(r) for r in rows]
 
@@ -1451,14 +1456,26 @@ def update_patch_export(
 def list_all_patch_exports(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     """For the /drive settings page: export history across every book, newest first."""
     rows = conn.execute(
-        """SELECT pe.*, p.patch_index, p.book_id, b.title AS book_title
+        """SELECT pe.*, p.patch_index, p.book_id, b.title AS book_title, gdc.account_email
              FROM patch_export pe
              JOIN patch p ON p.id = pe.patch_id
              JOIN book b ON b.id = p.book_id
+             LEFT JOIN google_drive_credentials gdc ON gdc.id = pe.drive_account_id
             ORDER BY pe.id DESC LIMIT ?""",
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_pending_exports_for_account(conn: sqlite3.Connection, account_id: int) -> int:
+    """Exports on this account whose audio has not been fully imported yet - shown as a
+    warning before the user disconnects the account."""
+    row = conn.execute(
+        """SELECT COUNT(*) AS n FROM patch_export
+            WHERE drive_account_id = ? AND status IN ('exported', 'partially_imported')""",
+        (account_id,),
+    ).fetchone()
+    return row["n"]
 
 
 # ---------------------------------------------------------------------------
