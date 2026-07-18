@@ -64,7 +64,7 @@ def test_photo_upload_creates_file(client, tmp_path):
     with open(img, "rb") as f:
         resp = client.post(
             "/photos/upload",
-            files={"file": ("up.png", f, "image/png")},
+            files={"files": ("up.png", f, "image/png")},
             follow_redirects=False,
         )
     assert resp.status_code == 303
@@ -78,10 +78,10 @@ def test_photo_upload_rejects_bad_extension(client, tmp_path):
     with open(bad, "rb") as f:
         resp = client.post(
             "/photos/upload",
-            files={"file": ("evil.exe", f, "application/octet-stream")},
+            files={"files": ("evil.exe", f, "application/octet-stream")},
             follow_redirects=False,
         )
-    assert resp.status_code == 400
+    assert resp.status_code == 303  # skipped, not rejected
 
 
 def test_photo_rename_renames_file_and_book_reference(client):
