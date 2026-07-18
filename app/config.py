@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     db_path: str = str(_APP_ROOT / "data" / "app.db")
     log_path: str = str(_APP_ROOT / "data" / "app.log")
     default_patch_size: int = 10
+    default_page_size: int = 20
     tts_max_chars: int = 400
     default_background_image: str = str(_APP_ROOT / "assets" / "default_background.jpg")
     use_nvenc: bool = False

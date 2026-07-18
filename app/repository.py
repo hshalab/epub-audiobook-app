@@ -99,9 +99,13 @@ def get_book(conn: sqlite3.Connection, book_id: int) -> Book | None:
     return _book_from_row(row) if row else None
 
 
-def list_books(conn: sqlite3.Connection) -> list[Book]:
-    rows = conn.execute("SELECT * FROM book ORDER BY created_at DESC").fetchall()
-    return [_book_from_row(r) for r in rows]
+def list_books(conn: sqlite3.Connection, page: int = 1, per_page: int = 20) -> tuple[list[Book], int, int]:
+    offset = (page - 1) * per_page
+    rows = conn.execute("SELECT * FROM book ORDER BY created_at DESC LIMIT ? OFFSET ?", (per_page, offset)).fetchall()
+    count_row = conn.execute("SELECT COUNT(*) AS c FROM book").fetchone()
+    total = count_row["c"]
+    total_pages = max(1, math.ceil(total / per_page))
+    return [_book_from_row(r) for r in rows], total, total_pages
 
 
 def list_chapters(conn: sqlite3.Connection, book_id: int) -> list[Chapter]:
@@ -1507,6 +1511,15 @@ def create_music(
 def list_music(conn: sqlite3.Connection) -> list[Music]:
     rows = conn.execute("SELECT * FROM music ORDER BY created_at DESC").fetchall()
     return [_music_from_row(r) for r in rows]
+
+
+def list_music_paginated(conn: sqlite3.Connection, page: int = 1, per_page: int = 20) -> tuple[list[Music], int, int]:
+    offset = (page - 1) * per_page
+    rows = conn.execute("SELECT * FROM music ORDER BY created_at DESC LIMIT ? OFFSET ?", (per_page, offset)).fetchall()
+    count_row = conn.execute("SELECT COUNT(*) AS c FROM music").fetchone()
+    total = count_row["c"]
+    total_pages = max(1, math.ceil(total / per_page))
+    return [_music_from_row(r) for r in rows], total, total_pages
 
 
 def get_music(conn: sqlite3.Connection, music_id: int) -> Music | None:
