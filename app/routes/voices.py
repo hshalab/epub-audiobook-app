@@ -7,16 +7,18 @@ updates the books that pointed at it - mirroring the photo manager
 """
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app import repository
 from app.config import settings
 from app.deps import locked_conn
 
@@ -56,14 +58,25 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
 
 
 @router.get("/voices", response_class=HTMLResponse)
-def voices_page(request: Request):
-    voices = []
+def voices_page(request: Request, page: int = Query(default=1, ge=1)):
+    per_page = 20
+    all_voices = []
     for f in sorted(_voices_dir().iterdir()):
         if f.is_file() and f.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS:
-            voices.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
+            all_voices.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
+    with locked_conn(request) as conn:
+        for v in all_voices:
+            meta = repository.get_voice_meta(conn, v["name"])
+            v["description"] = meta["description"] if meta else ""
+    total = len(all_voices)
+    total_pages = max(1, math.ceil(total / per_page))
+    offset = (page - 1) * per_page
+    voices = all_voices[offset:offset + per_page]
     return templates.TemplateResponse(request, "voices.html", {
         "request": request,
         "voices": voices,
+        "page": page,
+        "total_pages": total_pages,
     })
 
 
@@ -77,20 +90,18 @@ def serve_voice(name: str):
 
 
 @router.post("/voices/upload")
-async def upload_voice(file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_AUDIO_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Định dạng không hỗ trợ: {ext}. Chấp nhận: .wav .mp3 .m4a .ogg",
-        )
+async def upload_voices(files: list[UploadFile] = File(...)):
     dest_dir = _voices_dir()
-    base = Path(file.filename or f"voice{ext}").name
-    dest = dest_dir / base
-    if dest.exists():
-        dest = dest_dir / f"{uuid.uuid4().hex[:8]}_{base}"
-    with open(dest, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+    for file in files:
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in ALLOWED_AUDIO_EXTENSIONS:
+            continue
+        base = Path(file.filename or f"voice{ext}").name
+        dest = dest_dir / base
+        if dest.exists():
+            dest = dest_dir / f"{uuid.uuid4().hex[:8]}_{base}"
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(file.file, out)
     return RedirectResponse(url="/voices", status_code=303)
 
 
@@ -118,8 +129,21 @@ def rename_voice(
             "WHERE voice_clip_path = ?",
             (str(dest), datetime.now(timezone.utc).isoformat(), str(src)),
         )
+        repository.rename_voice_meta(conn, old_name, dest.name)
         conn.commit()
     return RedirectResponse(url="/voices", status_code=303)
+
+
+@router.post("/voices/{name}/description")
+async def update_voice_description(name: str, request: Request):
+    body = await request.json()
+    description = body.get("description", "")
+    p = _safe_voice_path(name)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy voice")
+    with locked_conn(request) as conn:
+        repository.set_voice_meta(conn, name, description)
+    return {"status": "ok"}
 
 
 @router.post("/voices/delete")
@@ -128,6 +152,7 @@ def delete_voice(request: Request, name: str = Form(...)):
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy voice")
     with locked_conn(request) as conn:
+        repository.delete_voice_meta(conn, name)
         conn.execute(
             "UPDATE book SET voice_clip_path = NULL, updated_at = ? "
             "WHERE voice_clip_path = ?",

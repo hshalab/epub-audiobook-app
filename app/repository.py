@@ -1563,3 +1563,39 @@ def set_book_voice_clip(
         (voice_clip_path, _now(), book_id),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Voice meta (description for voice clips)
+# ---------------------------------------------------------------------------
+
+
+def get_voice_meta(conn: sqlite3.Connection, filename: str) -> dict | None:
+    row = conn.execute("SELECT * FROM voice_meta WHERE filename = ?", (filename,)).fetchone()
+    if row is None:
+        return None
+    return {"filename": row["filename"], "description": row["description"]}
+
+
+def set_voice_meta(conn: sqlite3.Connection, filename: str, description: str) -> None:
+    now = _now()
+    conn.execute(
+        """INSERT INTO voice_meta (filename, description, created_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(filename) DO UPDATE SET description = excluded.description, updated_at = excluded.updated_at""",
+        (filename, description, now, now),
+    )
+    conn.commit()
+
+
+def rename_voice_meta(conn: sqlite3.Connection, old_filename: str, new_filename: str) -> None:
+    conn.execute(
+        "UPDATE voice_meta SET filename = ?, updated_at = ? WHERE filename = ?",
+        (new_filename, _now(), old_filename),
+    )
+    conn.commit()
+
+
+def delete_voice_meta(conn: sqlite3.Connection, filename: str) -> None:
+    conn.execute("DELETE FROM voice_meta WHERE filename = ?", (filename,))
+    conn.commit()

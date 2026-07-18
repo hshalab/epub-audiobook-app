@@ -147,6 +147,13 @@ CREATE TABLE IF NOT EXISTS patch_export (
 );
 
 CREATE INDEX IF NOT EXISTS idx_patch_export_patch ON patch_export(patch_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS voice_meta (
+    filename    TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 

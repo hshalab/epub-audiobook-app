@@ -25,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/books", response_class=HTMLResponse)
-def list_books(request: Request):
+def list_books(request: Request, page: int = Query(default=1, ge=1)):
+    per_page = settings.default_page_size
     with locked_conn(request) as conn:
-        books = repository.list_books(conn)
+        books, total, total_pages = repository.list_books(conn, page=page, per_page=per_page)
         patch_counts = {
             b.id: {
                 "total": len(repository.list_patches(conn, b.id)),
@@ -37,7 +38,12 @@ def list_books(request: Request):
             for b in books
         }
     return templates.TemplateResponse(
-        request, "book_list.html", {"books": books, "patch_counts": patch_counts}
+        request, "book_list.html", {
+            "books": books,
+            "patch_counts": patch_counts,
+            "page": page,
+            "total_pages": total_pages,
+        }
     )
 
 
@@ -288,6 +294,8 @@ def update_book_music(
             image_overlay.ensure_patch_overlay(book, patch, font_path)
         except Exception:
             pass
+    if request.headers.get("X-Requested-With") == "autosave":
+        return {"status": "ok"}
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
@@ -315,6 +323,8 @@ async def update_overlay_config(request: Request, book_id: int):
             image_overlay.render_patch_overlay(book, patch, cfg, None)
         except Exception as exc:
             logger.warning("overlay-config: re-render failed for patch %s: %s", patch.id, exc)
+    if request.headers.get("X-Requested-With") == "autosave":
+        return {"status": "ok"}
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
@@ -721,6 +731,8 @@ def update_normalization(
             spellcheck=spellcheck.lower() == "on" if spellcheck else None,
         )
         repository.reset_done_patches_for_book(conn, book_id)
+    if request.headers.get("X-Requested-With") == "autosave":
+        return {"status": "ok"}
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 

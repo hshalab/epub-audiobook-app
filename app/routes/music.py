@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -37,13 +37,16 @@ def _probe_duration(file_path: str) -> float | None:
 
 
 @router.get("/music", response_class=HTMLResponse)
-def music_page(request: Request):
+def music_page(request: Request, page: int = Query(default=1, ge=1)):
+    per_page = settings.default_page_size
     with locked_conn(request) as conn:
-        music_list = repository.list_music(conn)
+        music_list, total, total_pages = repository.list_music_paginated(conn, page=page, per_page=per_page)
     return templates.TemplateResponse(request, "music.html", {
         "request": request,
         "music_list": music_list,
         "settings": settings,
+        "page": page,
+        "total_pages": total_pages,
     })
 
 
@@ -58,34 +61,31 @@ def list_music_api(request: Request):
 
 
 @router.post("/music/upload")
-async def upload_music(request: Request, file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in _ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Định dạng không hỗ trợ: {ext}. Chấp nhận: .mp3 .wav .ogg .m4a")
-
+async def upload_music(request: Request, files: list[UploadFile] = File(...)):
     max_bytes = settings.music_max_size_mb * 1024 * 1024
     _MUSIC_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename or 'music').name}"
-    dest = _MUSIC_DIR / safe_name
-
-    size = 0
-    with open(dest, "wb") as out:
-        while chunk := await file.read(65536):
-            size += len(chunk)
-            if size > max_bytes:
-                out.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File quá lớn. Giới hạn {settings.music_max_size_mb}MB.",
-                )
-            out.write(chunk)
-
-    duration = _probe_duration(str(dest))
-    display_name = Path(file.filename or safe_name).stem
 
     with locked_conn(request) as conn:
-        repository.create_music(conn, name=display_name, file_path=str(dest), duration_sec=duration)
+        for file in files:
+            ext = Path(file.filename or "").suffix.lower()
+            if ext not in _ALLOWED_EXTENSIONS:
+                continue
+            safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename or 'music').name}"
+            dest = _MUSIC_DIR / safe_name
+            size = 0
+            with open(dest, "wb") as out:
+                while chunk := await file.read(65536):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        out.close()
+                        dest.unlink(missing_ok=True)
+                        break
+                    out.write(chunk)
+            if size > max_bytes:
+                continue
+            duration = _probe_duration(str(dest))
+            display_name = Path(file.filename or safe_name).stem
+            repository.create_music(conn, name=display_name, file_path=str(dest), duration_sec=duration)
 
     return RedirectResponse(url="/music", status_code=303)
 

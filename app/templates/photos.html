@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pagination.html" import render_pagination %}
 {% block title %}Photo Library{% endblock %}
 {% block content %}
 <h2>Photo Library</h2>
@@ -10,8 +11,8 @@
     </div>
     <form method="post" action="/photos/upload" enctype="multipart/form-data" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
         <div class="form-group" style="margin:0;flex:1;min-width:200px">
-            <label for="photo-file">File ảnh (.jpg .jpeg .png .webp)</label>
-            <input type="file" name="file" id="photo-file" accept=".jpg,.jpeg,.png,.webp" required>
+            <label for="photo-file">File ảnh (.jpg .jpeg .png .webp) — có thể chọn nhiều file</label>
+            <input type="file" name="files" id="photo-file" accept=".jpg,.jpeg,.png,.webp" multiple required>
         </div>
         <button type="submit" class="btn-primary">Upload</button>
     </form>
@@ -66,4 +67,6 @@
     <p style="margin:0;color:var(--text-muted)">Chưa có ảnh nào. Upload file ảnh ở trên.</p>
     {% endif %}
 </div>
+
+{{ render_pagination(page, total_pages, "/photos") }}
 {% endblock %}

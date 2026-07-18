@@ -8,13 +8,14 @@ books that pointed at it.
 """
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -57,14 +58,21 @@ def _clean_new_name(new_name: str, suffix: str) -> str:
 
 
 @router.get("/photos", response_class=HTMLResponse)
-def photos_page(request: Request):
-    photos = []
+def photos_page(request: Request, page: int = Query(default=1, ge=1)):
+    per_page = 20
+    all_photos = []
     for f in sorted(_backgrounds_dir().iterdir()):
         if f.is_file() and f.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
-            photos.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
+            all_photos.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
+    total = len(all_photos)
+    total_pages = max(1, math.ceil(total / per_page))
+    offset = (page - 1) * per_page
+    photos = all_photos[offset:offset + per_page]
     return templates.TemplateResponse(request, "photos.html", {
         "request": request,
         "photos": photos,
+        "page": page,
+        "total_pages": total_pages,
     })
 
 
@@ -78,20 +86,18 @@ def serve_photo(name: str):
 
 
 @router.post("/photos/upload")
-async def upload_photo(file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Định dạng không hỗ trợ: {ext}. Chấp nhận: .jpg .jpeg .png .webp",
-        )
+async def upload_photos(files: list[UploadFile] = File(...)):
     dest_dir = _backgrounds_dir()
-    base = Path(file.filename or f"photo{ext}").name
-    dest = dest_dir / base
-    if dest.exists():
-        dest = dest_dir / f"{uuid.uuid4().hex[:8]}_{base}"
-    with open(dest, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+    for file in files:
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+            continue
+        base = Path(file.filename or f"photo{ext}").name
+        dest = dest_dir / base
+        if dest.exists():
+            dest = dest_dir / f"{uuid.uuid4().hex[:8]}_{base}"
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(file.file, out)
     return RedirectResponse(url="/photos", status_code=303)
 
 

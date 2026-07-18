@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pagination.html" import render_pagination %}
 {% block title %}Music Library{% endblock %}
 {% block content %}
 <h2>Music Library</h2>
@@ -11,7 +12,7 @@
     <form method="post" action="/music/upload" enctype="multipart/form-data" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
         <div class="form-group" style="margin:0;flex:1;min-width:200px">
             <label for="music-file">File nhạc (.mp3 .wav .ogg .m4a, tối đa {{ settings.music_max_size_mb }}MB)</label>
-            <input type="file" name="file" id="music-file" accept=".mp3,.wav,.ogg,.m4a" required>
+            <input type="file" name="files" id="music-file" accept=".mp3,.wav,.ogg,.m4a" multiple required>
         </div>
         <button type="submit" class="btn-primary">Upload</button>
     </form>
@@ -71,4 +72,6 @@
     <p style="margin:0;color:var(--text-muted)">Chưa có nhạc nào. Upload file nhạc ở trên.</p>
     {% endif %}
 </div>
+
+{{ render_pagination(page, total_pages, "/music") }}
 {% endblock %}

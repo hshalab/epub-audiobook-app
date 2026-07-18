@@ -68,7 +68,7 @@ def test_voice_upload_creates_file(client, tmp_path):
     with open(clip, "rb") as f:
         resp = client.post(
             "/voices/upload",
-            files={"file": ("up.wav", f, "audio/wav")},
+            files={"files": ("up.wav", f, "audio/wav")},
             follow_redirects=False,
         )
     assert resp.status_code == 303
@@ -76,16 +76,38 @@ def test_voice_upload_creates_file(client, tmp_path):
     assert any(n.endswith("up.wav") for n in names)
 
 
-def test_voice_upload_rejects_bad_extension(client, tmp_path):
+def test_voice_upload_skips_bad_extension(client, tmp_path):
     bad = tmp_path / "evil.exe"
     bad.write_bytes(b"MZ")
     with open(bad, "rb") as f:
         resp = client.post(
             "/voices/upload",
-            files={"file": ("evil.exe", f, "application/octet-stream")},
+            files={"files": ("evil.exe", f, "application/octet-stream")},
             follow_redirects=False,
         )
-    assert resp.status_code == 400
+    assert resp.status_code == 303
+    names = [p.name for p in _voices_dir(client).iterdir()]
+    assert not any(n.endswith("evil.exe") for n in names)
+
+
+def test_voice_upload_multiple_files(client, tmp_path):
+    clip1 = tmp_path / "up1.wav"
+    clip1.write_bytes(b"RIFFfakewav1")
+    clip2 = tmp_path / "up2.mp3"
+    clip2.write_bytes(b"ID3fakemp3")
+    with open(clip1, "rb") as f1, open(clip2, "rb") as f2:
+        resp = client.post(
+            "/voices/upload",
+            files=[
+                ("files", ("up1.wav", f1, "audio/wav")),
+                ("files", ("up2.mp3", f2, "audio/mpeg")),
+            ],
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    names = [p.name for p in _voices_dir(client).iterdir()]
+    assert any(n.endswith("up1.wav") for n in names)
+    assert any(n.endswith("up2.mp3") for n in names)
 
 
 def test_voice_rename_renames_file_and_book_reference(client):

@@ -22,7 +22,7 @@
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
         Configure how text is preprocessed before speech synthesis.
     </p>
-    <form action="/books/{{ book.id }}/normalization" method="post">
+    <form data-autosave action="/books/{{ book.id }}/normalization" method="post">
         <div style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
             <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
                 <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
@@ -195,7 +195,7 @@
                 </p>
             </form>
 
-            <form id="overlay-form" method="post" action="/books/{{ book.id }}/overlay-config" class="studio-section">
+            <form id="overlay-form" data-autosave method="post" action="/books/{{ book.id }}/overlay-config" class="studio-section">
                 <h4>Chữ overlay</h4>
                 <input type="hidden" name="offset_x" id="ov-offset-x" value="{{ overlay_cfg.offset_x }}">
                 <input type="hidden" name="offset_y" id="ov-offset-y" value="{{ overlay_cfg.offset_y }}">
@@ -319,7 +319,7 @@
                 </details>
             </form>
 
-            <form id="music-form" method="post" action="/books/{{ book.id }}/music" class="studio-section">
+            <form id="music-form" data-autosave method="post" action="/books/{{ book.id }}/music" class="studio-section">
                 <h4>Nhạc nền</h4>
                 <div class="form-group" style="margin:0">
                     <label for="music-select">Chọn nhạc</label>
