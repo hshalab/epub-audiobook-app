@@ -164,7 +164,7 @@ def book_detail(request: Request, book_id: int):
         chapters = repository.list_chapters(conn, book_id)
         last_error = repository.get_last_error_for_book(conn, book_id)
         video_job = repository.get_book_job(conn, book_id, "video")
-        drive_connected = google_drive.get_creds_from_db(conn) is not None
+        drive_connected = google_drive.any_account_connected(conn)
         music_list = repository.list_music(conn)
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)

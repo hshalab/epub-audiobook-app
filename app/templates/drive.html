@@ -12,36 +12,66 @@
 </div>
 {% else %}
 
-<div class="yt-status-section">
-    {% if connected %}
-    <div class="yt-connected">
-        <span class="yt-status-dot yt-connected-dot"></span>
-        <strong>Da ket noi</strong>{% if account_email %} — {{ account_email }}{% endif %}
-        <form method="post" action="/drive/disconnect" style="display:inline" onsubmit="return confirm('Ngat ket noi Google Drive?')">
-            <button type="submit" class="btn-danger btn-sm">Ngat ket noi</button>
-        </form>
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Tai khoan da ket noi</h3>
+    </div>
+    {% if accounts %}
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Ket noi luc</th>
+                <th>Export cho import</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in accounts %}
+            <tr>
+                <td>{{ a.account_email or '(khong ro email)' }}</td>
+                <td>{{ a.created_at }}</td>
+                <td>{{ pending_counts[a.id] or 0 }}</td>
+                <td style="white-space:nowrap">
+                    <button type="button" class="btn-outline btn-sm" onclick="copyKaggleCreds({{ a.id }})">Copy Kaggle credentials</button>
+                    <form method="post" action="/drive/disconnect" style="display:inline"
+                          onsubmit="return confirm('Ngat ket noi {{ a.account_email or 'tai khoan nay' }}?{% if pending_counts[a.id] %} Tai khoan nay con {{ pending_counts[a.id] }} export chua import xong - se khong import tu Drive duoc nua (van co the upload file thu cong, hoac ket noi lai cung email de khoi phuc).{% endif %}')">
+                        <input type="hidden" name="account_id" value="{{ a.id }}">
+                        <button type="submit" class="btn-danger btn-sm">Ngat ket noi</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
     </div>
     {% else %}
-    <div class="yt-disconnected">
-        <span class="yt-status-dot yt-disconnected-dot"></span>
-        <strong>Chua ket noi</strong>
-        <a href="/drive/connect" class="btn-youtube">Ket noi Google Drive</a>
-    </div>
+    <p class="yt-empty">Chua co tai khoan Google Drive nao duoc ket noi.</p>
+    {% endif %}
+    <p style="margin:var(--space-sm) 0 0 0">
+        <a href="/drive/connect" class="btn-youtube">Ket noi them tai khoan Google Drive</a>
+    </p>
+    {% if accounts|length > 1 %}
+    <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted)">
+        Khi export patch/batch, app tu dong xoay vong giua cac tai khoan de phan tai quota GPU
+        Colab/Kaggle. Import se dung dung tai khoan da export (xem cot "Tai khoan" ben duoi).
+    </p>
     {% endif %}
 </div>
 
-{% if connected %}
+{% if accounts %}
 <div class="card">
     <div class="card-header">
         <h3 style="margin:0">Kaggle</h3>
-        <button type="button" class="btn-outline btn-sm" id="kaggle-creds-btn" onclick="copyKaggleCreds()">Copy Kaggle credentials</button>
     </div>
     <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted)">
         De notebook batch chay tren Kaggle truy cap Drive truc tiep (tu tai package ve va upload .wav
-        len Drive khi chay - resume duoc qua nhieu session): copy JSON nay, roi tren Kaggle vao
-        <strong>Add-ons &gt; Secrets</strong>, tao secret ten <code>GDRIVE_CREDS</code> voi gia tri vua copy
-        va bat cho notebook. Secret nay chua refresh token cua tai khoan Drive - chi dan vao Kaggle Secrets
-        (rieng tu), khong dan vao code cua notebook.
+        len Drive khi chay - resume duoc qua nhieu session): bam "Copy Kaggle credentials" o dong tai khoan
+        tuong ung, roi tren Kaggle vao <strong>Add-ons &gt; Secrets</strong>, tao secret ten
+        <code>GDRIVE_CREDS</code> voi gia tri vua copy va bat cho notebook. Moi tai khoan co credentials
+        rieng - phai dung dung tai khoan dang chua export can chay. Secret nay chua refresh token cua
+        tai khoan Drive - chi dan vao Kaggle Secrets (rieng tu), khong dan vao code cua notebook.
     </p>
     <textarea id="kaggle-creds-out" readonly rows="3" style="width:100%;display:none;font-family:monospace;font-size:0.85em"></textarea>
     <p id="kaggle-creds-msg" style="display:none;margin:var(--space-sm) 0 0 0"></p>
@@ -59,6 +89,7 @@
             <tr>
                 <th>Book</th>
                 <th>Patch</th>
+                <th>Tai khoan</th>
                 <th>Drive folder</th>
                 <th>Status</th>
                 <th>Imported</th>
@@ -70,6 +101,7 @@
             <tr>
                 <td><a href="/books/{{ e.book_id }}">{{ e.book_title }}</a></td>
                 <td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td>
+                <td>{{ e.account_email or '—' }}</td>
                 <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
                 <td>{{ e.status }}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
@@ -89,11 +121,11 @@
 
 {% block scripts %}
 <script>
-async function copyKaggleCreds() {
+async function copyKaggleCreds(accountId) {
     const msg = document.getElementById('kaggle-creds-msg');
     const out = document.getElementById('kaggle-creds-out');
     try {
-        const res = await fetch('/drive/kaggle-credentials');
+        const res = await fetch('/drive/kaggle-credentials?account_id=' + accountId);
         if (!res.ok) {
             const body = await res.json().catch(() => null);
             throw new Error((body && body.detail) || res.statusText);

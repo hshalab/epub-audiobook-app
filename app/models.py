@@ -93,6 +93,8 @@ class PatchExport:
     error_message: str | None
     created_at: str
     updated_at: str
+    drive_account_id: int | None = None  # NULL = export from before multi-account
+    account_email: str | None = None  # joined in from google_drive_credentials for display
 
 
 @dataclass

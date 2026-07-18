@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS music (
 CREATE TABLE IF NOT EXISTS patch_export (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
+    -- google_drive_credentials.id of the account the export went to; NULL = legacy
+    -- export from before multi-account. Deliberately not a FK: disconnecting an
+    -- account must neither be blocked by export history nor erase it.
+    drive_account_id        INTEGER,
     drive_folder_id         TEXT NOT NULL,
     drive_folder_link       TEXT NOT NULL,
     status                  TEXT NOT NULL DEFAULT 'exported',
@@ -204,3 +208,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")
     if "overlay_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN overlay_config TEXT")
+    export_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_export)")}
+    if "drive_account_id" not in export_existing:
+        conn.execute("ALTER TABLE patch_export ADD COLUMN drive_account_id INTEGER")

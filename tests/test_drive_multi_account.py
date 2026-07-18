@@ -1,0 +1,254 @@
+"""Unit tests for multi-account Google Drive support: email-keyed credential upsert,
+round-robin export account selection, import account resolution, and the
+patch_export.drive_account_id linkage (see app/google_drive.py, app/repository.py)."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from app import db, google_drive, repository
+
+_NOW = datetime.now(timezone.utc).isoformat()
+
+
+def _make_conn():
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    return conn
+
+
+def _add_account(conn, email):
+    return google_drive.save_credentials(
+        conn,
+        access_token="at",
+        refresh_token=f"rt-{email}",
+        token_expiry=_NOW,
+        account_email=email,
+    )
+
+
+def _insert_book_and_patch(conn):
+    conn.execute(
+        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status,
+                              created_at, updated_at)
+           VALUES (1, 't', 'f.epub', '/tmp/f.epub', 10, 'ready', ?, ?)""",
+        (_NOW, _NOW),
+    )
+    cur = conn.execute(
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
+                               created_at, updated_at)
+           VALUES (1, 0, 0, 0, 'pending', ?, ?)""",
+        (_NOW, _NOW),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+# ---------------------------------------------------------------------------
+# Migration
+# ---------------------------------------------------------------------------
+
+
+def test_migration_adds_drive_account_id_column():
+    conn = db.connect(":memory:")
+    # Simulate a pre-multi-account DB: patch_export without the column.
+    conn.executescript(
+        """CREATE TABLE patch_export (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               patch_id INTEGER NOT NULL,
+               drive_folder_id TEXT NOT NULL,
+               drive_folder_link TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'exported',
+               exported_chunk_count INTEGER NOT NULL DEFAULT 0,
+               imported_chunk_count INTEGER NOT NULL DEFAULT 0,
+               error_message TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+           );"""
+    )
+    db.init_schema(conn)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(patch_export)")}
+    assert "drive_account_id" in cols
+    # Idempotent on re-run.
+    db.init_schema(conn)
+
+
+# ---------------------------------------------------------------------------
+# save_credentials: multi-row, upsert by email
+# ---------------------------------------------------------------------------
+
+
+def test_save_credentials_adds_rows_per_email():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    assert id_a != id_b
+    assert len(google_drive.list_accounts(conn)) == 2
+
+
+def test_save_credentials_reconnect_same_email_updates_in_place():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    _add_account(conn, "b@example.com")
+    id_a2 = google_drive.save_credentials(
+        conn, access_token="at2", refresh_token="rt2", token_expiry=_NOW,
+        account_email="a@example.com",
+    )
+    assert id_a2 == id_a
+    accounts = google_drive.list_accounts(conn)
+    assert len(accounts) == 2
+    row_a = google_drive.get_account(conn, id_a)
+    assert row_a["refresh_token"] == "rt2"
+
+
+def test_save_credentials_empty_email_always_inserts():
+    conn = _make_conn()
+    id1 = _add_account(conn, "")
+    id2 = _add_account(conn, "")
+    assert id1 != id2
+    assert len(google_drive.list_accounts(conn)) == 2
+
+
+def test_delete_credentials_removes_only_that_account():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    google_drive.delete_credentials(conn, id_a)
+    remaining = google_drive.list_accounts(conn)
+    assert [a["id"] for a in remaining] == [id_b]
+    assert google_drive.any_account_connected(conn)
+    google_drive.delete_credentials(conn, id_b)
+    assert not google_drive.any_account_connected(conn)
+
+
+# ---------------------------------------------------------------------------
+# pick_export_account: round-robin
+# ---------------------------------------------------------------------------
+
+
+def test_round_robin_cycles_through_accounts():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    id_c = _add_account(conn, "c@example.com")
+    picked = [google_drive.pick_export_account(conn)["id"] for _ in range(4)]
+    assert picked == [id_a, id_b, id_c, id_a]
+    assert repository.get_app_state(conn, "drive.rr_last_account_id") == str(id_a)
+
+
+def test_round_robin_skips_deleted_account():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    id_c = _add_account(conn, "c@example.com")
+    assert google_drive.pick_export_account(conn)["id"] == id_a
+    google_drive.delete_credentials(conn, id_b)
+    assert google_drive.pick_export_account(conn)["id"] == id_c
+    assert google_drive.pick_export_account(conn)["id"] == id_a
+
+
+def test_round_robin_pointer_at_deleted_account_self_heals():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    google_drive.pick_export_account(conn)  # pointer -> a
+    google_drive.pick_export_account(conn)  # pointer -> b
+    google_drive.delete_credentials(conn, id_b)
+    # Pointer is at the deleted id; next pick wraps to the first account.
+    assert google_drive.pick_export_account(conn)["id"] == id_a
+
+
+def test_round_robin_single_account():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    assert google_drive.pick_export_account(conn)["id"] == id_a
+    assert google_drive.pick_export_account(conn)["id"] == id_a
+
+
+def test_round_robin_no_accounts_raises():
+    conn = _make_conn()
+    with pytest.raises(ValueError):
+        google_drive.pick_export_account(conn)
+
+
+# ---------------------------------------------------------------------------
+# resolve_import_account
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_import_account_explicit_id():
+    conn = _make_conn()
+    _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+    assert google_drive.resolve_import_account(conn, id_b)["id"] == id_b
+
+
+def test_resolve_import_account_dangling_id_raises():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    google_drive.delete_credentials(conn, id_a)
+    _add_account(conn, "b@example.com")
+    with pytest.raises(ValueError, match="disconnected"):
+        google_drive.resolve_import_account(conn, id_a)
+
+
+def test_resolve_import_account_null_falls_back_to_oldest():
+    conn = _make_conn()
+    id_a = _add_account(conn, "a@example.com")
+    _add_account(conn, "b@example.com")
+    assert google_drive.resolve_import_account(conn, None)["id"] == id_a
+
+
+def test_resolve_import_account_null_no_accounts_raises():
+    conn = _make_conn()
+    with pytest.raises(ValueError):
+        google_drive.resolve_import_account(conn, None)
+
+
+# ---------------------------------------------------------------------------
+# patch_export linkage
+# ---------------------------------------------------------------------------
+
+
+def test_create_patch_export_records_account_and_joins_email():
+    conn = _make_conn()
+    patch_id = _insert_book_and_patch(conn)
+    id_a = _add_account(conn, "a@example.com")
+
+    export = repository.create_patch_export(
+        conn, patch_id, "fid", "https://link", 3, drive_account_id=id_a
+    )
+    assert export.drive_account_id == id_a
+
+    listed = repository.list_patch_exports(conn, patch_id)
+    assert listed[0].account_email == "a@example.com"
+
+    all_exports = repository.list_all_patch_exports(conn)
+    assert all_exports[0]["account_email"] == "a@example.com"
+
+
+def test_create_patch_export_without_account_is_legacy_null():
+    conn = _make_conn()
+    patch_id = _insert_book_and_patch(conn)
+    export = repository.create_patch_export(conn, patch_id, "fid", "https://link", 3)
+    assert export.drive_account_id is None
+    listed = repository.list_patch_exports(conn, patch_id)
+    assert listed[0].account_email is None
+
+
+def test_count_pending_exports_for_account():
+    conn = _make_conn()
+    patch_id = _insert_book_and_patch(conn)
+    id_a = _add_account(conn, "a@example.com")
+    id_b = _add_account(conn, "b@example.com")
+
+    e1 = repository.create_patch_export(conn, patch_id, "f1", "l1", 3, drive_account_id=id_a)
+    repository.create_patch_export(conn, patch_id, "f2", "l2", 3, drive_account_id=id_a)
+    repository.create_patch_export(conn, patch_id, "f3", "l3", 3, drive_account_id=id_b)
+
+    assert repository.count_pending_exports_for_account(conn, id_a) == 2
+    assert repository.count_pending_exports_for_account(conn, id_b) == 1
+
+    repository.update_patch_export(conn, e1.id, status="imported", imported_chunk_count=3)
+    assert repository.count_pending_exports_for_account(conn, id_a) == 1

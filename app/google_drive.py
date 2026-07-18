@@ -55,11 +55,20 @@ def is_configured() -> bool:
     return bool(settings.google_drive_client_id and settings.google_drive_client_secret)
 
 
-def get_creds_from_db(conn: sqlite3.Connection) -> dict | None:
+def list_accounts(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM google_drive_credentials ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_account(conn: sqlite3.Connection, account_id: int) -> dict | None:
     row = conn.execute(
-        "SELECT * FROM google_drive_credentials ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM google_drive_credentials WHERE id = ?", (account_id,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def any_account_connected(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM google_drive_credentials LIMIT 1").fetchone() is not None
 
 
 def save_credentials(
@@ -68,29 +77,58 @@ def save_credentials(
     refresh_token: str,
     token_expiry: str,
     account_email: str | None = None,
-) -> None:
-    """Upsert Google Drive credentials (single-row table)."""
-    existing = conn.execute("SELECT id FROM google_drive_credentials LIMIT 1").fetchone()
+) -> int:
+    """Upsert Google Drive credentials keyed by account_email; returns the account id.
+
+    Reconnecting an already-known email updates that row in place (same id), so
+    patch_export.drive_account_id references keep working - this is also the recovery
+    path when an account's token got revoked. An unknown or empty email inserts a new
+    row (a duplicate empty-email row is harmless and user-deletable on /drive).
+    """
     now = _now_iso()
-    if existing:
-        conn.execute(
-            """UPDATE google_drive_credentials
-               SET access_token=?, refresh_token=?, token_expiry=?, account_email=?, updated_at=?
-               WHERE id=?""",
-            (access_token, refresh_token, token_expiry, account_email, now, existing["id"]),
-        )
-    else:
-        conn.execute(
-            """INSERT INTO google_drive_credentials
-               (access_token, refresh_token, token_expiry, account_email, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (access_token, refresh_token, token_expiry, account_email, now, now),
-        )
+    if account_email:
+        existing = conn.execute(
+            "SELECT id FROM google_drive_credentials WHERE account_email = ?",
+            (account_email,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE google_drive_credentials
+                   SET access_token=?, refresh_token=?, token_expiry=?, updated_at=?
+                   WHERE id=?""",
+                (access_token, refresh_token, token_expiry, now, existing["id"]),
+            )
+            conn.commit()
+            return existing["id"]
+    cur = conn.execute(
+        """INSERT INTO google_drive_credentials
+           (access_token, refresh_token, token_expiry, account_email, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (access_token, refresh_token, token_expiry, account_email, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _update_account_tokens(
+    conn: sqlite3.Connection,
+    account_id: int,
+    access_token: str,
+    refresh_token: str,
+    token_expiry: str,
+) -> None:
+    """Token-refresh persistence path: plain UPDATE by id, never the email upsert."""
+    conn.execute(
+        """UPDATE google_drive_credentials
+           SET access_token=?, refresh_token=?, token_expiry=?, updated_at=?
+           WHERE id=?""",
+        (access_token, refresh_token, token_expiry, _now_iso(), account_id),
+    )
     conn.commit()
 
 
-def delete_credentials(conn: sqlite3.Connection) -> None:
-    conn.execute("DELETE FROM google_drive_credentials")
+def delete_credentials(conn: sqlite3.Connection, account_id: int) -> None:
+    conn.execute("DELETE FROM google_drive_credentials WHERE id = ?", (account_id,))
     conn.commit()
 
 
@@ -116,24 +154,73 @@ def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials
             logger.exception("Google Drive token refresh failed")
             raise
         expiry_str = creds.expiry.isoformat() if creds.expiry else creds_row["token_expiry"]
-        save_credentials(
+        _update_account_tokens(
             conn,
+            creds_row["id"],
             access_token=creds.token or "",
             refresh_token=creds.refresh_token or creds_row["refresh_token"],
             token_expiry=expiry_str,
-            account_email=creds_row.get("account_email"),
         )
     return creds
 
 
-def get_drive_service(conn: sqlite3.Connection):
-    """Return an authorized Drive API service object."""
+def get_drive_service(conn: sqlite3.Connection, account_id: int):
+    """Return an authorized Drive API service object for one connected account."""
     _require_google_imports()
-    creds_row = get_creds_from_db(conn)
+    creds_row = get_account(conn, account_id)
     if creds_row is None:
-        raise ValueError("Google Drive not connected. Please connect first.")
+        raise ValueError(
+            f"Google Drive account not found (id={account_id}). It may have been disconnected."
+        )
     creds = _refresh_if_needed(conn, creds_row)
     return build(_API_SERVICE_NAME, _API_VERSION, credentials=creds)
+
+
+_RR_STATE_KEY = "drive.rr_last_account_id"
+
+
+def pick_export_account(conn: sqlite3.Connection) -> dict:
+    """Round-robin over connected accounts: each export/batch goes wholly to one
+    account (one notebook run mounts one Drive), and consecutive exports rotate so
+    Colab/Kaggle GPU quota is spread across accounts.
+
+    The rotation pointer lives in app_state; a pointer at a since-deleted account
+    self-heals (the next-higher id, or the first account on wrap, is picked).
+    """
+    from app import repository  # local import: repository does not import google_drive
+
+    accounts = list_accounts(conn)  # ORDER BY id
+    if not accounts:
+        raise ValueError("Google Drive not connected. Connect an account at /drive first.")
+    last = repository.get_app_state(conn, _RR_STATE_KEY)
+    last_id = int(last) if last and last.isdigit() else -1
+    chosen = next((a for a in accounts if a["id"] > last_id), accounts[0])
+    repository.set_app_state(conn, _RR_STATE_KEY, str(chosen["id"]))
+    return chosen
+
+
+def resolve_import_account(conn: sqlite3.Connection, drive_account_id: int | None) -> dict:
+    """Resolve which account to import an export from. With the drive.file scope only
+    the account that created the export folder can even see it, so this must be the
+    exact account recorded on the patch_export row."""
+    if drive_account_id is not None:
+        row = get_account(conn, drive_account_id)
+        if row is None:
+            raise ValueError(
+                "The Drive account used for this export has been disconnected. "
+                "Reconnect that Google account at /drive (same email restores access), "
+                "or import the synthesized files via local upload instead."
+            )
+        return row
+    # Legacy export (pre multi-account): the DB had exactly one account back then, and
+    # that original row keeps the lowest id - so the oldest account is the right guess.
+    # A wrong guess just finds no files (drive.file scope), it doesn't crash.
+    row = conn.execute(
+        "SELECT * FROM google_drive_credentials ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        raise ValueError("Google Drive not connected. Connect an account at /drive first.")
+    return dict(row)
 
 
 def get_authorization_url(redirect_uri: str) -> str:
