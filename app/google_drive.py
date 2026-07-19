@@ -82,17 +82,24 @@ def create_client(conn: sqlite3.Connection, name: str, client_id: str, client_se
 
 
 def update_client(conn: sqlite3.Connection, row_id: int, name: str, client_id: str, client_secret: str) -> None:
-    conn.execute(
-        """UPDATE drive_oauth_client SET name=?, client_id=?, client_secret=?, updated_at=?
-           WHERE id=?""",
-        (name, client_id, client_secret, _now_iso(), row_id),
-    )
+    if client_secret:
+        conn.execute(
+            """UPDATE drive_oauth_client SET name=?, client_id=?, client_secret=?, updated_at=?
+               WHERE id=?""",
+            (name, client_id, client_secret, _now_iso(), row_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE drive_oauth_client SET name=?, client_id=?, updated_at=?
+               WHERE id=?""",
+            (name, client_id, _now_iso(), row_id),
+        )
     conn.commit()
 
 
 def delete_client(conn: sqlite3.Connection, row_id: int) -> None:
-    if count_accounts_for_client(conn, row_id) > 0:
-        cnt = count_accounts_for_client(conn, row_id)
+    cnt = count_accounts_for_client(conn, row_id)
+    if cnt > 0:
         raise ValueError(
             f"Cannot delete client with {cnt} connected account(s). "
             "Disconnect those accounts first."

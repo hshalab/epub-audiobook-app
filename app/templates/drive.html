@@ -33,7 +33,7 @@
         {% for c in clients %}
             <tr>
                 <td>{{ c.name }}</td>
-                <td style="font-family:monospace;font-size:0.85em">{{ c.client_id[:30] + '&hellip;' if c.client_id|length > 30 else c.client_id }}</td>
+                <td style="font-family:monospace;font-size:0.85em">{{ c.client_id[:30] + '…' if c.client_id|length > 30 else c.client_id }}</td>
                 <td>{{ client_counts.get(c.id, 0) }}</td>
                 <td style="white-space:nowrap">
                     <button type="button" class="btn-outline btn-sm" onclick="editClient({{ c.id }}, '{{ c.name|e }}', '{{ c.client_id|e }}')">Edit</button>
@@ -158,7 +158,7 @@
             <tr>
                 <td><a href="/books/{{ e.book_id }}">{{ e.book_title }}</a></td>
                 <td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td>
-                <td>{{ e.account_email or '&mdash;' }}</td>
+                <td>{{ e.account_email or '—' }}</td>
                 <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
                 <td>{{ e.status }}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>

@@ -381,6 +381,12 @@ def test_connect_with_valid_client_redirects_to_google(client):
     assert "accounts.google.com" in location or "google.com/o/oauth2" in location
 
 
+def test_drive_page_has_clients(client):
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert b"OAuth Clients" in resp.content
+
+
 # ---------------------------------------------------------------------------
 # Client + OAuth credential integration
 # ---------------------------------------------------------------------------
@@ -389,6 +395,19 @@ def test_connect_with_valid_client_redirects_to_google(client):
 def test_save_credentials_with_oauth_client_id():
     conn = _make_conn()
     cid = google_drive.create_client(conn, "Test", "tid", "ts")
+    aid = google_drive.save_credentials(
+        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="a@example.com", oauth_client_id=cid,
+    )
+    row = google_drive.get_account(conn, aid)
+    assert row["oauth_client_id"] == cid
+
+
+def test_kaggle_creds_uses_client_creds():
+    """The Kaggle endpoint should return the client_id/secret from the
+    account's linked OAuth client, not the env defaults."""
+    conn = _make_conn()
+    cid = google_drive.create_client(conn, "MyClient", "custom-id", "custom-secret")
     aid = google_drive.save_credentials(
         conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
         account_email="a@example.com", oauth_client_id=cid,
