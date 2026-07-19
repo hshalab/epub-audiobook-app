@@ -295,7 +295,7 @@ def resolve_import_account(conn: sqlite3.Connection, drive_account_id: int | Non
     return dict(row)
 
 
-def get_authorization_url(redirect_uri: str, client_id: str | None = None, client_secret: str | None = None) -> str:
+def get_authorization_url(redirect_uri: str, client_id: str | None = None, client_secret: str | None = None, state: str = "") -> str:
     _require_google_imports()
     cid = client_id or settings.google_drive_client_id
     cs = client_secret or settings.google_drive_client_secret
@@ -324,6 +324,7 @@ def get_authorization_url(redirect_uri: str, client_id: str | None = None, clien
         # browser already has an active session for a single Google account (otherwise it
         # silently reuses that account without letting the user pick a different one).
         prompt="select_account consent",
+        state=state or None,
     )
     return url
 

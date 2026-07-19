@@ -61,13 +61,13 @@ def drive_connect(request: Request, oauth_client_id: int | None = None):
     else:
         cid, cs = None, None
     redirect_uri = str(request.base_url) + "drive/callback"
+    state = str(oauth_client_id) if oauth_client_id else ""
     try:
-        url = google_drive.get_authorization_url(redirect_uri, client_id=cid, client_secret=cs)
+        url = google_drive.get_authorization_url(redirect_uri, client_id=cid, client_secret=cs, state=state)
     except Exception as exc:
         logger.exception("drive_connect failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
-    state = str(oauth_client_id) if oauth_client_id else ""
-    return RedirectResponse(url=f"{url}&state={state}")
+    return RedirectResponse(url=url)
 
 
 @router.get("/drive/callback")
