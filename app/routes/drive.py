@@ -156,14 +156,14 @@ def drive_disconnect(request: Request, account_id: int = Form(...)):
 
 
 @router.post("/drive/clients")
-def drive_create_client(request: Request, name: str = Form(...), client_id: str = Form(...), client_secret: str = Form(...)):
+def drive_create_client(request: Request, name: str = Form(...), client_id: str = Form(...), client_secret: str = Form("")):
     with locked_conn(request) as conn:
         google_drive.create_client(conn, name, client_id, client_secret)
     return RedirectResponse(url="/drive#clients", status_code=303)
 
 
 @router.post("/drive/clients/{client_id}/edit")
-def drive_update_client(request: Request, client_id: int, name: str = Form(...), cid: str = Form(...), client_secret: str = Form(...)):
+def drive_update_client(request: Request, client_id: int, name: str = Form(...), cid: str = Form(...), client_secret: str = Form("")):
     with locked_conn(request) as conn:
         google_drive.update_client(conn, client_id, name, cid, client_secret)
     return RedirectResponse(url="/drive#clients", status_code=303)
