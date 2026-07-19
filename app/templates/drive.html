@@ -113,13 +113,7 @@
     <p class="yt-empty">Chưa có tài khoản Google Drive nào được kết nối.</p>
     {% endif %}
     <p style="margin:var(--space-sm) 0 0 0">
-    {% if clients|length > 1 %}
-        {% for c in clients %}
-        <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-youtube" style="margin-right:var(--space-xs)">Kết nối Drive ({{ c.name }})</a>
-        {% endfor %}
-    {% else %}
         <a href="/drive/connect" class="btn-youtube">Kết nối thêm tài khoản Google Drive</a>
-    {% endif %}
     </p>
     {% if accounts|length > 1 %}
     <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted)">
