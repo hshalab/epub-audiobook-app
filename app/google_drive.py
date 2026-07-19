@@ -55,6 +55,60 @@ def is_configured() -> bool:
     return bool(settings.google_drive_client_id and settings.google_drive_client_secret)
 
 
+# ---------------------------------------------------------------------------
+# Client CRUD
+# ---------------------------------------------------------------------------
+
+
+def list_clients(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM drive_oauth_client ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_client(conn: sqlite3.Connection, client_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM drive_oauth_client WHERE id = ?", (client_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_client(conn: sqlite3.Connection, name: str, client_id: str, client_secret: str) -> int:
+    now = _now_iso()
+    cur = conn.execute(
+        """INSERT INTO drive_oauth_client (name, client_id, client_secret, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (name, client_id, client_secret, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_client(conn: sqlite3.Connection, row_id: int, name: str, client_id: str, client_secret: str) -> None:
+    conn.execute(
+        """UPDATE drive_oauth_client SET name=?, client_id=?, client_secret=?, updated_at=?
+           WHERE id=?""",
+        (name, client_id, client_secret, _now_iso(), row_id),
+    )
+    conn.commit()
+
+
+def delete_client(conn: sqlite3.Connection, row_id: int) -> None:
+    if count_accounts_for_client(conn, row_id) > 0:
+        cnt = count_accounts_for_client(conn, row_id)
+        raise ValueError(
+            f"Cannot delete client with {cnt} connected account(s). "
+            "Disconnect those accounts first."
+        )
+    conn.execute("DELETE FROM drive_oauth_client WHERE id = ?", (row_id,))
+    conn.commit()
+
+
+def count_accounts_for_client(conn: sqlite3.Connection, client_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM google_drive_credentials WHERE oauth_client_id = ?",
+        (client_id,),
+    ).fetchone()
+    return row["n"]
+
+
 def list_accounts(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("SELECT * FROM google_drive_credentials ORDER BY id").fetchall()
     return [dict(r) for r in rows]
@@ -77,6 +131,7 @@ def save_credentials(
     refresh_token: str,
     token_expiry: str,
     account_email: str | None = None,
+    oauth_client_id: int | None = None,
 ) -> int:
     """Upsert Google Drive credentials keyed by account_email; returns the account id.
 
@@ -94,17 +149,17 @@ def save_credentials(
         if existing:
             conn.execute(
                 """UPDATE google_drive_credentials
-                   SET access_token=?, refresh_token=?, token_expiry=?, updated_at=?
+                   SET access_token=?, refresh_token=?, token_expiry=?, updated_at=?, oauth_client_id=?
                    WHERE id=?""",
-                (access_token, refresh_token, token_expiry, now, existing["id"]),
+                (access_token, refresh_token, token_expiry, now, oauth_client_id, existing["id"]),
             )
             conn.commit()
             return existing["id"]
     cur = conn.execute(
         """INSERT INTO google_drive_credentials
-           (access_token, refresh_token, token_expiry, account_email, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (access_token, refresh_token, token_expiry, account_email, now, now),
+           (access_token, refresh_token, token_expiry, account_email, oauth_client_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (access_token, refresh_token, token_expiry, account_email, oauth_client_id, now, now),
     )
     conn.commit()
     return cur.lastrowid
@@ -132,21 +187,31 @@ def delete_credentials(conn: sqlite3.Connection, account_id: int) -> None:
     conn.commit()
 
 
-def _build_credentials(row: dict) -> Credentials:
+def _resolve_client_creds(conn: sqlite3.Connection, creds_row: dict) -> tuple[str, str]:
+    oauth_client_id = creds_row.get("oauth_client_id")
+    if oauth_client_id:
+        client = get_client(conn, oauth_client_id)
+        if client:
+            return client["client_id"], client["client_secret"]
+    return settings.google_drive_client_id, settings.google_drive_client_secret
+
+
+def _build_credentials(row: dict, client_id: str | None = None, client_secret: str | None = None) -> Credentials:
     _require_google_imports()
     return Credentials(
         token=row["access_token"],
         refresh_token=row["refresh_token"],
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=settings.google_drive_client_id,
-        client_secret=settings.google_drive_client_secret,
+        client_id=client_id or settings.google_drive_client_id,
+        client_secret=client_secret or settings.google_drive_client_secret,
         scopes=_SCOPES,
     )
 
 
 def _refresh_if_needed(conn: sqlite3.Connection, creds_row: dict) -> Credentials:
     _require_google_imports()
-    creds = _build_credentials(creds_row)
+    client_id, client_secret = _resolve_client_creds(conn, creds_row)
+    creds = _build_credentials(creds_row, client_id, client_secret)
     if creds.expired or not creds.valid:
         try:
             creds.refresh(Request())
@@ -223,13 +288,15 @@ def resolve_import_account(conn: sqlite3.Connection, drive_account_id: int | Non
     return dict(row)
 
 
-def get_authorization_url(redirect_uri: str) -> str:
+def get_authorization_url(redirect_uri: str, client_id: str | None = None, client_secret: str | None = None) -> str:
     _require_google_imports()
+    cid = client_id or settings.google_drive_client_id
+    cs = client_secret or settings.google_drive_client_secret
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": settings.google_drive_client_id,
-                "client_secret": settings.google_drive_client_secret,
+                "client_id": cid,
+                "client_secret": cs,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
             }
@@ -254,15 +321,17 @@ def get_authorization_url(redirect_uri: str) -> str:
     return url
 
 
-def exchange_code(code: str, redirect_uri: str) -> dict:
+def exchange_code(code: str, redirect_uri: str, client_id: str | None = None, client_secret: str | None = None) -> dict:
     """Exchange authorization code for tokens. Returns {access_token, refresh_token,
     token_expiry, account_email}."""
     _require_google_imports()
+    cid = client_id or settings.google_drive_client_id
+    cs = client_secret or settings.google_drive_client_secret
     flow = Flow.from_client_config(
         {
             "web": {
-                "client_id": settings.google_drive_client_id,
-                "client_secret": settings.google_drive_client_secret,
+                "client_id": cid,
+                "client_secret": cs,
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
             }

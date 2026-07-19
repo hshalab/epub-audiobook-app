@@ -75,6 +75,81 @@ def test_migration_adds_drive_account_id_column():
 
 
 # ---------------------------------------------------------------------------
+# Client CRUD
+# ---------------------------------------------------------------------------
+
+from app.models import DriveOAuthClient
+
+
+def _add_client(conn, name="Client A", client_id="cid", client_secret="cs"):
+    return google_drive.create_client(conn, name, client_id, client_secret)
+
+
+def test_create_client_returns_id():
+    conn = _make_conn()
+    cid = _add_client(conn)
+    assert isinstance(cid, int)
+    assert cid > 0
+
+
+def test_list_clients_returns_all():
+    conn = _make_conn()
+    _add_client(conn, "A")
+    _add_client(conn, "B")
+    names = [c["name"] for c in google_drive.list_clients(conn)]
+    assert "A" in names
+    assert "B" in names
+
+
+def test_get_client_by_id():
+    conn = _make_conn()
+    cid = _add_client(conn, "Test", "x", "y")
+    c = google_drive.get_client(conn, cid)
+    assert c is not None
+    assert c["name"] == "Test"
+    assert c["client_id"] == "x"
+    assert c["client_secret"] == "y"
+
+
+def test_update_client():
+    conn = _make_conn()
+    cid = _add_client(conn)
+    google_drive.update_client(conn, cid, name="Updated", client_id="new_id", client_secret="new_secret")
+    c = google_drive.get_client(conn, cid)
+    assert c["name"] == "Updated"
+    assert c["client_id"] == "new_id"
+
+
+def test_delete_client():
+    conn = _make_conn()
+    cid = _add_client(conn)
+    google_drive.delete_client(conn, cid)
+    assert google_drive.get_client(conn, cid) is None
+
+
+def test_delete_client_with_accounts_raises():
+    conn = _make_conn()
+    cid = _add_client(conn)
+    google_drive.save_credentials(
+        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="a@example.com", oauth_client_id=cid,
+    )
+    with pytest.raises(ValueError, match="accounts"):
+        google_drive.delete_client(conn, cid)
+
+
+def test_count_accounts_for_client():
+    conn = _make_conn()
+    cid = _add_client(conn)
+    assert google_drive.count_accounts_for_client(conn, cid) == 0
+    google_drive.save_credentials(
+        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="a@example.com", oauth_client_id=cid,
+    )
+    assert google_drive.count_accounts_for_client(conn, cid) == 1
+
+
+# ---------------------------------------------------------------------------
 # save_credentials: multi-row, upsert by email
 # ---------------------------------------------------------------------------
 
