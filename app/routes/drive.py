@@ -38,7 +38,7 @@ def drive_page(request: Request):
         "accounts": accounts,
         "pending_counts": pending_counts,
         "exports": exports,
-        "configured": google_drive.is_configured(),
+        "configured": google_drive.is_configured(conn),
         "clients": clients,
         "client_names": client_names,
         "client_counts": client_counts,
@@ -47,19 +47,19 @@ def drive_page(request: Request):
 
 @router.get("/drive/connect")
 def drive_connect(request: Request, oauth_client_id: int | None = None):
-    if not google_drive.is_configured():
-        raise HTTPException(
-            status_code=400,
-            detail="Google Drive not configured. Set GOOGLE_DRIVE_CLIENT_ID and GOOGLE_DRIVE_CLIENT_SECRET.",
-        )
-    if oauth_client_id:
-        with locked_conn(request) as conn:
+    with locked_conn(request) as conn:
+        if oauth_client_id:
             client = google_drive.get_client(conn, oauth_client_id)
             if client is None:
                 raise HTTPException(status_code=404, detail="OAuth client not found")
-        cid, cs = client["client_id"], client["client_secret"]
-    else:
-        cid, cs = None, None
+            cid, cs = client["client_id"], client["client_secret"]
+        else:
+            if not google_drive.is_configured(conn):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Google Drive not configured. Set up an OAuth client at /drive first.",
+                )
+            cid, cs = None, None
     redirect_uri = str(request.base_url) + "drive/callback"
     state = str(oauth_client_id) if oauth_client_id else ""
     try:
@@ -116,9 +116,9 @@ def drive_kaggle_credentials(request: Request, account_id: int | None = None):
     the exported batch from Drive and upload synthesized audio back (same drive.file
     scope and OAuth client as the app itself). Each account has its own credentials -
     the secret must match the account that holds the export."""
-    if not google_drive.is_configured():
-        raise HTTPException(status_code=400, detail="Google Drive not configured")
     with locked_conn(request) as conn:
+        if not google_drive.is_configured(conn):
+            raise HTTPException(status_code=400, detail="Google Drive not configured")
         if account_id is not None:
             creds = google_drive.get_account(conn, account_id)
             if creds is None:

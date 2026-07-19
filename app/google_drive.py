@@ -51,8 +51,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def is_configured() -> bool:
-    return bool(settings.google_drive_client_id and settings.google_drive_client_secret)
+def is_configured(conn: sqlite3.Connection | None = None) -> bool:
+    if settings.google_drive_client_id and settings.google_drive_client_secret:
+        return True
+    if conn:
+        return bool(list_clients(conn))
+    return False
 
 
 # ---------------------------------------------------------------------------

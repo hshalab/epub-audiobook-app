@@ -216,7 +216,7 @@ def chunk_manager_page(request: Request, book_id: int, patch_id: int):
         "chunks": chunks,
         "exports": exports,
         "drive_connected": drive_connected,
-        "drive_configured": google_drive.is_configured(),
+        "drive_configured": google_drive.is_configured(conn),
     })
 
 

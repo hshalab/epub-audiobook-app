@@ -195,7 +195,7 @@ def book_detail(request: Request, book_id: int):
             "video_job": video_job,
             "has_active_patches": has_active_patches,
             "drive_connected": drive_connected,
-            "drive_configured": google_drive.is_configured(),
+            "drive_configured": google_drive.is_configured(conn),
             "music_list": music_list,
             "current_music": current_music,
             "backgrounds": _list_backgrounds(),
