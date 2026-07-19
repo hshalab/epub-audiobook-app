@@ -59,7 +59,9 @@
             <div class="form-group">
                 <label for="yt-file">Video file <span class="required">*</span></label>
                 <div class="dropzone" id="dropzone-yt">
-                    <div class="dropzone-icon">&#127909;</div>
+                <div class="dropzone-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                </div>
                     <div class="dropzone-text">Kéo thả video vào đây hoặc bấm để chọn</div>
                     <div class="dropzone-hint">MP4, MKV, AVI, MOV</div>
                     <input type="file" name="file" accept=".mp4,.mkv,.avi,.mov" required id="yt-file">
@@ -166,7 +168,7 @@
     input.addEventListener('change', function() {
         if (!this.files.length) return;
         const file = this.files[0];
-        preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">&#127909; ' + file.name + '</span>';
+        preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">' + file.name + '</span>';
         preview.style.display = 'inline-block';
     });
 })();

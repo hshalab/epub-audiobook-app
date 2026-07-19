@@ -17,3 +17,5 @@ data/*.log
 data/tmp/*
 data/videos
 data/backgrounds
+data/voices
+data/music
