@@ -2,13 +2,13 @@
 {% block title %}Google Drive{% endblock %}
 {% block content %}
 <h2>Google Drive</h2>
-<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Ket noi Google Drive de xuat chunk sang Colab/Kaggle va nhap ket qua ve. Khong phai trinh quan ly Drive tong quat - chi dung cho luong export/import theo tung patch.</p>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Kết nối Google Drive để xuất chunk sang Colab/Kaggle và nhập kết quả về. Không phải trình quản lý Drive tổng quát - chỉ dùng cho luồng export/import theo từng patch.</p>
 
 {% if not configured %}
 <div class="warning-block">
-    <p style="margin:0 0 0.3rem 0"><strong>Google Drive chua duoc cau hinh.</strong></p>
-    <p style="margin:0 0 0.3rem 0">Them <code>GOOGLE_DRIVE_CLIENT_ID</code> va <code>GOOGLE_DRIVE_CLIENT_SECRET</code> vao file <code>.env</code> de kich hoat tinh nang nay.</p>
-    <p style="margin:0">Neu ban da cau hinh YouTube upload, co the dung lai cung OAuth client, chi can bat them "Google Drive API" tren cung Google Cloud project tai <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank">Google Cloud Console</a>.</p>
+    <p style="margin:0 0 0.3rem 0"><strong>Google Drive chưa được cấu hình.</strong></p>
+    <p style="margin:0 0 0.3rem 0">Thêm <code>GOOGLE_DRIVE_CLIENT_ID</code> và <code>GOOGLE_DRIVE_CLIENT_SECRET</code> vào file <code>.env</code> để kích hoạt tính năng này.</p>
+    <p style="margin:0">Nếu bạn đã cấu hình YouTube upload, có thể dùng lại cùng OAuth client, chỉ cần bật thêm "Google Drive API" trên cùng Google Cloud project tại <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank">Google Cloud Console</a>.</p>
 </div>
 {% else %}
 
@@ -38,7 +38,7 @@
                 <td style="white-space:nowrap">
                     <button type="button" class="btn-outline btn-sm" onclick="editClient({{ c.id }}, '{{ c.name|e }}', '{{ c.client_id|e }}')">Edit</button>
                     <form method="post" action="/drive/clients/{{ c.id }}/delete" style="display:inline"
-                          onsubmit="return confirm('Xoa OAuth client {{ c.name|e }}?{% if client_counts.get(c.id) %} Client nay co {{ client_counts[c.id] }} tai khoan Drive dang ket noi - phai ngat ket noi truoc.{% endif %}')">
+                          onsubmit="return confirm('Xóa OAuth client {{ c.name|e }}?{% if client_counts.get(c.id) %} Client này có {{ client_counts[c.id] }} tài khoản Drive đang kết nối - phải ngắt kết nối trước.{% endif %}')">
                         <button type="submit" class="btn-danger btn-sm">Delete</button>
                     </form>
                     <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-outline btn-sm" style="text-decoration:none">Connect</a>
@@ -57,13 +57,25 @@
             <input type="text" name="client_secret" placeholder="Client Secret" required style="min-width:240px">
             <button type="submit" class="btn-youtube">Add</button>
         </form>
+        <details style="margin-top:var(--space-sm);font-size:0.85em;color:var(--text-muted)">
+            <summary style="cursor:pointer">Hướng dẫn: tạo OAuth client mới trên Google Cloud</summary>
+            <ol style="margin:var(--space-sm) 0 0 0;padding-left:1.2rem;line-height:1.7">
+                <li>Truy cập <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console &gt; Credentials</a>.</li>
+                <li>Chọn hoặc tạo một project (dùng project riêng nếu muốn quota API riêng).</li>
+                <li>Bấm <strong>+ Create Credentials</strong> &gt; <strong>OAuth client ID</strong>.</li>
+                <li>Application type: <strong>Web application</strong>.</li>
+                <li>Authorized redirect URIs: thêm <code>{{ request.base_url }}drive/callback</code>.</li>
+                <li>Bấm <strong>Create</strong>. Copy <strong>Client ID</strong> và <strong>Client Secret</strong> vào form bên trên.</li>
+                <li>Vào <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank">Library</a>, tìm "Google Drive API" → bấm <strong>Enable</strong>.</li>
+            </ol>
+        </details>
     </details>
     </div>
 </div>
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Tai khoan da ket noi</h3>
+        <h3 style="margin:0">Tài khoản đã kết nối</h3>
     </div>
     {% if accounts %}
     <div class="table-wrap">
@@ -72,24 +84,24 @@
             <tr>
                 <th>Email</th>
                 <th>OAuth Client</th>
-                <th>Ket noi luc</th>
-                <th>Export cho import</th>
+                <th>Kết nối lúc</th>
+                <th>Export chờ import</th>
                 <th></th>
             </tr>
         </thead>
         <tbody>
         {% for a in accounts %}
             <tr>
-                <td>{{ a.account_email or '(khong ro email)' }}</td>
+                <td>{{ a.account_email or '(không rõ email)' }}</td>
                 <td>{{ client_names.get(a.oauth_client_id) or '(default)' }}</td>
                 <td>{{ a.created_at }}</td>
                 <td>{{ pending_counts[a.id] or 0 }}</td>
                 <td style="white-space:nowrap">
                     <button type="button" class="btn-outline btn-sm" onclick="copyKaggleCreds({{ a.id }})">Copy Kaggle credentials</button>
                     <form method="post" action="/drive/disconnect" style="display:inline"
-                          onsubmit="return confirm('Ngat ket noi {{ a.account_email or 'tai khoan nay' }}?{% if pending_counts[a.id] %} Tai khoan nay con {{ pending_counts[a.id] }} export chua import xong - se khong import tu Drive duoc nua (van co the upload file thu cong, hoac ket noi lai cung email de khoi phuc).{% endif %}')">
+                          onsubmit="return confirm('Ngắt kết nối {{ a.account_email or 'tài khoản này' }}?{% if pending_counts[a.id] %} Tài khoản này còn {{ pending_counts[a.id] }} export chưa import xong - sẽ không import từ Drive được nữa (vẫn có thể upload file thủ công, hoặc kết nối lại cùng email để khôi phục).{% endif %}')">
                         <input type="hidden" name="account_id" value="{{ a.id }}">
-                        <button type="submit" class="btn-danger btn-sm">Ngat ket noi</button>
+                        <button type="submit" class="btn-danger btn-sm">Ngắt kết nối</button>
                     </form>
                 </td>
             </tr>
@@ -98,21 +110,21 @@
     </table>
     </div>
     {% else %}
-    <p class="yt-empty">Chua co tai khoan Google Drive nao duoc ket noi.</p>
+    <p class="yt-empty">Chưa có tài khoản Google Drive nào được kết nối.</p>
     {% endif %}
     <p style="margin:var(--space-sm) 0 0 0">
     {% if clients|length > 1 %}
         {% for c in clients %}
-        <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-youtube" style="margin-right:var(--space-xs)">Ket noi Drive ({{ c.name }})</a>
+        <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-youtube" style="margin-right:var(--space-xs)">Kết nối Drive ({{ c.name }})</a>
         {% endfor %}
     {% else %}
-        <a href="/drive/connect" class="btn-youtube">Ket noi them tai khoan Google Drive</a>
+        <a href="/drive/connect" class="btn-youtube">Kết nối thêm tài khoản Google Drive</a>
     {% endif %}
     </p>
     {% if accounts|length > 1 %}
     <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted)">
-        Khi export patch/batch, app tu dong xoay vong giua cac tai khoan de phan tai quota GPU
-        Colab/Kaggle. Import se dung dung tai khoan da export (xem cot "Tai khoan" ben duoi).
+        Khi export patch/batch, app tự động xoay vòng giữa các tài khoản để phân tải quota GPU
+        Colab/Kaggle. Import sẽ dùng đúng tài khoản đã export (xem cột "Tài khoản" bên dưới).
     </p>
     {% endif %}
 </div>
@@ -123,12 +135,12 @@
         <h3 style="margin:0">Kaggle</h3>
     </div>
     <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted)">
-        De notebook batch chay tren Kaggle truy cap Drive truc tiep (tu tai package ve va upload .wav
-        len Drive khi chay - resume duoc qua nhieu session): bam "Copy Kaggle credentials" o dong tai khoan
-        tuong ung, roi tren Kaggle vao <strong>Add-ons &gt; Secrets</strong>, tao secret ten
-        <code>GDRIVE_CREDS</code> voi gia tri vua copy va bat cho notebook. Moi tai khoan co credentials
-        rieng - phai dung dung tai khoan dang chua export can chay. Secret nay chua refresh token cua
-        tai khoan Drive - chi dan vao Kaggle Secrets (rieng tu), khong dan vao code cua notebook.
+        Để notebook batch chạy trên Kaggle truy cập Drive trực tiếp (tự tải package về và upload .wav
+        lên Drive khi chạy - resume được qua nhiều session): bấm "Copy Kaggle credentials" ở dòng tài khoản
+        tương ứng, rồi trên Kaggle vào <strong>Add-ons &gt; Secrets</strong>, tạo secret tên
+        <code>GDRIVE_CREDS</code> với giá trị vừa copy và bật cho notebook. Mỗi tài khoản có credentials
+        riêng - phải dùng đúng tài khoản đang chứa export cần chạy. Secret này chứa refresh token của
+        tài khoản Drive - chỉ dán vào Kaggle Secrets (riêng tư), không dán vào code của notebook.
     </p>
     <textarea id="kaggle-creds-out" readonly rows="3" style="width:100%;display:none;font-family:monospace;font-size:0.85em"></textarea>
     <p id="kaggle-creds-msg" style="display:none;margin:var(--space-sm) 0 0 0"></p>
@@ -137,7 +149,7 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Lich su Export</h3>
+        <h3 style="margin:0">Lịch sử Export</h3>
     </div>
     {% if exports %}
     <div class="table-wrap">
@@ -146,7 +158,7 @@
             <tr>
                 <th>Book</th>
                 <th>Patch</th>
-                <th>Tai khoan</th>
+                <th>Tài khoản</th>
                 <th>Drive folder</th>
                 <th>Status</th>
                 <th>Imported</th>
@@ -169,7 +181,7 @@
     </table>
     </div>
     {% else %}
-    <p class="yt-empty">Chua co patch nao duoc export.</p>
+    <p class="yt-empty">Chưa có patch nào được export.</p>
     {% endif %}
 </div>
 
@@ -191,15 +203,15 @@ async function copyKaggleCreds(accountId) {
         out.value = text;
         try {
             await navigator.clipboard.writeText(text);
-            msg.textContent = 'Da copy vao clipboard - dan vao Kaggle secret GDRIVE_CREDS.';
+            msg.textContent = 'Đã copy vào clipboard - dán vào Kaggle secret GDRIVE_CREDS.';
         } catch (e) {
             out.style.display = 'block';
             out.select();
-            msg.textContent = 'Khong copy tu dong duoc - JSON hien ben duoi, hay copy thu cong.';
+            msg.textContent = 'Không copy tự động được - JSON hiện bên dưới, hãy copy thủ công.';
         }
         msg.style.color = 'var(--text-muted)';
     } catch (e) {
-        msg.textContent = 'Loi: ' + e.message;
+        msg.textContent = 'Lỗi: ' + e.message;
         msg.style.color = 'var(--color-error)';
     }
     msg.style.display = 'block';
