@@ -327,3 +327,56 @@ def test_count_pending_exports_for_account():
 
     repository.update_patch_export(conn, e1.id, status="imported", imported_chunk_count=3)
     assert repository.count_pending_exports_for_account(conn, id_a) == 1
+
+
+# ---------------------------------------------------------------------------
+# Route-level client CRUD tests
+# ---------------------------------------------------------------------------
+
+import threading
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import db as app_db
+from app.main import app
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    settings_mod = __import__("app.config", fromlist=["settings"])
+    monkeypatch.setattr(settings_mod.settings, "db_path", str(db_path))
+    monkeypatch.setattr(settings_mod.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings_mod.settings, "enable_worker", False)
+    monkeypatch.setattr(settings_mod.settings, "google_drive_client_id", "test-client-id")
+    monkeypatch.setattr(settings_mod.settings, "google_drive_client_secret", "test-client-secret")
+    with TestClient(app) as c:
+        yield c
+
+
+def test_create_client_via_api(client):
+    resp = client.post("/drive/clients", data={
+        "name": "Route Test Client",
+        "client_id": "route-test-id",
+        "client_secret": "route-test-secret",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers.get("location", "").startswith("/drive")
+
+
+def test_connect_with_nonexistent_client_returns_404(client):
+    resp = client.get("/drive/connect?oauth_client_id=999999", follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_connect_with_valid_client_redirects_to_google(client):
+    client.post("/drive/clients", data={
+        "name": "OAuth Test", "client_id": "oauth-test-id", "client_secret": "oauth-test-secret",
+    })
+    resp = client.get("/drive/connect?oauth_client_id=1", follow_redirects=False)
+    # RedirectResponse defaults to 307, older redirects use 302/303
+    assert resp.status_code in (302, 303, 307)
+    location = resp.headers.get("location", "")
+    assert "accounts.google.com" in location or "google.com/o/oauth2" in location
+
