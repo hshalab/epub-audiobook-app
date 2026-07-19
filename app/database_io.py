@@ -1,6 +1,7 @@
 """Import/export SQLite database."""
 from __future__ import annotations
 
+import re
 import sqlite3
 
 
@@ -62,3 +63,78 @@ def export_json(conn: sqlite3.Connection, tables: list[str] | None = None) -> di
         rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
         result[table] = [dict(r) for r in rows]
     return result
+
+
+def _table_order() -> list[str]:
+    return [
+        "voice_meta",
+        "patch_export",
+        "patch",
+        "chapter",
+        "book_job",
+        "text_replace_rule",
+        "google_drive_credentials",
+        "youtube_uploads",
+        "youtube_credentials",
+        "drive_oauth_client",
+        "app_state",
+        "music",
+        "book",
+    ]
+
+
+def _clear_tables(conn: sqlite3.Connection, tables: list[str]) -> None:
+    order = _table_order()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    for table in order:
+        if table in tables:
+            conn.execute(f'DELETE FROM "{table}"')
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def import_sql(
+    conn: sqlite3.Connection,
+    sql: str,
+    mode: str = "overwrite",
+    tables: list[str] | None = None,
+) -> None:
+    selected = _resolve_tables(conn, tables) if tables else None
+    _TABLE_MARKER_RE = re.compile(r"^-- TABLE:\s*(\w+)", re.MULTILINE)
+    blocks = re.split(_TABLE_MARKER_RE, sql)[1:]
+    for i in range(0, len(blocks), 2):
+        table = blocks[i]
+        body = blocks[i + 1]
+        if selected is not None and table not in selected:
+            continue
+        if mode == "overwrite":
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executescript(body)
+            conn.execute("PRAGMA foreign_keys = ON")
+        else:
+            stmts = [s.strip() for s in body.split(";") if s.strip()]
+            for stmt in stmts:
+                if stmt.upper().startswith("INSERT"):
+                    stmt = stmt.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+                    conn.execute(stmt)
+    conn.commit()
+
+
+def import_json(
+    conn: sqlite3.Connection,
+    data: dict[str, list[dict]],
+    mode: str = "overwrite",
+    tables: list[str] | None = None,
+) -> None:
+    selected = _resolve_tables(conn, tables) if tables else None
+    for table, rows in data.items():
+        if selected is not None and table not in selected:
+            continue
+        if mode == "overwrite":
+            _clear_tables(conn, [table])
+        for row in rows:
+            cols = ", ".join(row.keys())
+            placeholders = ", ".join("?" for _ in row)
+            sql = f'INSERT OR IGNORE INTO "{table}" ({cols}) VALUES ({placeholders})'
+            conn.execute(sql, list(row.values()))
+    conn.commit()

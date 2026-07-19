@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app import db
-from app.database_io import user_table_names, export_sql, export_json
+from app.database_io import user_table_names, export_sql, export_json, import_sql, import_json
 
 _NOW = datetime.now(timezone.utc).isoformat()
 
@@ -76,3 +76,76 @@ def test_export_json_returns_dicts():
     row = data["app_state"][0]
     assert row["key"] == "k1"
     assert row["value"] == "v1"
+
+def test_import_sql_overwrite():
+    conn = _conn()
+    sql = export_sql(conn, tables=["music"])
+    import_sql(conn, sql, mode="overwrite", tables=["music"])
+    rows = conn.execute("SELECT name FROM music").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "m1"
+
+def test_import_sql_overwrite_clears_old_data():
+    conn = _conn()
+    sql = export_sql(conn, tables=["music"])
+    conn.execute("INSERT INTO music (name, file_path, created_at) VALUES ('old', '/tmp/o.mp3', ?)", (_NOW,))
+    conn.commit()
+    import_sql(conn, sql, mode="overwrite", tables=["music"])
+    rows = [r["name"] for r in conn.execute("SELECT name FROM music").fetchall()]
+    assert rows == ["m1"]
+
+def test_import_sql_merge_appends_new_data():
+    conn = _conn()
+    sql = export_sql(conn, tables=["music"])
+    conn.execute("INSERT INTO music (name, file_path, created_at) VALUES ('existing', '/tmp/e.mp3', ?)", (_NOW,))
+    conn.commit()
+    import_sql(conn, sql, mode="merge", tables=["music"])
+    rows = [r["name"] for r in conn.execute("SELECT name FROM music ORDER BY name").fetchall()]
+    assert "existing" in rows
+    assert "m1" in rows
+
+def test_import_json_overwrite():
+    conn = _conn()
+    data = export_json(conn, tables=["app_state"])
+    conn.execute("INSERT INTO app_state (key, value) VALUES ('existing', 'ev')")
+    conn.commit()
+    import_json(conn, data, mode="overwrite", tables=["app_state"])
+    rows = dict(conn.execute("SELECT key, value FROM app_state").fetchall())
+    assert rows == {"k1": "v1"}
+
+def test_import_json_merge():
+    conn = _conn()
+    data = export_json(conn, tables=["app_state"])
+    conn.execute("INSERT INTO app_state (key, value) VALUES ('existing', 'ev')")
+    conn.commit()
+    import_json(conn, data, mode="merge", tables=["app_state"])
+    rows = dict(conn.execute("SELECT key, value FROM app_state").fetchall())
+    assert rows == {"k1": "v1", "existing": "ev"}
+
+def test_import_json_merge_ignores_duplicate_pk():
+    conn = _conn()
+    data = export_json(conn, tables=["app_state"])
+    conn.execute("INSERT OR REPLACE INTO app_state (key, value) VALUES ('k1', 'modified')")
+    conn.commit()
+    import_json(conn, data, mode="merge", tables=["app_state"])
+    row = conn.execute("SELECT value FROM app_state WHERE key='k1'").fetchone()
+    assert row["value"] == "modified"
+
+def test_import_sql_filter_tables():
+    conn = _conn()
+    full_sql = export_sql(conn)
+    conn.execute("INSERT INTO app_state (key, value) VALUES ('keep', 'me')")
+    conn.commit()
+    import_sql(conn, full_sql, mode="overwrite", tables=["music"])
+    row = conn.execute("SELECT value FROM app_state WHERE key='keep'").fetchone()
+    assert row is not None
+    assert row["value"] == "me"
+
+def test_import_json_filter_tables():
+    conn = _conn()
+    full_json = export_json(conn)
+    conn.execute("INSERT INTO app_state (key, value) VALUES ('keep', 'me')")
+    conn.commit()
+    import_json(conn, full_json, mode="overwrite", tables=["music"])
+    row = conn.execute("SELECT value FROM app_state WHERE key='keep'").fetchone()
+    assert row is not None
