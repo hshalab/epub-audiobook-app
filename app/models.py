@@ -98,6 +98,16 @@ class PatchExport:
 
 
 @dataclass
+class DriveOAuthClient:
+    id: int
+    name: str
+    client_id: str
+    client_secret: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class BookJob:
     id: int
     book_id: int

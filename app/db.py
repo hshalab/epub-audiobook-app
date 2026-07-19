@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS book_job (
 CREATE INDEX IF NOT EXISTS idx_book_job_status ON book_job(status, book_id, id);
 CREATE INDEX IF NOT EXISTS idx_book_job_book_type ON book_job(book_id, job_type);
 
+CREATE TABLE IF NOT EXISTS drive_oauth_client (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    client_id       TEXT NOT NULL,
+    client_secret   TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_state (
     key             TEXT PRIMARY KEY,
     value           TEXT
@@ -218,3 +227,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     export_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_export)")}
     if "drive_account_id" not in export_existing:
         conn.execute("ALTER TABLE patch_export ADD COLUMN drive_account_id INTEGER")
+    gdc_existing = {row["name"] for row in conn.execute("PRAGMA table_info(google_drive_credentials)")}
+    if "oauth_client_id" not in gdc_existing:
+        conn.execute("ALTER TABLE google_drive_credentials ADD COLUMN oauth_client_id INTEGER")
+    from app.config import settings
+    if settings.google_drive_client_id:
+        row = conn.execute("SELECT 1 FROM drive_oauth_client LIMIT 1").fetchone()
+        if row is None:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """INSERT INTO drive_oauth_client (name, client_id, client_secret, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("Default OAuth Client", settings.google_drive_client_id, settings.google_drive_client_secret, now, now),
+            )
