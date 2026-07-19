@@ -133,19 +133,19 @@ def drive_kaggle_credentials(request: Request, account_id: int | None = None):
                     detail="Multiple Google Drive accounts connected; pass ?account_id=...",
                 )
             creds = accounts[0]
-    cid = settings.google_drive_client_id
-    cs = settings.google_drive_client_secret
-    if creds.get("oauth_client_id"):
-        client = google_drive.get_client(conn, creds["oauth_client_id"])
-        if client:
-            cid, cs = client["client_id"], client["client_secret"]
-    if not creds.get("refresh_token"):
-        raise HTTPException(status_code=400, detail="This account has no refresh token. Reconnect it.")
-    return JSONResponse({
-        "client_id": cid,
-        "client_secret": cs,
-        "refresh_token": creds["refresh_token"],
-    })
+        if not creds.get("refresh_token"):
+            raise HTTPException(status_code=400, detail="This account has no refresh token. Reconnect it.")
+        cid = settings.google_drive_client_id
+        cs = settings.google_drive_client_secret
+        if creds.get("oauth_client_id"):
+            client = google_drive.get_client(conn, creds["oauth_client_id"])
+            if client:
+                cid, cs = client["client_id"], client["client_secret"]
+        return JSONResponse({
+            "client_id": cid,
+            "client_secret": cs,
+            "refresh_token": creds["refresh_token"],
+        })
 
 
 @router.post("/drive/disconnect")
