@@ -161,3 +161,83 @@ def test_import_json_invalid_mode_raises():
     data = export_json(conn)
     with pytest.raises(ValueError, match="mode must be"):
         import_json(conn, data, mode="merg")
+
+
+import json as json_mod
+
+from fastapi.testclient import TestClient
+from app.main import app
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    settings_mod = __import__("app.config", fromlist=["settings"])
+    monkeypatch.setattr(settings_mod.settings, "db_path", str(tmp_path / "test.db"))
+    monkeypatch.setattr(settings_mod.settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings_mod.settings, "enable_worker", False)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_export_sql_via_api(client):
+    resp = client.get("/api/db/export?format=sql")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/sql"
+    assert resp.headers["content-disposition"].startswith("attachment")
+    assert "CREATE TABLE" in resp.text
+
+
+def test_export_json_via_api(client):
+    resp = client.get("/api/db/export?format=json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    data = resp.json()
+    assert isinstance(data, dict)
+
+
+def test_export_filter_tables_via_api(client):
+    resp = client.get("/api/db/export?format=json&tables=app_state,music")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "app_state" in data
+    assert "music" in data
+    assert "book" not in data
+
+
+def test_export_invalid_format_returns_400(client):
+    resp = client.get("/api/db/export?format=csv")
+    assert resp.status_code == 400
+
+
+def test_import_sql_overwrite_via_api(client):
+    resp = client.get("/api/db/export?format=sql")
+    sql_content = resp.text
+    resp = client.post("/api/db/import", files={
+        "file": ("dump.sql", sql_content, "application/sql"),
+    }, data={"format": "sql", "mode": "overwrite"})
+    assert resp.status_code == 200
+
+
+def test_import_json_merge_via_api(client):
+    resp = client.get("/api/db/export?format=json")
+    content = json_mod.dumps(resp.json())
+    resp = client.post("/api/db/import", files={
+        "file": ("dump.json", content, "application/json"),
+    }, data={"format": "json", "mode": "merge"})
+    assert resp.status_code == 200
+
+
+def test_import_with_table_filter_via_api(client):
+    resp = client.get("/api/db/export?format=json")
+    content = json_mod.dumps(resp.json())
+    resp = client.post("/api/db/import", files={
+        "file": ("dump.json", content, "application/json"),
+    }, data={"format": "json", "mode": "overwrite", "tables": "music"})
+    assert resp.status_code == 200
+
+
+def test_import_invalid_file_returns_400(client):
+    resp = client.post("/api/db/import", files={
+        "file": ("dump.txt", b"invalid", "text/plain"),
+    }, data={"format": "sql", "mode": "overwrite"})
+    assert resp.status_code == 400
