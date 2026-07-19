@@ -177,3 +177,10 @@ def drive_delete_client(request: Request, client_id: int):
         except ValueError as exc:
             return RedirectResponse(url=f"/drive?error={exc}", status_code=303)
     return RedirectResponse(url="/drive#clients", status_code=303)
+
+
+@router.post("/drive/exports/{export_id}/delete")
+def drive_delete_export(request: Request, export_id: int):
+    with locked_conn(request) as conn:
+        repository.delete_patch_export(conn, export_id)
+    return RedirectResponse(url="/drive", status_code=303)

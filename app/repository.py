@@ -1480,6 +1480,13 @@ def list_all_patch_exports(conn: sqlite3.Connection, limit: int = 50) -> list[di
     return [dict(r) for r in rows]
 
 
+def delete_patch_export(conn: sqlite3.Connection, export_id: int) -> bool:
+    """Delete a single patch_export row. Returns False if the row didn't exist."""
+    cur = conn.execute("DELETE FROM patch_export WHERE id = ?", (export_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def count_pending_exports_for_account(conn: sqlite3.Connection, account_id: int) -> int:
     """Exports on this account whose audio has not been fully imported yet - shown as a
     warning before the user disconnects the account."""

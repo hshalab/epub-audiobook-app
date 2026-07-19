@@ -157,6 +157,7 @@
                 <th>Status</th>
                 <th>Imported</th>
                 <th>Created</th>
+                <th>Hành động</th>
             </tr>
         </thead>
         <tbody>
@@ -166,10 +167,22 @@
                 <td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td>
                 <td>{{ e.account_email or '—' }}</td>
                 <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
-                <td>{{ e.status }}</td>
+                <td>{% if e.status == 'failed' %}<span class="badge badge-failed">Failed</span>{% else %}{{ e.status }}{% endif %}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
                 <td>{{ e.created_at }}</td>
+                <td class="patch-actions" style="white-space:nowrap">
+                    <a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks" class="btn-outline btn-sm">Import</a>
+                    <form action="/drive/exports/{{ e.id }}/delete" method="post" style="display:inline"
+                          onsubmit="return confirm('Xoá export này?')">
+                        <button type="submit" class="btn-danger btn-sm">Xoá</button>
+                    </form>
+                </td>
             </tr>
+            {% if e.error_message %}
+            <tr>
+                <td colspan="8" class="preview-help" style="color:var(--color-error)">{{ e.error_message }}</td>
+            </tr>
+            {% endif %}
         {% endfor %}
         </tbody>
     </table>
