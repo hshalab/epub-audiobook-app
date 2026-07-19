@@ -366,12 +366,9 @@ def download_batch_export(request: Request, book_id: int, patch_ids: list[int] =
 def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] = Form(...)):
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
-        # One account per batch: a notebook run mounts exactly one Drive, so the whole
-        # batch must land in a single account; rotation happens across batches/exports.
-        try:
-            account = google_drive.pick_export_account(conn)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        accounts = google_drive.list_accounts(conn)
+        if not accounts:
+            raise HTTPException(status_code=400, detail="No Google Drive accounts connected.")
 
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
         package_dir, batch_manifest = _build_or_400(
@@ -379,25 +376,27 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
         )
         try:
-            service = google_drive.get_drive_service(conn, account["id"])
-            root_id = google_drive.get_or_create_root_folder(service)
-            batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
-            folder_map = google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
-            # Only record the exports after every upload succeeded, so a mid-upload
-            # failure can't leave patch_export rows pointing at a half-filled folder.
-            # Each patch points at its own subfolder, which is exactly the layout the
-            # existing per-patch "Import results from Drive" flow expects.
-            for entry in batch_manifest["patches"]:
-                info = folder_map[entry["folder"]]
-                repository.create_patch_export(
-                    conn, entry["patch_id"], info["id"], info["link"], entry["chunk_count"],
-                    drive_account_id=account["id"],
-                )
+            # Distribute patches round-robin across all connected accounts
+            patch_account = {}
+            for i, entry in enumerate(batch_manifest["patches"]):
+                patch_account[entry["patch_id"]] = accounts[i % len(accounts)]
+
+            # Upload the full batch to each account, then record only the patches
+            # assigned to that account with the folder id from that account's Drive.
+            for account in accounts:
+                svc = google_drive.get_drive_service(conn, account["id"])
+                root = google_drive.get_or_create_root_folder(svc)
+                batch = google_drive.create_folder(svc, folder_name, parent_id=root)
+                fm = google_drive.upload_directory(svc, batch["id"], str(package_dir))
+                for entry in batch_manifest["patches"]:
+                    if patch_account[entry["patch_id"]]["id"] == account["id"]:
+                        info = fm[entry["folder"]]
+                        repository.create_patch_export(
+                            conn, entry["patch_id"], info["id"], info["link"],
+                            entry["chunk_count"], drive_account_id=account["id"],
+                        )
         except Exception as exc:
-            logger.exception(
-                "batch export to Google Drive failed for book %s (account %s)",
-                book_id, account.get("account_email") or account["id"],
-            )
+            logger.exception("batch export to Google Drive failed for book %s", book_id)
             raise HTTPException(status_code=500, detail=f"Drive export failed: {exc}")
         finally:
             shutil.rmtree(package_dir, ignore_errors=True)
