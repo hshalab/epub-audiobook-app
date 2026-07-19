@@ -162,6 +162,24 @@ def test_import_json_invalid_mode_raises():
     with pytest.raises(ValueError, match="mode must be"):
         import_json(conn, data, mode="merg")
 
+def test_import_unknown_table_sql_raises():
+    conn = _conn()
+    sql = "-- TABLE: nonexistent\nCREATE TABLE nonexistent (id INT);"
+    with pytest.raises(ValueError, match="nonexistent"):
+        import_sql(conn, sql)
+
+def test_import_unknown_table_json_raises():
+    conn = _conn()
+    with pytest.raises(ValueError, match="nonexistent"):
+        import_json(conn, {"nonexistent": [{"id": 1}]})
+
+def test_import_unknown_table_with_filter_skips_check():
+    conn = _conn()
+    sql = "-- TABLE: nonexistent\nCREATE TABLE nonexistent (id INT);"
+    # With explicit table filter, validation is skipped (table must exist)
+    conn.execute("CREATE TABLE IF NOT EXISTS nonexistent (id INT)")
+    import_sql(conn, sql, mode="overwrite", tables=["nonexistent"])  # no error
+
 
 import json as json_mod
 
@@ -241,3 +259,10 @@ def test_import_invalid_file_returns_400(client):
         "file": ("dump.txt", b"invalid", "text/plain"),
     }, data={"format": "sql", "mode": "overwrite"})
     assert resp.status_code == 400
+
+
+def test_database_io_page(client):
+    resp = client.get("/database-io")
+    assert resp.status_code == 200
+    assert b"Export" in resp.content
+    assert b"Import" in resp.content

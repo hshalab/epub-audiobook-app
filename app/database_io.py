@@ -29,6 +29,8 @@ def _sql_val(v):
         return str(v)
     if isinstance(v, float):
         return repr(v)
+    if isinstance(v, bytes):
+        return "X'" + v.hex() + "'"
     escaped = str(v).replace("'", "''")
     return f"'{escaped}'"
 
@@ -92,6 +94,13 @@ def _clear_tables(conn: sqlite3.Connection, tables: list[str]) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _validate_import_tables(conn: sqlite3.Connection, input_tables: set[str]) -> None:
+    existing = set(user_table_names(conn))
+    unknown = input_tables - existing
+    if unknown:
+        raise ValueError(f"Import contains unknown tables: {', '.join(sorted(unknown))}")
+
+
 def import_sql(
     conn: sqlite3.Connection,
     sql: str,
@@ -103,17 +112,24 @@ def import_sql(
     selected = _resolve_tables(conn, tables) if tables else None
     _TABLE_MARKER_RE = re.compile(r"^-- TABLE:\s*(\w+)", re.MULTILINE)
     blocks = re.split(_TABLE_MARKER_RE, sql)[1:]
-    for i in range(0, len(blocks), 2):
-        table = blocks[i]
-        body = blocks[i + 1]
-        if selected is not None and table not in selected:
-            continue
-        if mode == "overwrite":
-            conn.execute("PRAGMA foreign_keys = OFF")
+    if selected is None:
+        _validate_import_tables(conn, {blocks[i] for i in range(0, len(blocks), 2)})
+    if mode == "overwrite":
+        conn.execute("PRAGMA foreign_keys = OFF")
+        for i in range(0, len(blocks), 2):
+            table = blocks[i]
+            body = blocks[i + 1]
+            if selected is not None and table not in selected:
+                continue
             conn.execute(f'DROP TABLE IF EXISTS "{table}"')
             conn.executescript(body)
-            conn.execute("PRAGMA foreign_keys = ON")
-        else:
+        conn.execute("PRAGMA foreign_keys = ON")
+    else:
+        for i in range(0, len(blocks), 2):
+            table = blocks[i]
+            body = blocks[i + 1]
+            if selected is not None and table not in selected:
+                continue
             stmts = [s.strip() for s in body.split(";") if s.strip()]
             for stmt in stmts:
                 if stmt.upper().startswith("INSERT"):
@@ -131,6 +147,8 @@ def import_json(
     if mode not in ("overwrite", "merge"):
         raise ValueError(f"mode must be 'overwrite' or 'merge', got '{mode}'")
     selected = _resolve_tables(conn, tables) if tables else None
+    if selected is None:
+        _validate_import_tables(conn, set(data.keys()))
     for table, rows in data.items():
         if selected is not None and table not in selected:
             continue

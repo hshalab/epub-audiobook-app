@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -70,9 +71,12 @@ def db_import(
                 import_sql(conn, raw.decode("utf-8"), mode=mode, tables=table_list)
             else:
                 import_json(conn, json.loads(raw), mode=mode, tables=table_list)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
             logger.exception("db import failed")
-            raise HTTPException(status_code=400, detail=str(exc))
+            status = 500 if isinstance(exc, sqlite3.OperationalError) else 400
+            raise HTTPException(status_code=status, detail=str(exc))
 
     return {"status": "ok", "mode": mode}
 
