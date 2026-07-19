@@ -15,6 +15,14 @@
     </span>
 </h2>
 
+<form method="post" action="/books/{{ book.id }}/rename" style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md);align-items:center">
+    <input type="text" name="title" value="{{ book.title }}" required
+           style="min-width:240px;padding:var(--space-xs) var(--space-sm)"
+           placeholder="Nhập tên sách mới">
+    <button type="submit" class="btn-sm btn-primary">Lưu</button>
+    <a href="/books/{{ book.id }}" class="btn-sm btn-outline">Hủy</a>
+</form>
+
 <div class="card" style="margin-top:var(--space-lg)">
     <div class="card-header">
         <h3 style="margin:0">TTS Normalization</h3>

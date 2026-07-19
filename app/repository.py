@@ -723,6 +723,15 @@ def update_book_video_settings(
     conn.commit()
 
 
+def rename_book(conn: sqlite3.Connection, book_id: int, new_title: str) -> bool:
+    cur = conn.execute(
+        "UPDATE book SET title = ?, updated_at = ? WHERE id = ?",
+        (new_title, _now(), book_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
     done_ids = [
         r["id"] for r in conn.execute(

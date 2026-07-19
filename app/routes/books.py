@@ -299,6 +299,19 @@ def update_book_music(
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
+@router.post("/books/{book_id}/rename")
+def rename_book(request: Request, book_id: int, title: str = Form(...)):
+    new_title = title.strip()
+    if not new_title:
+        raise HTTPException(status_code=400, detail="Tên không được để trống")
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy sách")
+        repository.rename_book(conn, book_id, new_title)
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
 @router.post("/books/{book_id}/overlay-config")
 async def update_overlay_config(request: Request, book_id: int):
     from app import image_overlay
