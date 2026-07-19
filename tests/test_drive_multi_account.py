@@ -380,3 +380,19 @@ def test_connect_with_valid_client_redirects_to_google(client):
     location = resp.headers.get("location", "")
     assert "accounts.google.com" in location or "google.com/o/oauth2" in location
 
+
+# ---------------------------------------------------------------------------
+# Client + OAuth credential integration
+# ---------------------------------------------------------------------------
+
+
+def test_save_credentials_with_oauth_client_id():
+    conn = _make_conn()
+    cid = google_drive.create_client(conn, "Test", "tid", "ts")
+    aid = google_drive.save_credentials(
+        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="a@example.com", oauth_client_id=cid,
+    )
+    row = google_drive.get_account(conn, aid)
+    assert row["oauth_client_id"] == cid
+
