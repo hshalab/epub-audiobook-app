@@ -12,6 +12,55 @@
 </div>
 {% else %}
 
+<!-- ======== OAuth Clients ======== -->
+<div class="card" id="clients">
+    <div class="card-header" onclick="this.closest('.card').classList.toggle('collapsed')" style="cursor:pointer">
+        <h3 style="margin:0">OAuth Clients <span style="font-size:0.8em;color:var(--text-muted)">({{ clients|length }})</span></h3>
+    </div>
+    <div class="card-body">
+    {% if clients %}
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Client ID</th>
+                <th>Accounts</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in clients %}
+            <tr>
+                <td>{{ c.name }}</td>
+                <td style="font-family:monospace;font-size:0.85em">{{ c.client_id[:30] + '&hellip;' if c.client_id|length > 30 else c.client_id }}</td>
+                <td>{{ client_counts.get(c.id, 0) }}</td>
+                <td style="white-space:nowrap">
+                    <button type="button" class="btn-outline btn-sm" onclick="editClient({{ c.id }}, '{{ c.name|e }}', '{{ c.client_id|e }}')">Edit</button>
+                    <form method="post" action="/drive/clients/{{ c.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Xoa OAuth client {{ c.name|e }}?{% if client_counts.get(c.id) %} Client nay co {{ client_counts[c.id] }} tai khoan Drive dang ket noi - phai ngat ket noi truoc.{% endif %}')">
+                        <button type="submit" class="btn-danger btn-sm">Delete</button>
+                    </form>
+                    <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-outline btn-sm" style="text-decoration:none">Connect</a>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+    <details style="margin-top:var(--space-sm)">
+        <summary style="cursor:pointer;color:var(--text-muted)">Add new OAuth client</summary>
+        <form method="post" action="/drive/clients" style="margin-top:var(--space-sm);display:flex;gap:var(--space-sm);flex-wrap:wrap">
+            <input type="text" name="name" placeholder="Name (e.g. Project A)" required>
+            <input type="text" name="client_id" placeholder="Client ID" required style="min-width:240px">
+            <input type="text" name="client_secret" placeholder="Client Secret" required style="min-width:240px">
+            <button type="submit" class="btn-youtube">Add</button>
+        </form>
+    </details>
+    </div>
+</div>
+
 <div class="card">
     <div class="card-header">
         <h3 style="margin:0">Tai khoan da ket noi</h3>
@@ -22,6 +71,7 @@
         <thead>
             <tr>
                 <th>Email</th>
+                <th>OAuth Client</th>
                 <th>Ket noi luc</th>
                 <th>Export cho import</th>
                 <th></th>
@@ -31,6 +81,7 @@
         {% for a in accounts %}
             <tr>
                 <td>{{ a.account_email or '(khong ro email)' }}</td>
+                <td>{{ client_names.get(a.oauth_client_id) or '(default)' }}</td>
                 <td>{{ a.created_at }}</td>
                 <td>{{ pending_counts[a.id] or 0 }}</td>
                 <td style="white-space:nowrap">
@@ -50,7 +101,13 @@
     <p class="yt-empty">Chua co tai khoan Google Drive nao duoc ket noi.</p>
     {% endif %}
     <p style="margin:var(--space-sm) 0 0 0">
+    {% if clients|length > 1 %}
+        {% for c in clients %}
+        <a href="/drive/connect?oauth_client_id={{ c.id }}" class="btn-youtube" style="margin-right:var(--space-xs)">Ket noi Drive ({{ c.name }})</a>
+        {% endfor %}
+    {% else %}
         <a href="/drive/connect" class="btn-youtube">Ket noi them tai khoan Google Drive</a>
+    {% endif %}
     </p>
     {% if accounts|length > 1 %}
     <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted)">
@@ -101,7 +158,7 @@
             <tr>
                 <td><a href="/books/{{ e.book_id }}">{{ e.book_title }}</a></td>
                 <td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td>
-                <td>{{ e.account_email or '—' }}</td>
+                <td>{{ e.account_email or '&mdash;' }}</td>
                 <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
                 <td>{{ e.status }}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
@@ -146,6 +203,26 @@ async function copyKaggleCreds(accountId) {
         msg.style.color = 'var(--color-error)';
     }
     msg.style.display = 'block';
+}
+
+function editClient(id, name, clientId) {
+    // ponytail: prompt() is the laziest edit UI; modal if user asks
+    const newName = prompt('Client name:', name);
+    if (!newName) return;
+    const newCid = prompt('Client ID:', clientId);
+    if (!newCid) return;
+    const newSecret = prompt('Client Secret (leave blank to keep current):', '');
+    if (newSecret === null) return;
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/drive/clients/' + id + '/edit';
+    for (const [k, v] of Object.entries({name: newName, cid: newCid, client_secret: newSecret})) {
+        const i = document.createElement('input');
+        i.type = 'hidden'; i.name = k; i.value = v;
+        form.appendChild(i);
+    }
+    document.body.appendChild(form);
+    form.submit();
 }
 </script>
 {% endblock %}
