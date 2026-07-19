@@ -300,6 +300,12 @@ def _remove_dots_in_word(m: re.Match) -> str:
     word = m.group(0)
     if _has_vietnamese_diacritic(word):
         return word.replace(".", "")
+    # Vietnamese without diacritics: remove dots if the word has
+    # 2+ dots, short segments (≤3 chars each), and isn't uppercase
+    # (which would be an abbreviation like U.S.A).
+    parts = word.split(".")
+    if len(parts) >= 3 and all(len(p) <= 3 for p in parts) and not word.isupper():
+        return word.replace(".", "")
     return word
 
 

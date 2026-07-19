@@ -113,6 +113,13 @@ def test_remove_dots_does_not_touch_english_or_urls():
     assert remove_dots_in_vietnamese_words("U.S.A") == "U.S.A"
 
 
+def test_remove_dots_in_vietnamese_without_diacritics():
+    assert remove_dots_in_vietnamese_words("t.h.e") == "the"
+    assert remove_dots_in_vietnamese_words("c.o.n") == "con"
+    assert remove_dots_in_vietnamese_words("n.g.u.y.e.n") == "nguyen"
+    assert remove_dots_in_vietnamese_words("t.h.u v.i.e.n") == "thu vien"
+
+
 def test_normalize_text_full_pipeline():
     text = "OO@@ ch.ế.t 1000 lần, còn 038920842 là số điện thoại."
     result = normalize_text(text, NormalizationOptions())

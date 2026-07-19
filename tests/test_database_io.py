@@ -149,3 +149,15 @@ def test_import_json_filter_tables():
     import_json(conn, full_json, mode="overwrite", tables=["music"])
     row = conn.execute("SELECT value FROM app_state WHERE key='keep'").fetchone()
     assert row is not None
+
+def test_import_sql_invalid_mode_raises():
+    conn = _conn()
+    sql = export_sql(conn)
+    with pytest.raises(ValueError, match="mode must be"):
+        import_sql(conn, sql, mode="overite")
+
+def test_import_json_invalid_mode_raises():
+    conn = _conn()
+    data = export_json(conn)
+    with pytest.raises(ValueError, match="mode must be"):
+        import_json(conn, data, mode="merg")

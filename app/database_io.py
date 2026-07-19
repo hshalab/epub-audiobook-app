@@ -98,6 +98,8 @@ def import_sql(
     mode: str = "overwrite",
     tables: list[str] | None = None,
 ) -> None:
+    if mode not in ("overwrite", "merge"):
+        raise ValueError(f"mode must be 'overwrite' or 'merge', got '{mode}'")
     selected = _resolve_tables(conn, tables) if tables else None
     _TABLE_MARKER_RE = re.compile(r"^-- TABLE:\s*(\w+)", re.MULTILINE)
     blocks = re.split(_TABLE_MARKER_RE, sql)[1:]
@@ -107,8 +109,8 @@ def import_sql(
         if selected is not None and table not in selected:
             continue
         if mode == "overwrite":
-            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
             conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
             conn.executescript(body)
             conn.execute("PRAGMA foreign_keys = ON")
         else:
@@ -126,6 +128,8 @@ def import_json(
     mode: str = "overwrite",
     tables: list[str] | None = None,
 ) -> None:
+    if mode not in ("overwrite", "merge"):
+        raise ValueError(f"mode must be 'overwrite' or 'merge', got '{mode}'")
     selected = _resolve_tables(conn, tables) if tables else None
     for table, rows in data.items():
         if selected is not None and table not in selected:

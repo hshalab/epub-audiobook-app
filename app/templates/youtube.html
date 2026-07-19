@@ -2,12 +2,12 @@
 {% block title %}YouTube Upload{% endblock %}
 {% block content %}
 <h2>YouTube Upload</h2>
-<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Quan ly ket noi YouTube va lich su upload video.</p>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Quản lý kết nối YouTube và lịch sử upload video.</p>
 
 {% if not configured %}
 <div class="warning-block">
-    <p style="margin:0 0 0.3rem 0"><strong>YouTube chua duoc cau hinh.</strong></p>
-    <p style="margin:0 0 0.3rem 0">Them <code>YOUTUBE_CLIENT_ID</code> va <code>YOUTUBE_CLIENT_SECRET</code> vao file <code>.env</code> de kich hoat tinh nang nay.</p>
+    <p style="margin:0 0 0.3rem 0"><strong>YouTube chưa được cấu hình.</strong></p>
+    <p style="margin:0 0 0.3rem 0">Thêm <code>YOUTUBE_CLIENT_ID</code> và <code>YOUTUBE_CLIENT_SECRET</code> vào file <code>.env</code> để kích hoạt tính năng này.</p>
     <p style="margin:0">Tao OAuth2 credentials tai <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>.</p>
 </div>
 {% else %}
@@ -16,9 +16,9 @@
     {% if connected %}
     <div class="yt-connected">
         <span class="yt-status-dot yt-connected-dot"></span>
-        <strong>Da ket noi</strong> — Kenh: {{ channel_name }}
+        <strong>Đã kết nối</strong> — Kênh: {{ channel_name }}
         <form method="post" action="/youtube/disconnect" style="display:inline" onsubmit="return disconnectYouTube()">
-            <button type="submit" class="btn-danger btn-sm">Ngat ket noi</button>
+            <button type="submit" class="btn-danger btn-sm">Ngắt kết nối</button>
         </form>
     </div>
     {% if auto_upload %}
@@ -27,8 +27,8 @@
     {% else %}
     <div class="yt-disconnected">
         <span class="yt-status-dot yt-disconnected-dot"></span>
-        <strong>Chua ket noi</strong>
-        <a href="/youtube/connect" class="btn-youtube">Ket noi YouTube</a>
+        <strong>Chưa kết nối</strong>
+        <a href="/youtube/connect" class="btn-youtube">Kết nối YouTube</a>
     </div>
     {% endif %}
 </div>
@@ -99,7 +99,7 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Lich su Upload</h3>
+        <h3 style="margin:0">Lịch sử Upload</h3>
     </div>
     {% if uploads %}
     <div class="table-wrap">
@@ -146,7 +146,7 @@
     </table>
     </div>
     {% else %}
-    <p class="yt-empty">Chua co video nao duoc upload.</p>
+    <p class="yt-empty">Chưa có video nào được upload.</p>
     {% endif %}
 </div>
 
@@ -174,7 +174,7 @@
 })();
 
 function disconnectYouTube() {
-    return confirm('Ngat ket noi YouTube?');
+    return confirm('Ngắt kết nối YouTube?');
 }
 
 {% if connected %}
@@ -187,7 +187,7 @@ document.getElementById('yt-upload-form').addEventListener('submit', async funct
     const privacy = document.getElementById('yt-privacy').value;
     const statusEl = document.getElementById('yt-upload-status');
 
-    if (!fileInput.files.length || !title) { alert('File va title la bat buoc'); return; }
+    if (!fileInput.files.length || !title) { alert('File và title là bắt buộc'); return; }
 
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
@@ -201,14 +201,14 @@ document.getElementById('yt-upload-form').addEventListener('submit', async funct
     btn.textContent = 'Uploading...';
     statusEl.style.display = '';
     statusEl.className = 'yt-info';
-    statusEl.textContent = 'Dang upload len YouTube...';
+    statusEl.textContent = 'Đang upload lên YouTube...';
 
     try {
         const res = await fetch('/youtube/upload-file', { method: 'POST', body: fd });
         const data = await res.json();
         if (data.status === 'done') {
             statusEl.className = 'yt-ok';
-            statusEl.innerHTML = 'Upload thanh cong! <a href="https://youtube.com/watch?v=' + data.youtube_video_id + '" target="_blank">Xem tren YouTube</a>';
+            statusEl.innerHTML = 'Upload thành công! <a href="https://youtube.com/watch?v=' + data.youtube_video_id + '" target="_blank">Xem trên YouTube</a>';
         } else {
             statusEl.className = 'yt-err';
             statusEl.textContent = 'Upload failed: ' + (data.error || 'Unknown error');
