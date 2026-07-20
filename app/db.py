@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS youtube_credentials (
 
 CREATE TABLE IF NOT EXISTS youtube_uploads (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id        INTEGER REFERENCES videos(id) ON DELETE SET NULL,
     video_path      TEXT NOT NULL,
     youtube_video_id TEXT,
     title           TEXT,
@@ -269,6 +270,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     gdc_existing = {row["name"] for row in conn.execute("PRAGMA table_info(google_drive_credentials)")}
     if "oauth_client_id" not in gdc_existing:
         conn.execute("ALTER TABLE google_drive_credentials ADD COLUMN oauth_client_id INTEGER")
+    uploads_existing = {row["name"] for row in conn.execute("PRAGMA table_info(youtube_uploads)")}
+    if "video_id" not in uploads_existing:
+        conn.execute("ALTER TABLE youtube_uploads ADD COLUMN video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL")
     from app.config import settings
     if settings.google_drive_client_id:
         row = conn.execute("SELECT 1 FROM drive_oauth_client LIMIT 1").fetchone()

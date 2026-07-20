@@ -297,6 +297,7 @@ def enqueue_upload(
     description: str = "",
     tags: list[str] | None = None,
     privacy_status: str | None = None,
+    video_id: int | None = None,
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
 
@@ -307,9 +308,9 @@ def enqueue_upload(
     now = _now_iso()
     cursor = conn.execute(
         """INSERT INTO youtube_uploads
-           (video_path, title, description, tags, privacy_status, status, created_at)
-           VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
-        (video_path, title, description, json.dumps(tags or []), privacy_status, now),
+           (video_id, video_path, title, description, tags, privacy_status, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+        (video_id, video_path, title, description, json.dumps(tags or []), privacy_status, now),
     )
     conn.commit()
     return cursor.lastrowid
