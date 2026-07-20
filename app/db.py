@@ -163,6 +163,45 @@ CREATE TABLE IF NOT EXISTS voice_meta (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    original_name TEXT,
+    title TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    tags TEXT DEFAULT '',
+    privacy TEXT DEFAULT 'private',
+    file_path TEXT NOT NULL,
+    file_size_bytes INTEGER DEFAULT 0,
+    duration_sec REAL DEFAULT 0,
+    resolution TEXT DEFAULT '1920x1080',
+    batch_id TEXT,
+    source_audio TEXT,
+    background_path TEXT,
+    upload_status TEXT DEFAULT 'local_only',
+    youtube_video_id TEXT,
+    youtube_upload_id INTEGER,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_videos_upload_status ON videos(upload_status);
+CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
+CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
+
+CREATE TABLE IF NOT EXISTS batches (
+    id TEXT PRIMARY KEY,
+    name TEXT DEFAULT '',
+    total_files INTEGER DEFAULT 0,
+    completed_files INTEGER DEFAULT 0,
+    failed_files INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    config_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
