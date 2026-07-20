@@ -519,6 +519,29 @@ async def _run_single_video(
             **cfg,
         )
         shutil.move(str(tmp_out), str(final_path))
+        # Register video in database
+        from app.video_repository import insert_video
+        from app.db import get_conn
+        db_conn = get_conn()
+        try:
+            video_record = insert_video(
+                db_conn,
+                filename=final_path.name,
+                original_name=finfo["original_name"],
+                file_path=str(final_path),
+                file_size_bytes=final_path.stat().st_size,
+                resolution=cfg.get("resolution", "1920x1080"),
+                batch_id=batch_id,
+                source_audio=finfo["original_name"],
+                background_path=str(image_path),
+                title=finfo["original_name"],
+            )
+            video_db_id = video_record["id"]
+        except Exception as e:
+            logger.warning("Failed to register video in database: %s", e)
+            video_db_id = 0
+        finally:
+            db_conn.close()
         _record_step(job_key, "job.done", {"video": final_path.name})
         completed_at = datetime.now()
         _progress_store[job_key]["result"] = {
@@ -537,7 +560,7 @@ async def _run_single_video(
             try:
                 from app.upload_worker import upload_worker
                 upload_worker.enqueue(
-                    video_id=None,
+                    video_id=video_db_id,
                     title=finfo["original_name"],
                     description="",
                     tags=settings.youtube_default_tags,
