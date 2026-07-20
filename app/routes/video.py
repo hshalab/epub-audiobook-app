@@ -203,7 +203,6 @@ def video_creator_page(request: Request):
         "request": request,
         "video_url": None,
         "error": None,
-        "recent_videos": _get_recent_videos(),
     })
 
 
@@ -380,6 +379,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
     selected = body.get("selected", [])
     backgrounds: dict = body.get("backgrounds", {})
     raw_cfg = body.get("config", {})
+    max_concurrent = max(1, min(8, int(raw_cfg.get("max_concurrent", 3))))
 
     batch_dir = _TMP_DIR / batch_id
     meta_path = batch_dir / "meta.json"
@@ -418,13 +418,14 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
     files_map = {f["index"]: f for f in meta["files"]}
     _VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Schedule background tasks for each selected file
+    # Build task list
+    tasks = []
     for idx in selected:
         idx = int(idx)
         finfo = files_map.get(idx)
         if not finfo:
             continue
-        
+
         audio_path = Path(finfo["path"])
         if not audio_path.exists():
             continue
@@ -435,77 +436,111 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             continue
 
         job_key = f"{batch_id}:{idx}"
-        _progress_store.pop(job_key, None)  # fresh log on regenerate
+        _progress_store.pop(job_key, None)
         _record_step(job_key, "job.start", {"file": finfo["original_name"]})
         if music_path:
             _record_step(job_key, "music.resolved", {"path": Path(music_path).name,
                                                      "volume": music_volume})
 
-        # Per-file overlay takes precedence over global overlay
         per_overlay = overlay_configs.get(str(idx))
         effective_overlay_text = per_overlay.get("text") if per_overlay else overlay_text
         effective_overlay_opts = per_overlay if per_overlay else overlay_opts
 
-        def make_task(idx, finfo, audio_path, image_path, job_key, 
-                      effective_overlay_text, effective_overlay_opts, 
-                      music_path, music_volume, cfg, batch_id):
-            async def _task():
-                overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
-                render_path = image_path
-                if effective_overlay_text:
-                    rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
-                    if rendered is not None:
-                        render_path = rendered
-                        _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
-                    else:
-                        _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
+        tasks.append((idx, finfo, audio_path, image_path, job_key,
+                       effective_overlay_text, effective_overlay_opts))
 
-                stem = _sanitize_basename(finfo["original_name"])
-                final_path = _unique_video_path(stem)
-                tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
-                progress_cb = _make_progress_logger(
-                    "video_creator.batch", job_key=job_key,
-                    batch_id=batch_id, index=idx, mode="batch",
-                )
-                started = time.time()
-                try:
-                    await asyncio.to_thread(
-                        video_gen.generate_standalone_video,
-                        str(audio_path), str(render_path), str(tmp_out),
-                        on_progress=progress_cb,
-                        music_path=music_path,
-                        music_volume=music_volume,
-                        **cfg,
-                    )
-                    shutil.move(str(tmp_out), str(final_path))
-                    _record_step(job_key, "job.done", {"video": final_path.name})
-                    completed_at = datetime.now()
-                    # Store result info
-                    _progress_store[job_key]["result"] = {
-                        "index": idx,
-                        "status": "done",
-                        "name": final_path.name,
-                        "video_url": f"/video/videos/{final_path.name}",
-                        "size_mb": round(final_path.stat().st_size / (1024 * 1024), 1),
-                        "elapsed_seconds": round(time.time() - started, 1),
-                        "completed_at": completed_at.isoformat(timespec="seconds"),
-                    }
-                except Exception as exc:
-                    tmp_out.unlink(missing_ok=True)
-                    _record_step(job_key, "job.failed", {"error": str(exc)[:300]})
-                    _progress_store[job_key]["result"] = {
-                        "index": idx,
-                        "status": "error",
-                        "message": str(exc),
-                        "elapsed_seconds": round(time.time() - started, 1),
-                    }
-            return _task
-        
-        background_tasks.add_task(make_task(idx, finfo, audio_path, image_path, job_key,
-                          effective_overlay_text, effective_overlay_opts,
-                          music_path, music_volume, cfg, batch_id))
+    if not tasks:
+        return JSONResponse({"batch_id": batch_id, "scheduled": 0})
 
-    return JSONResponse({"batch_id": batch_id, "scheduled": len(selected)})
+    # Record batch-level info
+    batch_key = f"{batch_id}:_batch"
+    _record_step(batch_key, "batch.start", {
+        "total": len(tasks), "max_concurrent": max_concurrent,
+    })
+
+    async def run_with_semaphore(sem, idx, finfo, audio_path, image_path, job_key,
+                                  eff_text, eff_opts):
+        async with sem:
+            return await _run_single_video(
+                idx, finfo, audio_path, image_path, job_key,
+                eff_text, eff_opts, music_path, music_volume, cfg, batch_id,
+            )
+
+    async def run_batch():
+        sem = asyncio.Semaphore(max_concurrent)
+        coros = [
+            run_with_semaphore(sem, *task)
+            for task in tasks
+        ]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        done_count = sum(1 for r in results if r is True)
+        _record_step(batch_key, "batch.done", {
+            "total": len(tasks), "succeeded": done_count,
+            "failed": len(tasks) - done_count,
+        })
+        _progress_store[batch_key]["status"] = "done"
+
+    background_tasks.add_task(run_batch)
+
+    return JSONResponse({"batch_id": batch_id, "scheduled": len(tasks),
+                         "max_concurrent": max_concurrent})
+
+
+async def _run_single_video(
+    idx, finfo, audio_path, image_path, job_key,
+    effective_overlay_text, effective_overlay_opts,
+    music_path, music_volume, cfg, batch_id,
+):
+    overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
+    render_path = image_path
+    if effective_overlay_text:
+        rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
+        if rendered is not None:
+            render_path = rendered
+            _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
+        else:
+            _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
+
+    stem = _sanitize_basename(finfo["original_name"])
+    final_path = _unique_video_path(stem)
+    tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
+    progress_cb = _make_progress_logger(
+        "video_creator.batch", job_key=job_key,
+        batch_id=batch_id, index=idx, mode="batch",
+    )
+    started = time.time()
+    try:
+        await asyncio.to_thread(
+            video_gen.generate_standalone_video,
+            str(audio_path), str(render_path), str(tmp_out),
+            on_progress=progress_cb,
+            music_path=music_path,
+            music_volume=music_volume,
+            **cfg,
+        )
+        shutil.move(str(tmp_out), str(final_path))
+        _record_step(job_key, "job.done", {"video": final_path.name})
+        completed_at = datetime.now()
+        _progress_store[job_key]["result"] = {
+            "index": idx,
+            "status": "done",
+            "name": final_path.name,
+            "video_url": f"/video/videos/{final_path.name}",
+            "size_mb": round(final_path.stat().st_size / (1024 * 1024), 1),
+            "elapsed_seconds": round(time.time() - started, 1),
+            "completed_at": completed_at.isoformat(timespec="seconds"),
+        }
+        return True
+    except Exception as exc:
+        tmp_out.unlink(missing_ok=True)
+        _record_step(job_key, "job.failed", {"error": str(exc)[:300]})
+        _progress_store[job_key]["result"] = {
+            "index": idx,
+            "status": "error",
+            "message": str(exc),
+            "elapsed_seconds": round(time.time() - started, 1),
+        }
+        return False
 
 
 @router.get("/video/progress/{batch_id}")
