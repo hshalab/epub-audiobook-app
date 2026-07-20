@@ -530,6 +530,22 @@ async def _run_single_video(
             "elapsed_seconds": round(time.time() - started, 1),
             "completed_at": completed_at.isoformat(timespec="seconds"),
         }
+        # Auto-upload to YouTube if configured
+        from app.config import settings
+        from app import youtube
+        if settings.youtube_auto_upload and youtube.is_configured():
+            try:
+                from app.upload_worker import upload_worker
+                upload_worker.enqueue(
+                    video_id=None,
+                    title=finfo["original_name"],
+                    description="",
+                    tags=settings.youtube_default_tags,
+                    privacy=settings.youtube_default_privacy,
+                    video_path=str(final_path),
+                )
+            except Exception as e:
+                logger.warning("Auto-upload enqueue failed: %s", e)
         return True
     except Exception as exc:
         tmp_out.unlink(missing_ok=True)

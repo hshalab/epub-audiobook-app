@@ -38,17 +38,27 @@ class UploadWorker:
                 pass
         logger.info("Upload worker stopped")
 
-    def enqueue(self, video_id: int, title: str, description: str, tags: str, privacy: str) -> int:
+    def enqueue(self, video_id: int | None, title: str, description: str, tags: str, privacy: str, video_path: str | None = None) -> int:
+        """Enqueue a video for upload. If video_id is None or video not found, uses video_path directly."""
         with self.db_lock:
-            video = get_video(self.conn, video_id)
-            if not video:
-                raise ValueError(f"Video {video_id} not found")
+            file_path = video_path
+            if video_id is not None:
+                video = get_video(self.conn, video_id)
+                if video:
+                    file_path = video["file_path"]
+                    tags_list = [t.strip() for t in tags.split(",") if t.strip()]
+                    upload_id = youtube.enqueue_upload(
+                        self.conn, file_path, title, description, tags_list, privacy, video_id=video_id
+                    )
+                    update_video(self.conn, video_id, upload_status="queued", youtube_upload_id=upload_id)
+                    return upload_id
+            # ponytail: direct enqueue without video record, for auto-upload before video table integration
+            if not file_path:
+                raise ValueError("video_path required when video_id is None or video not found")
             tags_list = [t.strip() for t in tags.split(",") if t.strip()]
-            upload_id = youtube.enqueue_upload(
-                self.conn, video["file_path"], title, description, tags_list, privacy, video_id=video_id
+            return youtube.enqueue_upload(
+                self.conn, file_path, title, description, tags_list, privacy, video_id=None
             )
-            update_video(self.conn, video_id, upload_status="queued", youtube_upload_id=upload_id)
-            return upload_id
 
     def get_status(self) -> dict:
         return {
