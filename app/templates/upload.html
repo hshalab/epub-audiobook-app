@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Upload epub{% endblock %}
+{% block title %}Tải lên EPUB{% endblock %}
 {% block content %}
-<h2>Upload an EPUB</h2>
+<h2>Tải lên EPUB</h2>
 
 <div class="card">
-    <form action="/books/upload" method="post" enctype="multipart/form-data" id="upload-form">
+    <form data-guard action="/books/upload" method="post" enctype="multipart/form-data" id="upload-form">
         <div class="form-group">
-            <label for="epub_file">EPUB file <span class="required">*</span></label>
+            <label for="epub_file">File EPUB <span class="required">*</span></label>
             <div class="dropzone" id="dropzone-epub">
                 <div class="dropzone-icon">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -23,10 +23,17 @@
                 <label>
                     Chapters <span id="chapter-summary" style="font-weight:normal;color:var(--text-muted)"></span>
                 </label>
-                <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-sm)">
-                    <button type="button" class="btn-outline btn-sm" id="btn-select-all">Chọn tất cả</button>
-                    <button type="button" class="btn-outline btn-sm" id="btn-deselect-all">Bỏ chọn tất cả</button>
-                    <button type="button" class="btn-outline btn-sm" id="btn-preview-selected">Xem trước đã chọn</button>
+                <div style="display:flex;gap:var(--space-sm);align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:var(--space-sm)">
+                    <div style="display:flex;gap:var(--space-sm);align-items:center;flex-wrap:wrap">
+                        <button type="button" class="btn-outline btn-sm" id="btn-select-all">Chọn tất cả</button>
+                        <button type="button" class="btn-outline btn-sm" id="btn-deselect-all">Bỏ chọn tất cả</button>
+                        <button type="button" class="btn-outline btn-sm" id="btn-preview-selected">Xem trước đã chọn</button>
+                    </div>
+                    <div class="font-picker" role="group" aria-label="Font xem trước">
+                        <button type="button" class="font-picker-btn active" data-font="serif">Serif</button>
+                        <button type="button" class="font-picker-btn" data-font="sans">Sans</button>
+                        <button type="button" class="font-picker-btn" data-font="classic">Classic</button>
+                    </div>
                 </div>
                 <div class="chapter-checkbox-grid" id="chapter-grid"></div>
             </div>
@@ -34,7 +41,7 @@
             <div id="chapter-text-preview" style="display:none">
                 <div class="form-group">
                     <label>Nội dung chapter</label>
-                    <div id="chapter-text-content" class="chapter-preview-text" style="max-height:20rem;overflow-y:auto;padding:var(--space-md);background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--border-radius);font-family:var(--font-serif);font-size:var(--font-size-sm);line-height:1.6;white-space:pre-wrap"></div>
+                    <div id="chapter-text-content" class="chapter-preview-text" data-font="serif" style="max-height:20rem;overflow-y:auto;padding:var(--space-md);background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--border-radius);white-space:pre-wrap"></div>
                 </div>
             </div>
         </div>
@@ -42,54 +49,24 @@
         <input type="hidden" id="excluded_chapters" name="excluded_chapters" value="">
 
         <div class="form-group">
-            <label for="patch_size">Chapters per patch</label>
+            <label for="patch_size">Số chương mỗi patch</label>
             <input type="number" id="patch_size" name="patch_size" value="10" min="1" style="max-width:120px">
-            <small>Number of chapters grouped into each processing patch.</small>
+            <small>Số chương được gộp vào mỗi patch xử lý.</small>
         </div>
 
-        <div class="form-group">
-            <label for="background_image">Background image (optional)</label>
-            <div class="dropzone" id="dropzone-bg">
-                <div class="dropzone-icon">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                </div>
-                <div class="dropzone-text">Kéo thả hình ảnh vào đây hoặc bấm để chọn</div>
-                <div class="dropzone-hint">JPG, PNG, WebP — Dùng làm nền cho video</div>
-                <input type="file" id="background_image" name="background_image" accept="image/*">
-            </div>
-            <div id="bg-preview" class="img-preview" style="display:none">
-                <img id="bg-preview-img" src="" alt="Background preview">
-                <button type="button" class="img-preview-remove" onclick="removePreview('bg')">&times;</button>
-            </div>
-        </div>
+        <p class="form-hint" style="color:var(--text-muted);font-size:var(--font-size-sm);margin:-0.5rem 0 var(--space-lg)">
+            Ảnh nền và voice tham chiếu cho giọng đọc được thiết lập sau, trong trang chi tiết sách (mục Studio).
+        </p>
 
-        <div class="form-group">
-            <label for="voice_clip">Voice clone sample (optional)</label>
-            <div class="dropzone" id="dropzone-voice">
-                <div class="dropzone-icon">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-                </div>
-                <div class="dropzone-text">Kéo thả file âm thanh vào đây hoặc bấm để chọn</div>
-                <div class="dropzone-hint">WAV, MP3, OGG, FLAC — 3-15 giây giọng nói sạch</div>
-                <input type="file" id="voice_clip" name="voice_clip" accept=".wav,.mp3,.ogg,.flac">
-            </div>
-            <div id="voice-preview" class="img-preview" style="display:none"></div>
-        </div>
-
-        <div class="form-group">
-            <label for="voice_transcript">Voice sample transcript (optional)</label>
-            <input type="text" id="voice_transcript" name="voice_transcript" placeholder="Exact words spoken in the voice sample">
-            <small>Improves cloning accuracy. Type the exact words from the voice sample.</small>
-        </div>
-
-        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)" id="btn-submit">Upload &amp; Parse</button>
+        <button type="submit" class="btn-primary" style="margin-top:var(--space-md)" id="btn-submit">Tải lên &amp; Phân tích</button>
     </form>
 </div>
 
 <script>
-function setupDropzone(dropzoneId, inputId, previewId, type) {
-    const dz = document.getElementById(dropzoneId);
-    const input = document.getElementById(inputId);
+function setupEpubDropzone() {
+    const dz = document.getElementById('dropzone-epub');
+    const input = document.getElementById('epub_file');
+    const preview = document.getElementById('epub-preview');
     if (!dz || !input) return;
 
     ['dragenter','dragover'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('dragover'); }));
@@ -103,30 +80,29 @@ function setupDropzone(dropzoneId, inputId, previewId, type) {
     input.addEventListener('change', function() {
         if (!this.files.length) return;
         const file = this.files[0];
-        const preview = document.getElementById(previewId);
-        if (type === 'image') {
-            const reader = new FileReader();
-            reader.onload = e => {
-                preview.innerHTML = '<img src="' + e.target.result + '" alt="Preview">';
-                preview.style.display = 'inline-block';
-            };
-            reader.readAsDataURL(file);
-        } else if (type === 'audio') {
-            preview.innerHTML = '<audio controls src="' + URL.createObjectURL(file) + '" style="max-width:250px;height:32px"></audio>';
-            preview.style.display = 'inline-block';
-        } else if (type === 'epub') {
-            preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">' + file.name + '</span>';
-            preview.style.display = 'inline-block';
-            parseEpubForPreview(file);
-        }
+        preview.innerHTML = '<span style="font-size:var(--font-size-sm);color:var(--text-secondary)">' + file.name + '</span>';
+        preview.style.display = 'inline-block';
+        parseEpubForPreview(file);
     });
 }
 
-function removePreview(type) {
-    const preview = document.getElementById(type + '-preview');
-    const input = document.getElementById(type === 'bg' ? 'background_image' : type + '_clip');
-    if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
-    if (input) { input.value = ''; }
+function setupFontPicker() {
+    const buttons = Array.from(document.querySelectorAll('.font-picker-btn'));
+    const target = document.getElementById('chapter-text-content');
+    if (!buttons.length || !target) return;
+
+    const saved = localStorage.getItem('readerFont');
+    if (saved) {
+        target.dataset.font = saved;
+        buttons.forEach(b => b.classList.toggle('active', b.dataset.font === saved));
+    }
+
+    buttons.forEach(btn => btn.addEventListener('click', () => {
+        const font = btn.dataset.font;
+        target.dataset.font = font;
+        buttons.forEach(b => b.classList.toggle('active', b === btn));
+        localStorage.setItem('readerFont', font);
+    }));
 }
 
 let allChapters = [];
@@ -251,8 +227,7 @@ document.getElementById('btn-preview-selected').addEventListener('click', functi
     textPreview.style.display = 'block';
 });
 
-setupDropzone('dropzone-epub', 'epub_file', 'epub-preview', 'epub');
-setupDropzone('dropzone-bg', 'background_image', 'bg-preview', 'image');
-setupDropzone('dropzone-voice', 'voice_clip', 'voice-preview', 'audio');
+setupEpubDropzone();
+setupFontPicker();
 </script>
 {% endblock %}

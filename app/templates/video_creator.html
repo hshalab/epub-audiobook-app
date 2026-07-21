@@ -2,7 +2,7 @@
 {% block title %}Video Creator{% endblock %}
 {% block content %}
 <h2>Video Creator</h2>
-<p class="vc-muted-intro">Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
+<p class="vc-muted-intro">Tạo hàng loạt video với một music mix chung và background riêng cho từng file.</p>
 
 <div class="view-toggle" role="tablist" aria-label="Video Creator sections" style="margin-bottom:var(--space-lg)">
     <button type="button" id="tab-btn-create" class="active" role="tab" aria-selected="true" aria-controls="tab-panel-create">Create Video</button>
@@ -44,13 +44,14 @@
             </div>
             <div id="audio-preview" class="img-preview hidden"></div>
         </div>
-        <button type="submit" class="btn-primary" id="btn-upload">Upload</button>
+        <button type="submit" class="btn-primary" id="btn-upload">Nạp audio vào lô</button>
+        <span class="vc-help">Bước này chỉ nạp audio để cấu hình. MP4 chỉ xuất hiện trong Video Library sau khi bấm “Tạo video đã chọn”.</span>
     </form>
 </div>
 
 <!-- Step 2: File Table + Background Selection -->
 <div class="batch-section hidden" id="step-table">
-    <h3 style="margin-top:0">2. Configure Each File</h3>
+    <h3 style="margin-top:0">2. Chọn background cho từng video</h3>
     <div class="batch-toolbar">
         <label><input type="checkbox" id="select-all" checked> Select All</label>
         <span id="selected-count">0 selected</span>
@@ -67,7 +68,6 @@
                 <th class="col-preview">Preview</th>
                 <th class="col-status">Status</th>
                 <th class="col-time">Thời gian tạo</th>
-                <th class="col-edit">Edit Overlay</th>
             </tr>
         </thead>
         <tbody id="file-table-body">
@@ -82,37 +82,12 @@
         <button type="button" class="btn-sm btn-outline" id="btn-upload-bg">Upload</button>
     </div>
 
-    <!-- Studio: live overlay preview + drag-to-position + audio mix check -->
+    <!-- Shared music mix -->
     <div class="card" id="studio-card">
-        <style>
-            #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
-            @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
-            .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
-            .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
-            #ov-drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
-            #ov-drag-rect:hover, #ov-drag-rect.dragging { background:rgba(56,189,248,.22); }
-        </style>
         <div class="card-header">
-            <h3 style="margin:0">Studio — Preview overlay &amp; nghe thử mix</h3>
+            <h3 style="margin:0">Music mix chung</h3>
         </div>
-        <div id="studio-grid">
-            <div style="position:sticky;top:var(--space-md);display:flex;flex-direction:column;gap:var(--space-md)">
-                <div>
-                    <div class="form-group" style="margin:0 0 var(--space-sm) 0">
-                        <label for="preview-row-select">Preview với file</label>
-                        <select id="preview-row-select"></select>
-                    </div>
-                    <div id="ov-preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
-                        <img id="ov-preview" alt="Preview" style="width:100%;display:block">
-                        <div id="ov-drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
-                    </div>
-                    <p id="ov-preview-empty" style="display:none;margin:var(--space-sm) 0 0 0;color:var(--text-muted)">Chưa có ảnh nền để preview — upload file trước.</p>
-                    <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
-                        Kéo khung chữ trên ảnh để chỉnh vị trí. Thay đổi ở cột phải cập nhật preview ngay.
-                    </p>
-                </div>
-
-                <div class="studio-section">
+        <div class="studio-section">
                     <h4>Nghe thử mix (audio chính + nhạc nền)</h4>
                     <div class="vc-row-wrap">
                         <button type="button" id="mix-play" class="btn-outline btn-sm">&#9654; Nghe thử</button>
@@ -139,140 +114,22 @@
                     <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
                         Tỉ lệ nghe thử giống lúc render video: audio chính giữ 100%, nhạc nền theo % ở trên và tự loop.
                     </p>
-                </div>
-            </div>
-
-            <div class="studio-section">
-                <h4>Text overlay <span id="overlay-active-badge" class="badge"></span> <button type="button" id="ov-edit-default" class="btn-outline btn-sm" style="display:none">&larr; Overlay mặc định</button></h4>
-                
-                <!-- Basic -->
-                <div class="form-grid">
-                    <div class="form-group"><label for="ov-text">Text</label><input type="text" id="ov-text" maxlength="200" placeholder="VD: Tên sách - Tập 1"></div>
-                    <div class="form-group"><label for="ov-position">Position</label><select id="ov-position"><option value="top">Trên</option><option value="center">Giữa</option><option value="bottom">Dưới</option></select></div>
-                    <div class="form-group"><label for="ov-alignment">Alignment</label><select id="ov-alignment"><option value="left">Trái</option><option value="center">Giữa</option><option value="right">Phải</option></select></div>
-                    <div class="form-group"><label for="ov-font-size">Font size</label><input type="number" id="ov-font-size" min="12" max="200" value="52"></div>
-                    <div class="form-group"><label for="ov-text-color">Text color</label><input type="color" id="ov-text-color" value="#FFFFFF"></div>
-                    <div class="form-group"><label for="ov-margin">Margin (px)</label><input type="number" id="ov-margin" min="0" max="200" value="20"></div>
-                </div>
-
-                <div class="vc-row-wrap">
-                    <button type="button" id="ov-apply-all" class="btn-outline btn-sm">Áp dụng cho tất cả files</button>
-                    <button type="button" id="ov-clear-all" class="btn-outline btn-sm">Xóa overlay tất cả</button>
-                </div>
-
-                <div class="drag-offset">
-                    <span>Offset kéo: <code id="ov-offset-label">0, 0</code> px</span>
-                    <input type="hidden" id="ov-offset-x" value="0">
-                    <input type="hidden" id="ov-offset-y" value="0">
-                    <button type="button" id="ov-offset-reset" class="btn-outline btn-sm">Reset</button>
-                </div>
-
-                <!-- Shadow -->
-                <details class="ov-details"><summary>Shadow (đổ bóng)</summary>
-                    <div class="form-grid">
-                        <label class="checkbox-inline"><input type="checkbox" id="ov-shadow-enabled"> Bật</label>
-                        <div class="form-group"><label for="ov-shadow-color">Màu</label><input type="color" id="ov-shadow-color" value="#000000"></div>
-                        <div class="form-group"><label for="ov-shadow-offset">Offset (px)</label><input type="number" id="ov-shadow-offset" min="0" max="20" value="3"></div>
-                    </div>
-                </details>
-
-                <!-- Background Box -->
-                <details class="ov-details"><summary>Background box (hộp nền)</summary>
-                    <div class="form-grid">
-                        <label class="checkbox-inline"><input type="checkbox" id="ov-box-enabled"> Bật</label>
-                        <div class="form-group"><label for="ov-box-color">Màu</label><input type="color" id="ov-box-color" value="#000000"></div>
-                        <div class="form-group"><label>Độ mờ: <span id="ov-box-opacity-label">60%</span></label><input type="range" id="ov-box-opacity" min="0" max="100" value="60" oninput="document.getElementById('ov-box-opacity-label').textContent=this.value+'%'"></div>
-                        <div class="form-group"><label for="ov-box-px">Padding X</label><input type="number" id="ov-box-px" min="0" max="200" value="16"></div>
-                        <div class="form-group"><label for="ov-box-py">Padding Y</label><input type="number" id="ov-box-py" min="0" max="200" value="8"></div>
-                        <div class="form-group"><label for="ov-box-radius">Bo góc</label><input type="number" id="ov-box-radius" min="0" max="200" value="8"></div>
-                    </div>
-                </details>
-
-                <!-- Marquee -->
-                <details class="ov-details"><summary>Marquee (chạy chữ ngang)</summary>
-                    <div class="form-grid">
-                        <label class="checkbox-inline"><input type="checkbox" id="ov-marquee-enabled"> Bật marquee</label>
-                        <div class="form-group"><label for="ov-marquee-height">Chiều cao bar</label><input type="number" id="ov-marquee-height" min="20" max="200" value="60"></div>
-                        <div class="form-group"><label for="ov-marquee-font-size">Cỡ chữ</label><input type="number" id="ov-marquee-font-size" min="12" max="120" value="36"></div>
-                        <div class="form-group"><label for="ov-marquee-text-color">Màu chữ</label><input type="color" id="ov-marquee-text-color" value="#FFFFFF"></div>
-                        <div class="form-group"><label for="ov-marquee-bg-color">Màu nền</label><input type="color" id="ov-marquee-bg-color" value="#000000"></div>
-                        <div class="form-group"><label>Độ mờ nền: <span id="ov-marquee-opacity-label">80%</span></label><input type="range" id="ov-marquee-opacity" min="0" max="100" value="80" oninput="document.getElementById('ov-marquee-opacity-label').textContent=this.value+'%'"></div>
-                        <div class="form-group"><label for="ov-marquee-speed">Tốc độ (px/s)</label><input type="number" id="ov-marquee-speed" min="10" max="500" value="50"></div>
-                    </div>
-                </details>
-            </div>
         </div>
     </div>
 
-    <!-- Step 3: Config -->
-    <h3>3. Video Config (applied to all selected)</h3>
-    <div class="video-creator-form">
-        <div class="form-row">
-            <div class="form-group">
-                <label for="cfg-resolution">Resolution</label>
-                <select name="resolution" id="cfg-resolution">
-                    <option value="1920x1080" selected>1920x1080 (Full HD)</option>
-                    <option value="1280x720">1280x720 (HD)</option>
-                    <option value="854x480">854x480 (SD)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-fps">FPS</label>
-                <select name="fps" id="cfg-fps">
-                    <option value="24">24</option>
-                    <option value="30" selected>30</option>
-                    <option value="60">60</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-codec">Codec</label>
-                <select name="codec" id="cfg-codec">
-                    <option value="libx264" selected>libx264</option>
-                    <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
-                </select>
-            </div>
+    <!-- Step 3: Shared publishing options -->
+    <h3>3. Audio chào chung cho cả lô video</h3>
+    <div class="card vc-greeting-card">
+        <div class="form-grid">
+            <div class="form-group"><label for="cfg-intro-audio">Audio chào mở đầu</label><input type="file" id="cfg-intro-audio" accept=".wav,.mp3,.m4a,.ogg"></div>
+            <div class="form-group"><label for="cfg-outro-audio">Audio chào kết thúc</label><input type="file" id="cfg-outro-audio" accept=".wav,.mp3,.m4a,.ogg"></div>
         </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="cfg-audio-bitrate">Audio bitrate</label>
-                <select name="audio_bitrate" id="cfg-audio-bitrate">
-                    <option value="128k">128k</option>
-                    <option value="192k" selected>192k</option>
-                    <option value="256k">256k</option>
-                    <option value="320k">320k</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-image-type">Image type</label>
-                <select name="image_type" id="cfg-image-type">
-                    <option value="none" selected>Static</option>
-                    <option value="zoom-in">Zoom In (Ken Burns)</option>
-                    <option value="zoom-out">Zoom Out (Ken Burns)</option>
-                    <option value="pan-left">Pan Left</option>
-                    <option value="pan-right">Pan Right</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-crf">CRF (quality: 18=high, 28=low)</label>
-                <input type="range" name="crf" min="18" max="28" value="23" id="cfg-crf"
-                       oninput="document.getElementById('crf-val').textContent=this.value">
-                <span id="crf-val">23</span>
-            </div>
-            <div class="form-group">
-                <label for="cfg-concurrent">Song song (max)</label>
-                <select id="cfg-concurrent">
-                    <option value="1">1 (chậm, ít RAM)</option>
-                    <option value="2">2</option>
-                    <option value="3" selected>3 (khuyến nghị)</option>
-                    <option value="4">4</option>
-                    <option value="6">6</option>
-                    <option value="8">8 (nhanh, nhiều RAM)</option>
-                </select>
-            </div>
-        </div>
+        <p class="vc-help">Hai file audio này được dùng cố định cho mọi video trong lô: mở đầu → nội dung chính → kết thúc.</p>
     </div>
+    <div class="vc-feature-hints"><strong>Gợi ý tăng tương tác YouTube</strong><span>Zoom nhẹ theo nhịp</span><span>Video background không lời dạng loop</span><span>Chuyển cảnh đầu/cuối</span><span>Progress bar / waveform</span></div>
+    <div class="form-group" style="max-width:240px"><label for="cfg-concurrent">Số video xử lý song song</label><select id="cfg-concurrent"><option value="1">1</option><option value="2">2</option><option value="3" selected>3 (khuyến nghị)</option><option value="4">4</option><option value="6">6</option><option value="8">8</option></select></div>
 
-    <button type="button" class="btn-primary" id="btn-generate" style="font-size:1rem;padding:0.6rem 2rem">Generate Selected Videos</button>
+<button type="button" class="btn-primary" id="btn-generate" style="font-size:1rem;padding:0.6rem 2rem">Tạo video đã chọn</button>
 </div>
 
 <!-- Step 4: Results -->
@@ -401,32 +258,34 @@
     margin-left: 0.4rem;
 }
 .step-log { margin-top: 0.3rem; font-size: 0.8rem; }
-.step-log summary { cursor: pointer; color: var(--text-muted); }
+.step-log summary { cursor: pointer; color: var(--text-muted); padding:.35rem 0; }
 .step-log-body {
     margin-top: 0.3rem; padding: 0.4rem 0.6rem;
     background: var(--bg-secondary, rgba(128,128,128,0.08));
-    border-radius: 6px; font-family: monospace;
-    max-height: 220px; overflow-y: auto;
+    border-radius: 6px; font-family: monospace; font-size:.75rem;
+    max-height: 180px; overflow-y: auto;
 }
-.step-log-line { white-space: nowrap; }
+.step-log-line { display:grid; grid-template-columns:5.5rem 10rem 1fr; gap:.4rem; padding:.2rem 0; border-bottom:1px solid var(--border-color); white-space:normal; overflow-wrap:anywhere; }
 .step-t { color: var(--text-muted); margin-right: 0.4rem; }
 .step-e { font-weight: 600; margin-right: 0.4rem; }
 .step-d { color: var(--text-muted); }
+.result-item { padding:var(--space-md) 0; border-bottom:1px solid var(--border-color); }
+.result-main { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+.result-video { display:block; width:min(100%, 720px); max-height:405px; margin:.75rem 0; background:#000; border-radius:var(--border-radius); }
+.result-actions { display:flex; gap:.5rem; align-items:center; }
 
-/* Per-file overlay edits */
-.row-active { border-left: 3px solid var(--accent); }
-#overlay-active-badge { font-size: var(--font-size-xs); margin-left: var(--space-xs); vertical-align: middle; }
 .form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--space-md); }
-.checkbox-inline { display:flex; align-items:center; gap:var(--space-xs); font-weight:500; }
-.ov-details { margin-top:var(--space-md); }
-.ov-details summary { cursor:pointer; font-weight:500; margin-bottom:var(--space-sm); }
-.drag-offset { display:flex; align-items:center; gap:var(--space-sm); margin-top:var(--space-sm); font-size:var(--font-size-xs); color:var(--text-muted); }
+.vc-greeting-card { margin:var(--space-md) 0; }
+.vc-help { margin:var(--space-sm) 0 0; color:var(--text-muted); font-size:var(--font-size-sm); }
+.vc-feature-hints { display:flex; flex-wrap:wrap; gap:var(--space-sm); align-items:center; margin:var(--space-md) 0; padding:var(--space-md); border:1px dashed var(--border-color); border-radius:var(--border-radius); color:var(--text-muted); font-size:var(--font-size-sm); }
+.vc-feature-hints span { padding:.25rem .55rem; border-radius:999px; background:var(--bg-secondary, rgba(128,128,128,.1)); }
+@media (max-width: 640px) { .vc-feature-hints { align-items:flex-start; flex-direction:column; } .vc-feature-hints span { width:100%; } }
 </style>
 
 <script src="/static/video_creator.js"></script>
 
 <!-- Parameter Reference -->
-<details class="param-reference">
+<details class="param-reference" style="display:none">
 <summary>Thamso FFmpeg — Chi tiet</summary>
 
 <div class="param-section">

@@ -89,29 +89,18 @@ async def upload_book(
     request: Request,
     epub_file: UploadFile = File(...),
     patch_size: int = Form(default=10),
-    background_image: UploadFile | None = File(default=None),
-    voice_clip: UploadFile | None = File(default=None),
-    voice_transcript: str | None = Form(default=None),
     excluded_chapters: str | None = Form(default=None),
 ):
+    """Upload only handles what's needed to start parsing a book: the EPUB
+    file, chapter selection, and patch size. Background image and voice
+    clone reference are configured afterwards on the book detail page
+    (Studio), which already offers a richer, library-backed picker for both."""
     uploads_dir = Path(settings.data_root) / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     tmp_epub_path = uploads_dir / f"_tmp_{epub_file.filename}"
     with open(tmp_epub_path, "wb") as f:
         shutil.copyfileobj(epub_file.file, f)
-
-    tmp_bg_path = None
-    if background_image is not None and background_image.filename:
-        tmp_bg_path = uploads_dir / f"_tmp_bg_{background_image.filename}"
-        with open(tmp_bg_path, "wb") as f:
-            shutil.copyfileobj(background_image.file, f)
-
-    tmp_voice_path = None
-    if voice_clip is not None and voice_clip.filename:
-        tmp_voice_path = uploads_dir / f"_tmp_voice_{voice_clip.filename}"
-        with open(tmp_voice_path, "wb") as f:
-            shutil.copyfileobj(voice_clip.file, f)
 
     chapters = parse_epub(str(tmp_epub_path))
     title = Path(epub_file.filename).stem
@@ -125,7 +114,6 @@ async def upload_book(
             patch_size=patch_size,
             chapters=chapters,
             background_image_path=None,
-            voice_transcript=voice_transcript or None,
         )
 
         if excluded_chapters:
@@ -137,24 +125,9 @@ async def upload_book(
         final_epub_path = uploads_dir / f"{book.id}.epub"
         tmp_epub_path.rename(final_epub_path)
 
-        final_bg_path = None
-        if tmp_bg_path is not None:
-            final_bg_path = uploads_dir / f"{book.id}_bg{Path(tmp_bg_path).suffix}"
-            tmp_bg_path.rename(final_bg_path)
-
-        final_voice_path = None
-        if tmp_voice_path is not None:
-            final_voice_path = uploads_dir / f"{book.id}_voice{Path(tmp_voice_path).suffix}"
-            tmp_voice_path.rename(final_voice_path)
-
         conn.execute(
-            "UPDATE book SET epub_path = ?, background_image_path = ?, voice_clip_path = ? WHERE id = ?",
-            (
-                str(final_epub_path),
-                str(final_bg_path) if final_bg_path else None,
-                str(final_voice_path) if final_voice_path else None,
-                book.id,
-            ),
+            "UPDATE book SET epub_path = ? WHERE id = ?",
+            (str(final_epub_path), book.id),
         )
         conn.commit()
 
@@ -373,7 +346,7 @@ def overlay_preview(request: Request, book_id: int):
 
     from PIL import Image
     img = Image.open(str(bg)).convert("RGB")
-    text = f"{book.title} - {patch_label}"
+    text = cfg.get("text") or f"{book.title} - {patch_label}"
     lines = image_overlay.build_overlay_lines(img, text, cfg)
     img, rect = image_overlay.render_overlay_with_rect(img, lines, cfg)
     marquee_cfg = cfg.get("marquee") or {}
@@ -405,12 +378,14 @@ def delete_book(request: Request, book_id: int):
 def select_voice(
     request: Request, book_id: int,
     voice_name: str = Form(default=""),
+    voice_transcript: str = Form(default=""),
 ):
     """Set the book's TTS reference voice clone from the /voices library.
 
     This is the same file the studio's mix preview plays — picking it there
     both previews it and sets book.voice_clip_path, which the worker passes
-    to the TTS engine as reference_wav_path.
+    to the TTS engine as reference_wav_path. voice_transcript is the exact
+    words spoken in that clip, which improves cloning accuracy.
     """
     from app.routes.voices import ALLOWED_AUDIO_EXTENSIONS as _voice_exts, _voices_dir
 
@@ -427,7 +402,7 @@ def select_voice(
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
-        repository.set_book_voice_clip(conn, book_id, path)
+        repository.set_book_voice_clip(conn, book_id, path, voice_transcript.strip() or None)
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
@@ -882,9 +857,13 @@ def patch_builder_page(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         chapters = repository.list_chapters(conn, book_id)
         patches = repository.list_patches(conn, book_id)
+        patch_video_ids = {
+            p.id for p in patches
+            if (Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{p.id}.mp4").exists()
+        }
     return templates.TemplateResponse(
         request, "patch_builder.html",
-        {"book": book, "chapters": chapters, "patches": patches},
+        {"book": book, "chapters": chapters, "patches": patches, "patch_video_ids": patch_video_ids},
     )
 
 

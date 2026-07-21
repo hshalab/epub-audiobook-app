@@ -1555,11 +1555,13 @@ def create_music(
     name: str,
     file_path: str,
     duration_sec: float | None,
+    description: str = "",
+    license: str = "",
 ) -> Music:
     now = _now()
     cur = conn.execute(
-        "INSERT INTO music (name, file_path, duration_sec, created_at) VALUES (?, ?, ?, ?)",
-        (name, file_path, duration_sec, now),
+        "INSERT INTO music (name, file_path, duration_sec, description, license, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, file_path, duration_sec, description, license, now),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM music WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -1591,6 +1593,15 @@ def rename_music(conn: sqlite3.Connection, music_id: int, new_name: str) -> bool
     return cur.rowcount > 0
 
 
+def update_music_metadata(conn: sqlite3.Connection, music_id: int, description: str, license: str) -> bool:
+    cur = conn.execute(
+        "UPDATE music SET description = ?, license = ? WHERE id = ?",
+        (description, license, music_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def delete_music(conn: sqlite3.Connection, music_id: int) -> bool:
     conn.execute("UPDATE book SET music_id = NULL WHERE music_id = ?", (music_id,))
     cur = conn.execute("DELETE FROM music WHERE id = ?", (music_id,))
@@ -1615,10 +1626,11 @@ def set_book_voice_clip(
     conn: sqlite3.Connection,
     book_id: int,
     voice_clip_path: str | None,
+    voice_transcript: str | None = None,
 ) -> None:
     conn.execute(
-        "UPDATE book SET voice_clip_path = ?, updated_at = ? WHERE id = ?",
-        (voice_clip_path, _now(), book_id),
+        "UPDATE book SET voice_clip_path = ?, voice_transcript = ?, updated_at = ? WHERE id = ?",
+        (voice_clip_path, voice_transcript, _now(), book_id),
     )
     conn.commit()
 

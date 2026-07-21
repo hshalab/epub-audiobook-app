@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import audio_merge, drive_export, image_overlay, repository, video_gen
+from app import audio_merge, drive_export, image_overlay, repository, video_gen, video_repository
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
@@ -22,6 +22,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4"}
 
 
 def _build_or_400(build, *args, **kwargs):
@@ -79,6 +80,46 @@ async def upload_patch_image(
             shutil.copyfileobj(image.file, f)
 
         repository.save_patch_image(conn, patch_id, str(dest))
+
+    return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/video")
+async def upload_patch_video(
+    request: Request, book_id: int, patch_id: int,
+    video: UploadFile = File(...),
+):
+    ext = Path(video.filename or "").suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported video format: {ext}")
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+
+    video_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    video_path = video_dir / f"{patch_id}.mp4"
+    with open(video_path, "wb") as dest:
+        shutil.copyfileobj(video.file, dest)
+
+    with locked_conn(request) as conn:
+        existing = conn.execute("SELECT id FROM videos WHERE file_path = ?", (str(video_path),)).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE videos SET file_size_bytes = ?, updated_at = datetime('now') WHERE id = ?",
+                (video_path.stat().st_size, existing["id"]),
+            )
+            conn.commit()
+        else:
+            video_repository.insert_video(
+                conn, filename=f"patch_{book_id}_{patch_id}.mp4",
+                original_name=video.filename or f"patch_{patch_id}.mp4",
+                file_path=str(video_path), file_size_bytes=video_path.stat().st_size,
+                batch_id=f"patch:{book_id}", source_audio=patch.audio_path,
+                background_path=patch.image_path, title=f"Patch {patch.patch_index + 1}",
+            )
 
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 

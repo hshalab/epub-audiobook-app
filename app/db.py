@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS music (
     name            TEXT NOT NULL,
     file_path       TEXT NOT NULL,
     duration_sec    REAL,
+    description     TEXT NOT NULL DEFAULT '',
+    license         TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 
@@ -275,6 +277,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN music_volume REAL NOT NULL DEFAULT 0.15")
     if "overlay_config" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN overlay_config TEXT")
+    music_existing = {row["name"] for row in conn.execute("PRAGMA table_info(music)")}
+    if "description" not in music_existing:
+        conn.execute("ALTER TABLE music ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+    if "license" not in music_existing:
+        conn.execute("ALTER TABLE music ADD COLUMN license TEXT NOT NULL DEFAULT ''")
     export_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_export)")}
     if "drive_account_id" not in export_existing:
         conn.execute("ALTER TABLE patch_export ADD COLUMN drive_account_id INTEGER")

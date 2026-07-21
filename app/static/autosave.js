@@ -17,6 +17,7 @@
         clearTimeout(toast._hideTimer);
         toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, 2000);
     }
+    window.showToast = showToast;
 
     function saveForm(form) {
         const action = form.action;
@@ -72,7 +73,49 @@
         });
     }
 
+    // --- Generic form guard: give visible feedback whenever the server
+    // rejects a plain form submit, instead of navigating to a raw JSON/HTML
+    // error response. Opt-in via data-guard, since autosave.js loads on
+    // every page and forms elsewhere (OAuth redirects, file downloads) need
+    // native browser submission. A data-confirm attribute replaces inline
+    // onsubmit/onclick confirm() calls so there's a single place deciding
+    // whether to proceed.
+    function attachFormGuard(form) {
+        form.addEventListener('submit', function(e) {
+            const confirmMsg = form.dataset.confirm;
+            if (confirmMsg && !confirm(confirmMsg)) {
+                e.preventDefault();
+                return;
+            }
+            e.preventDefault();
+            const btn = e.submitter || form.querySelector('[type="submit"]');
+            const originalText = btn ? btn.textContent : null;
+            if (btn) { btn.disabled = true; btn.textContent = 'Đang xử lý...'; }
+
+            fetch(form.action, {
+                method: (form.method || 'POST').toUpperCase(),
+                body: new FormData(form),
+            }).then(async (res) => {
+                if (res.ok) {
+                    window.location.href = res.url;
+                    return;
+                }
+                let msg = `Thao tác thất bại (HTTP ${res.status})`;
+                try {
+                    const data = await res.json();
+                    if (data && data.detail) msg = data.detail;
+                } catch (_) {}
+                showToast(msg, 'error');
+                if (btn) { btn.disabled = false; btn.textContent = originalText; }
+            }).catch(() => {
+                showToast('Lỗi kết nối, thử lại sau', 'error');
+                if (btn) { btn.disabled = false; btn.textContent = originalText; }
+            });
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('form[data-autosave]').forEach(attachAutosave);
+        document.querySelectorAll('form[data-guard]').forEach(attachFormGuard);
     });
 })();

@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app import image_overlay, repository, video_gen
@@ -384,12 +384,40 @@ async def upload_batch(
 
     return JSONResponse({
         "batch_id": batch_id,
+        "status": "audio_ready",
+        "message": "Audio loaded. Generate videos to add MP4 files to Video Library.",
         "files": [
             {"index": s["index"], "name": s["original_name"], "size_mb": round(s["size_bytes"] / (1024 * 1024), 2)}
             for s in saved
         ],
         "errors": errors,
     })
+
+
+@router.post("/video/batch/{batch_id}/greetings")
+async def upload_batch_greetings(
+    batch_id: str,
+    intro_voice: str = Form(default=""),
+    outro_voice: str = Form(default=""),
+):
+    batch_dir = _TMP_DIR / batch_id
+    meta_path = batch_dir / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=404, detail="Batch not found or expired")
+    with open(meta_path) as mf:
+        meta = json.load(mf)
+    voice_dir = (Path(settings.data_root) / "voices").resolve()
+    for key, name in (("intro_audio", intro_voice), ("outro_audio", outro_voice)):
+        if not name:
+            meta.pop(key, None)
+            continue
+        path = (voice_dir / Path(name).name).resolve()
+        if path.parent != voice_dir or not path.exists():
+            raise HTTPException(status_code=400, detail="Voice không hợp lệ hoặc không tồn tại")
+        meta[key] = str(path)
+    with open(meta_path, "w") as mf:
+        json.dump(meta, mf)
+    return JSONResponse({"status": "ready"})
 
 
 @router.post("/video/generate-batch")
@@ -450,6 +478,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
 
     # Music: resolve library id -> file path (batch-wide, optional)
     music_path: str | None = None
+    music_attribution = ""
     music_volume = max(0, min(100, int(raw_cfg.get("music_volume", 15)))) / 100.0
     raw_music_id = raw_cfg.get("music_id")
     if raw_music_id is not None and str(raw_music_id).strip().isdigit():
@@ -457,13 +486,12 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             music = repository.get_music(conn, int(raw_music_id))
         if music and Path(music.file_path).exists():
             music_path = music.file_path
+            music_attribution = "\n".join(filter(None, [music.description, f"Music license: {music.license}" if music.license else ""]))
         else:
             logger.warning("video_creator: music id %s not found/missing on disk", raw_music_id)
 
-    # Overlay: batch-wide optional text + per-file overlay_configs
-    overlay_opts = raw_cfg.get("overlay") or {}
-    overlay_text = (overlay_opts.get("text") or "").strip()
-    overlay_configs: dict = raw_cfg.get("overlay_configs") or {}
+    intro_audio = meta.get("intro_audio")
+    outro_audio = meta.get("outro_audio")
 
     files_map = {f["index"]: f for f in meta["files"]}
     _VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -481,7 +509,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             continue
 
         bg_path = backgrounds.get(str(idx))
-        image_path = _resolve_background_image(bg_path)
+        image_path = Path(bg_path) if bg_path and Path(bg_path).exists() else _resolve_background_image(bg_path)
         if image_path is None:
             continue
 
@@ -492,12 +520,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             _record_step(job_key, "music.resolved", {"path": Path(music_path).name,
                                                      "volume": music_volume})
 
-        per_overlay = overlay_configs.get(str(idx))
-        effective_overlay_text = per_overlay.get("text") if per_overlay else overlay_text
-        effective_overlay_opts = per_overlay if per_overlay else overlay_opts
-
-        tasks.append((idx, finfo, audio_path, image_path, job_key,
-                       effective_overlay_text, effective_overlay_opts))
+        tasks.append((idx, finfo, audio_path, image_path, job_key))
 
     if not tasks:
         return JSONResponse({"batch_id": batch_id, "scheduled": 0})
@@ -508,12 +531,12 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
         "total": len(tasks), "max_concurrent": max_concurrent,
     })
 
-    async def run_with_semaphore(sem, idx, finfo, audio_path, image_path, job_key,
-                                  eff_text, eff_opts):
+    async def run_with_semaphore(sem, idx, finfo, audio_path, image_path, job_key):
         async with sem:
             return await _run_single_video(
                 idx, finfo, audio_path, image_path, job_key,
-                eff_text, eff_opts, music_path, music_volume, cfg, batch_id,
+                intro_audio, outro_audio,
+                music_path, music_volume, music_attribution, cfg, batch_id,
                 conn, db_lock,
             )
 
@@ -539,23 +562,10 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
 
 async def _run_single_video(
     idx, finfo, audio_path, image_path, job_key,
-    effective_overlay_text, effective_overlay_opts,
-    music_path, music_volume, cfg, batch_id,
+    intro_audio, outro_audio,
+    music_path, music_volume, music_attribution, cfg, batch_id,
     conn, db_lock,
 ):
-    overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
-    render_path = image_path
-    logger.info("video_creator: idx=%s overlay_text=%r overlay_opts=%r", idx, effective_overlay_text, effective_overlay_opts)
-    if effective_overlay_text:
-        rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
-        if rendered is not None:
-            render_path = rendered
-            _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
-            logger.info("video_creator: overlay rendered to %s", overlay_png)
-        else:
-            _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
-            logger.warning("video_creator: overlay render failed for idx=%s", idx)
-
     stem = _sanitize_basename(finfo["original_name"])
     final_path = _unique_video_path(stem)
     tmp_out = _TMP_DIR / f"{batch_id}_{idx}_{uuid.uuid4().hex[:6]}.mp4"
@@ -567,10 +577,12 @@ async def _run_single_video(
     try:
         await asyncio.to_thread(
             video_gen.generate_standalone_video,
-            str(audio_path), str(render_path), str(tmp_out),
+            str(audio_path), str(image_path), str(tmp_out),
             on_progress=progress_cb,
             music_path=music_path,
             music_volume=music_volume,
+            intro_audio=intro_audio,
+            outro_audio=outro_audio,
             **cfg,
         )
         shutil.move(str(tmp_out), str(final_path))
@@ -588,7 +600,7 @@ async def _run_single_video(
                     batch_id=batch_id,
                     source_audio=finfo["original_name"],
                     background_path=str(image_path),
-                    title=finfo["original_name"],
+                    title=finfo["original_name"], description=music_attribution,
                 )
                 video_db_id = video_record["id"]
         except Exception as e:
@@ -614,7 +626,7 @@ async def _run_single_video(
                 upload_worker.enqueue(
                     video_id=video_db_id,
                     title=finfo["original_name"],
-                    description="",
+                    description=music_attribution,
                     tags=settings.youtube_default_tags,
                     privacy=settings.youtube_default_privacy,
                     video_path=str(final_path),
@@ -632,8 +644,6 @@ async def _run_single_video(
             "elapsed_seconds": round(time.time() - started, 1),
         }
         return False
-
-
 @router.get("/video/progress/{batch_id}")
 def get_batch_progress(batch_id: str):
     """Per-file step progress for a running/finished batch (debug UI)."""
@@ -665,80 +675,6 @@ def serve_batch_audio(batch_id: str, index: int):
         raise HTTPException(status_code=404, detail="Audio file missing")
     media = _AUDIO_MIME_MAP.get(p.suffix.lower(), "application/octet-stream")
     return FileResponse(str(p), media_type=media)
-
-
-@router.get("/video/overlay-preview")
-def overlay_preview(
-    background_path: str = "",
-    text: str = "",
-    position: str = "top",
-    alignment: str = "center",
-    font_size: int = 52,
-    text_color: str = "#FFFFFF",
-    margin: int = 40,
-    offset_x: int = 0,
-    offset_y: int = 0,
-    shadow_enabled: str = "off",
-    shadow_color: str = "#000000",
-    shadow_offset: int = 3,
-    box_enabled: str = "off",
-    box_color: str = "#000000",
-    box_opacity: int = 60,
-    box_padding_x: int = 16,
-    box_padding_y: int = 8,
-    box_radius: int = 8,
-    marquee_enabled: str = "off",
-    marquee_height: int = 60,
-    marquee_font_size: int = 36,
-    marquee_text_color: str = "#FFFFFF",
-    marquee_bg_color: str = "#000000",
-    marquee_bg_opacity: int = 80,
-    marquee_speed_px_per_sec: int = 50,
-):
-    """Render a live overlay preview for the studio's drag-to-position box.
-
-    Mirrors the book detail studio's /books/{id}/overlay-preview: same
-    X-Overlay-Rect response header, same underlying config builder, so the
-    text the user sees here is exactly what _render_overlay_for_batch bakes
-    into the final video for the same parameters.
-    """
-    from io import BytesIO
-
-    bg = _safe_background_path(background_path) or _resolve_background_image(None)
-    if bg is None:
-        raise HTTPException(status_code=400, detail="no background image available")
-
-    values = {
-        "position": position, "alignment": alignment, "font_size": font_size, "text_color": text_color,
-        "margin": margin, "offset_x": offset_x, "offset_y": offset_y,
-        "shadow_enabled": "on" if shadow_enabled == "1" else "off",
-        "shadow_color": shadow_color, "shadow_offset": shadow_offset,
-        "box_enabled": "on" if box_enabled == "1" else "off",
-        "box_color": box_color, "box_opacity": box_opacity,
-        "box_padding_x": box_padding_x, "box_padding_y": box_padding_y, "box_radius": box_radius,
-        "marquee_enabled": "on" if marquee_enabled == "1" else "off",
-        "marquee_height": marquee_height, "marquee_font_size": marquee_font_size,
-        "marquee_text_color": marquee_text_color, "marquee_bg_color": marquee_bg_color,
-        "marquee_bg_opacity": marquee_bg_opacity, "marquee_speed": marquee_speed_px_per_sec,
-    }
-    cfg = image_overlay.overlay_cfg_from_values(values)
-
-    from PIL import Image
-    img = Image.open(str(bg)).convert("RGB")
-    label = text.strip() or "Tên video preview"
-    lines = image_overlay.build_overlay_lines(img, label, cfg)
-    img, rect = image_overlay.render_overlay_with_rect(img, lines, cfg)
-    buf = BytesIO()
-    img.save(buf, "PNG", optimize=True)
-    rect_header = json.dumps({
-        "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
-        "img_w": img.size[0], "img_h": img.size[1],
-    })
-    return Response(
-        content=buf.getvalue(),
-        media_type="image/png",
-        headers={"X-Overlay-Rect": rect_header, "Cache-Control": "no-store"},
-    )
 
 
 # ---------------------------------------------------------------------------

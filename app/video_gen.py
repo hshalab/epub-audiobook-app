@@ -410,21 +410,39 @@ def generate_standalone_video(
     crf: int = 23,
     music_path: str | None = None,
     music_volume: float = 0.15,
+    intro_audio: str | None = None,
+    outro_audio: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a standalone video from a single audio + image (Video Creator page)."""
     w, h = resolution.split("x")
     res = (int(w), int(h))
     use_nvenc = codec == "h264_nvenc"
-    generate_segment(
-        image_path, audio_path, out_path,
-        image_type=image_type,
-        resolution=res,
-        fps=fps,
-        audio_bitrate=audio_bitrate,
-        crf=crf,
-        use_nvenc=use_nvenc,
-        music_path=music_path,
-        music_volume=music_volume,
-        on_progress=on_progress,
-    )
+    if not intro_audio and not outro_audio:
+        generate_segment(
+            image_path, audio_path, out_path, image_type=image_type, resolution=res,
+            fps=fps, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
+            music_path=music_path, music_volume=music_volume, on_progress=on_progress,
+        )
+        return
+
+    with tempfile.TemporaryDirectory(prefix="video_greeting_") as tmp:
+        segments: list[str] = []
+        if intro_audio:
+            intro_path = str(Path(tmp) / "intro.mp4")
+            generate_segment(image_path, intro_audio, intro_path, resolution=res, fps=fps,
+                             audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc)
+            segments.append(intro_path)
+        main_path = str(Path(tmp) / "main.mp4")
+        generate_segment(
+            image_path, audio_path, main_path, image_type=image_type, resolution=res,
+            fps=fps, audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc,
+            music_path=music_path, music_volume=music_volume, on_progress=on_progress,
+        )
+        segments.append(main_path)
+        if outro_audio:
+            outro_path = str(Path(tmp) / "outro.mp4")
+            generate_segment(image_path, outro_audio, outro_path, resolution=res, fps=fps,
+                             audio_bitrate=audio_bitrate, crf=crf, use_nvenc=use_nvenc)
+            segments.append(outro_path)
+        concat_segments(segments, out_path, on_progress=on_progress)

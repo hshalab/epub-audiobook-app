@@ -55,7 +55,8 @@ def list_music_api(request: Request):
     with locked_conn(request) as conn:
         music_list = repository.list_music(conn)
     return JSONResponse({"music": [
-        {"id": m.id, "name": m.name, "duration_sec": m.duration_sec}
+        {"id": m.id, "name": m.name, "duration_sec": m.duration_sec,
+         "description": m.description, "license": m.license}
         for m in music_list
     ]})
 
@@ -87,6 +88,18 @@ async def upload_music(request: Request, files: list[UploadFile] = File(...)):
             display_name = Path(file.filename or safe_name).stem
             repository.create_music(conn, name=display_name, file_path=str(dest), duration_sec=duration)
 
+    return RedirectResponse(url="/music", status_code=303)
+
+
+@router.post("/music/{music_id}/metadata")
+def update_music_metadata(
+    request: Request, music_id: int,
+    description: str = Form(default=""), license: str = Form(default=""),
+):
+    with locked_conn(request) as conn:
+        if repository.get_music(conn, music_id) is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy nhạc")
+        repository.update_music_metadata(conn, music_id, description.strip(), license.strip())
     return RedirectResponse(url="/music", status_code=303)
 
 

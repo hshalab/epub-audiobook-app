@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Default config — also used when book.overlay_config is missing/empty.
 DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
+    "text": "",                # empty = book title + patch name
     "position": "top",        # top | center | bottom
     "alignment": "center",    # left | center | right
     "font_size": 52,
@@ -320,6 +321,7 @@ def overlay_cfg_from_values(values) -> dict:
     cfg["position"] = position if position in ("top", "center", "bottom") else "top"
     cfg["alignment"] = alignment if alignment in ("left", "center", "right") else "center"
     cfg["font_size"] = _int("font_size", 52, 12, 200)
+    cfg["text"] = str(values.get("text") or "").strip()[:500]
     cfg["text_color"] = values.get("text_color") or "#FFFFFF"
     cfg["margin"] = _int("margin", 40, 0, 200)
     cfg["offset_x"] = _int("offset_x", 0, -4000, 4000)
@@ -468,7 +470,7 @@ def render_patch_overlay(
         out_path = str(get_patch_overlay_path(book.id, patch.id))
 
     patch_label = patch.name or str(patch.patch_index)
-    text = f"{book.title} - {patch_label}"
+    text = cfg.get("text") or f"{book.title} - {patch_label}"
 
     from PIL import Image, ImageDraw
     img = Image.open(str(bg)).convert("RGB")

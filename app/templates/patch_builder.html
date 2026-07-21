@@ -109,13 +109,18 @@
                             <form action="/books/{{ book.id }}/patches/{{ p.id }}/generate-video" method="post" style="display:inline">
                                 <button type="submit" class="btn-sm btn-primary">Gen Video</button>
                             </form>
+                            <form action="/books/{{ book.id }}/patches/{{ p.id }}/video" method="post" enctype="multipart/form-data" style="display:inline-flex;align-items:center;gap:var(--space-xs)">
+                                <input type="file" name="video" accept="video/mp4,.mp4" required style="max-width:190px">
+                                <button type="submit" class="btn-sm btn-outline">Upload Video</button>
+                            </form>
                         {% endif %}
                     </td>
                 </tr>
-                {% if p.status == "done" and p.audio_path %}
+                {% if p.id in patch_video_ids %}
                 <tr>
                     <td colspan="7" style="border-top:none;padding-top:0">
-                        <video controls preload="none" class="patch-video-preview" src="/books/{{ book.id }}/patches/{{ p.id }}/video"></video>
+                        <strong class="status-ok">Video ready</strong>
+                        <video controls preload="metadata" class="patch-video-preview" src="/books/{{ book.id }}/patches/{{ p.id }}/video?v={{ p.updated_at }}"></video>
                     </td>
                 </tr>
                 {% endif %}

@@ -56,3 +56,14 @@ def test_standalone_defaults_no_music():
     kwargs = seg.call_args.kwargs
     assert kwargs["music_path"] is None
     assert kwargs["music_volume"] == 0.15
+
+
+def test_standalone_adds_greeting_audio(tmp_path):
+    with patch.object(video_gen, "generate_segment") as seg, \
+         patch.object(video_gen, "concat_segments") as concat:
+        video_gen.generate_standalone_video(
+            "a.mp3", "i.jpg", "o.mp4",
+            intro_audio="intro.mp3", outro_audio="outro.mp3",
+        )
+    assert [call.args[1] for call in seg.call_args_list] == ["intro.mp3", "a.mp3", "outro.mp3"]
+    assert len(concat.call_args.args[0]) == 3

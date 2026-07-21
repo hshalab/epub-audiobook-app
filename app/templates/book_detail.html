@@ -6,16 +6,16 @@
     {{ book.title }}
     <span id="book-status-badge">
         {% if book.status == 'done' %}
-            <span class="badge badge-done">Done</span>
+            <span class="badge badge-done">Hoàn tất</span>
         {% elif book.status == 'processing' %}
-            <span class="badge badge-processing">Processing</span>
+            <span class="badge badge-processing">Đang xử lý</span>
         {% else %}
             <span class="badge badge-pending">{{ book.status }}</span>
         {% endif %}
     </span>
 </h2>
 
-<form method="post" action="/books/{{ book.id }}/rename" style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md);align-items:center">
+<form data-guard method="post" action="/books/{{ book.id }}/rename" style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md);align-items:center">
     <input type="text" name="title" value="{{ book.title }}" required
            style="min-width:240px;padding:var(--space-xs) var(--space-sm)"
            placeholder="Nhập tên sách mới">
@@ -23,14 +23,23 @@
     <a href="/books/{{ book.id }}" class="btn-sm btn-outline">Hủy</a>
 </form>
 
-<div class="card" style="margin-top:var(--space-lg)">
+<nav class="book-nav" aria-label="Điều hướng nội dung sách">
+    <a href="#studio-card">Studio</a>
+    <a href="#build-card">Auto-build</a>
+    {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
+    <button type="button" data-open-dialog="normalization-modal">TTS settings</button>
+    <button type="button" data-open-dialog="rules-modal">Replace rules</button>
+</nav>
+
+<dialog id="normalization-modal" class="book-modal">
     <div class="card-header">
         <h3 style="margin:0">TTS Normalization</h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
         Configure how text is preprocessed before speech synthesis.
     </p>
-    <form data-autosave action="/books/{{ book.id }}/normalization" method="post">
+    <form data-autosave data-guard action="/books/{{ book.id }}/normalization" method="post">
         <div style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
             <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
                 <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
@@ -50,12 +59,12 @@
             <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Preview chapter 0</a>
         </div>
     </form>
-</div>
+</dialog>
 
 {% if last_error %}
     <div class="error-block">
         <p><strong>Last error:</strong> {{ last_error }}</p>
-        <form action="/books/{{ book.id }}/patches/retry-failed" method="post" style="display:inline">
+        <form data-guard action="/books/{{ book.id }}/patches/retry-failed" method="post" style="display:inline">
             <button type="submit" class="btn-danger btn-sm">Retry all failed patches</button>
         </form>
     </div>
@@ -78,8 +87,15 @@
 </div>
 {% endif %}
 
-<div class="card" id="studio-card">
+<div class="card book-panel" id="studio-card">
     <style>
+        .book-nav { position:sticky; top:0; z-index:10; display:flex; gap:var(--space-xs); flex-wrap:wrap; padding:var(--space-sm); margin:var(--space-md) 0; background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 2px 8px rgba(0,0,0,.08); }
+        .book-nav a, .book-nav button { padding:var(--space-xs) var(--space-sm); border:0; border-radius:var(--border-radius); background:transparent; color:var(--text-muted); text-decoration:none; font:inherit; font-size:var(--font-size-sm); cursor:pointer; }
+        .book-nav a:hover, .book-nav a:focus, .book-nav button:hover, .book-nav button:focus { background:var(--border-color); color:var(--text-primary); }
+        .book-panel { scroll-margin-top:4.5rem; }
+        .book-modal { width:min(720px,calc(100% - 2rem)); max-height:calc(100vh - 2rem); padding:var(--space-lg); color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 20px 60px rgba(0,0,0,.3); }
+        .book-modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+        @media (max-width: 760px) { .book-nav { overflow-x:auto; flex-wrap:nowrap; } .book-nav a, .book-nav button { white-space:nowrap; } .book-modal { padding:var(--space-md); } }
         #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
         @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
         .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
@@ -97,6 +113,9 @@
                 <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                     <img id="overlay-preview" alt="Preview" style="width:100%;display:block">
                     <div id="drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
+                </div>
+                <div style="display:flex;justify-content:flex-end;margin-top:var(--space-sm)">
+                    <a id="preview-download" class="btn-outline btn-sm" href="#" download="background-preview.png" style="display:none">Tải background preview</a>
                 </div>
                 <p id="preview-empty" style="display:none;margin:var(--space-sm) 0 0 0;color:var(--text-muted)">Chưa có ảnh nền để preview.</p>
                 <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
@@ -121,6 +140,12 @@
                     Đây chính là voice clone được dùng khi tổng hợp giọng đọc (TTS) cho sách này —
                     chọn ở đây và bấm <strong>Lưu tất cả</strong> để áp dụng cho các patch sắp tạo.
                 </p>
+                <div class="form-group" style="margin:var(--space-sm) 0 0 0">
+                    <label for="voice-transcript">Transcript của voice mẫu (tùy chọn)</label>
+                    <input type="text" name="voice_transcript" id="voice-transcript" value="{{ book.voice_transcript or '' }}"
+                           placeholder="Nội dung chính xác được đọc trong file voice tham chiếu">
+                    <small>Giúp việc clone giọng chính xác hơn. Điền lại nếu bạn đổi voice tham chiếu ở trên.</small>
+                </div>
                 <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm)">
                     <input type="range" id="mix-seek" min="0" max="100" value="0" step="0.1" style="flex:1" disabled>
                     <span id="mix-time" style="font-size:var(--font-size-xs);color:var(--text-muted);min-width:96px;text-align:right">0:00 / 0:00</span>
@@ -160,8 +185,14 @@
                 <h4>Chữ overlay</h4>
                 <input type="hidden" name="offset_x" id="ov-offset-x" value="{{ overlay_cfg.offset_x }}">
                 <input type="hidden" name="offset_y" id="ov-offset-y" value="{{ overlay_cfg.offset_y }}">
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);margin-bottom:var(--space-md)">
-                    <div class="form-group" style="margin:0">
+                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);margin-bottom:var(--space-md)">
+                     <div class="form-group" style="margin:0;grid-column:1/-1">
+                         <label for="ov-text">Nội dung chữ overlay</label>
+                         <input type="text" name="text" id="ov-text" value="{{ overlay_cfg.text or '' }}"
+                                maxlength="500" placeholder="Mặc định: tên sách - tên patch">
+                         <small>Để trống để tự dùng tên sách và tên patch.</small>
+                     </div>
+                     <div class="form-group" style="margin:0">
                         <label for="ov-position">Vị trí</label>
                         <select name="position" id="ov-position">
                             <option value="top" {% if overlay_cfg.position == 'top' %}selected{% endif %}>Trên</option>
@@ -195,7 +226,13 @@
                     <button type="button" id="ov-offset-reset" class="btn-outline btn-sm">Reset vị trí</button>
                 </div>
 
-                <details style="margin-bottom:var(--space-md)">
+                <button type="button" class="btn-outline btn-sm" data-open-dialog="overlay-advanced-modal">Cấu hình nâng cao</button>
+                <dialog id="overlay-advanced-modal" class="book-modal">
+                    <div class="card-header">
+                        <h3 style="margin:0">Cấu hình overlay nâng cao</h3>
+                        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+                    </div>
+                <details open style="margin-bottom:var(--space-md)">
                     <summary style="cursor:pointer;font-weight:500">Shadow (đổ bóng)</summary>
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
                         <label style="display:flex;align-items:center;gap:var(--space-xs)">
@@ -278,6 +315,7 @@
                         </div>
                     </div>
                 </details>
+                </dialog>
             </form>
 
             <form id="music-form" data-autosave method="post" action="/books/{{ book.id }}/music" class="studio-section">
@@ -301,9 +339,10 @@
     </div>
 </div>
 
-<div class="card">
+<dialog id="rules-modal" class="book-modal">
     <div class="card-header">
         <h3 style="margin:0">Text Replace Rules</h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
 
     <div class="table-wrap">
@@ -323,7 +362,7 @@
                 </td>
                 <td>{{ rule.position }}</td>
                 <td>
-                    <form action="/books/{{ book.id }}/replace-rules/{{ rule.id }}/delete" method="post" style="display:inline">
+                    <form data-guard action="/books/{{ book.id }}/replace-rules/{{ rule.id }}/delete" method="post" style="display:inline">
                         <button type="submit" class="btn-danger btn-sm">Delete</button>
                     </form>
                 </td>
@@ -335,7 +374,7 @@
     </table>
     </div>
 
-    <form action="/books/{{ book.id }}/replace-rules" method="post" class="replace-rule-form" style="margin-top:var(--space-md)">
+    <form data-guard action="/books/{{ book.id }}/replace-rules" method="post" class="replace-rule-form" style="margin-top:var(--space-md)">
         <input type="text" name="find" placeholder="find" required>
         <input type="text" name="replace" placeholder="replace">
         <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;white-space:nowrap">
@@ -344,9 +383,9 @@
         <input type="number" name="position" value="0">
         <button type="submit" class="btn-primary btn-sm">Add rule</button>
     </form>
-</div>
+</dialog>
 
-<div class="card">
+<div class="card book-panel" id="build-card">
     <div class="card-header">
         <h3 style="margin:0">Auto-build Patches</h3>
     </div>
@@ -370,7 +409,7 @@
 </div>
 
 {% if patches %}
-<div class="card">
+<div class="card book-panel" id="patches-card">
     <div class="card-header">
         <h3 style="margin:0">Patches ({{ patches|length }})</h3>
         <div style="display:flex;gap:var(--space-sm);align-items:center">
@@ -430,11 +469,11 @@
                 </td>
                 <td id="patch-status-{{ patch.id }}">
                     {% if patch.status == 'done' %}
-                        <span class="badge badge-done">Done</span>
+                        <span class="badge badge-done">Hoàn tất</span>
                     {% elif patch.status == 'processing' %}
-                        <span class="badge badge-processing">Processing</span>
+                        <span class="badge badge-processing">Đang xử lý</span>
                     {% elif patch.status == 'failed' %}
-                        <span class="badge badge-failed">Failed</span>
+                        <span class="badge badge-failed">Thất bại</span>
                     {% else %}
                         <span class="badge badge-pending">{{ patch.status }}</span>
                     {% endif %}
@@ -444,12 +483,12 @@
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" target="_blank" class="btn-outline btn-sm">Preview</a>
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
                     {% if patch.status != "processing" %}
-                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
+                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                     </form>
-                    <form action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
-                          onsubmit="return confirm('Delete this patch? Patches will be renumbered.')">
-                        <button type="submit" class="btn-danger btn-sm">Delete</button>
+                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
+                          data-confirm="Xóa patch này? Các patch còn lại sẽ được đánh số lại.">
+                        <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
                     {% endif %}
                     {% if patch.status == "done" and patch.audio_path %}
@@ -473,6 +512,20 @@
 
 {% block scripts %}
 <script>
+(function() {
+    document.querySelectorAll('[data-open-dialog]').forEach(button => {
+        button.addEventListener('click', () => document.getElementById(button.dataset.openDialog)?.showModal());
+    });
+    document.querySelectorAll('[data-close-dialog]').forEach(button => {
+        button.addEventListener('click', () => button.closest('dialog').close());
+    });
+    document.querySelectorAll('dialog.book-modal').forEach(dialog => {
+        dialog.addEventListener('click', event => {
+            if (event.target === dialog) dialog.close();
+        });
+    });
+})();
+
 (function() {
     // Batch export: select-all checkbox + enable the export buttons only when
     // at least one patch is selected (the server validates too).
@@ -525,7 +578,7 @@
             }
             window.location.href = response.url;
         } catch (error) {
-            alert(error.message);
+            showToast(error.message, 'error');
             submitter.disabled = false;
             submitter.textContent = label;
         }
@@ -536,10 +589,10 @@
     const BOOK_ID = {{ book.id }};
     const STATUS_URL = `/books/${BOOK_ID}/status`;
     const BADGE_HTML = {
-        done:       '<span class="badge badge-done">Done</span>',
-        processing: '<span class="badge badge-processing">Processing</span>',
-        failed:     '<span class="badge badge-failed">Failed</span>',
-        pending:    '<span class="badge badge-pending">Pending</span>',
+        done:       '<span class="badge badge-done">Hoàn tất</span>',
+        processing: '<span class="badge badge-processing">Đang xử lý</span>',
+        failed:     '<span class="badge badge-failed">Thất bại</span>',
+        pending:    '<span class="badge badge-pending">Chờ xử lý</span>',
     };
 
     let pollTimer = null;
@@ -599,7 +652,7 @@
         const btnStart = document.getElementById('btn-start-queue');
 
         errEl.style.display = 'none';
-        if (!start) { errEl.textContent = 'Start chapter is required'; errEl.style.display = 'block'; return; }
+        if (!start) { errEl.textContent = 'Vui lòng nhập chapter bắt đầu'; errEl.style.display = 'block'; return; }
 
         const params = new URLSearchParams({ start_chapter: start });
         if (end) params.set('end_chapter', end);
@@ -608,7 +661,7 @@
         try {
             const res = await fetch(`/books/${BOOK_ID}/patches/auto-build/preview?${params}`);
             const data = await res.json();
-            if (!res.ok) { errEl.textContent = data.detail || 'Preview failed'; errEl.style.display = 'block'; return; }
+            if (!res.ok) { errEl.textContent = data.detail || 'Preview thất bại'; errEl.style.display = 'block'; return; }
 
             tbody.innerHTML = '';
             for (const p of data.patches) {
@@ -619,26 +672,38 @@
             previewEl.style.display = 'block';
             btnStart.style.display = 'inline-block';
         } catch (e) {
-            errEl.textContent = 'Network error'; errEl.style.display = 'block';
+            errEl.textContent = 'Lỗi kết nối, thử lại sau'; errEl.style.display = 'block';
         }
     };
 
     window.startQueue = function() {
         const form = document.getElementById('auto-build-form');
-        const hidden = document.createElement('form');
-        hidden.method = 'POST';
-        hidden.action = `/books/${BOOK_ID}/patches/auto-build`;
+        const errEl = document.getElementById('ab-error');
+        const btnStart = document.getElementById('btn-start-queue');
+        const formData = new FormData();
         for (const el of form.elements) {
-            if (el.name) {
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = el.name;
-                input.value = el.value;
-                hidden.appendChild(input);
-            }
+            if (el.name) formData.append(el.name, el.value);
         }
-        document.body.appendChild(hidden);
-        hidden.submit();
+
+        errEl.style.display = 'none';
+        btnStart.disabled = true;
+        fetch(`/books/${BOOK_ID}/patches/auto-build`, { method: 'POST', body: formData })
+            .then(async (res) => {
+                if (res.ok) { window.location.href = res.url; return; }
+                let msg = 'Không thể bắt đầu queue';
+                try {
+                    const data = await res.json();
+                    if (data && data.detail) msg = data.detail;
+                } catch (_) {}
+                errEl.textContent = msg;
+                errEl.style.display = 'block';
+                btnStart.disabled = false;
+            })
+            .catch(() => {
+                errEl.textContent = 'Lỗi kết nối, thử lại sau';
+                errEl.style.display = 'block';
+                btnStart.disabled = false;
+            });
     };
 })();
 
@@ -646,6 +711,7 @@
 (function() {
     const BOOK_ID = {{ book.id }};
     const previewImg = document.getElementById('overlay-preview');
+    const previewDownload = document.getElementById('preview-download');
     const dragRect = document.getElementById('drag-rect');
     const emptyMsg = document.getElementById('preview-empty');
     const overlayForm = document.getElementById('overlay-form');
@@ -687,6 +753,7 @@
             if (!res.ok) {
                 emptyMsg.style.display = 'block';
                 dragRect.style.display = 'none';
+                if (previewDownload) previewDownload.style.display = 'none';
                 return;
             }
             emptyMsg.style.display = 'none';
@@ -697,6 +764,10 @@
             previewImg.onload = function() {
                 if (objectUrl && objectUrl !== url) URL.revokeObjectURL(objectUrl);
                 objectUrl = url;
+                if (previewDownload) {
+                    previewDownload.href = url;
+                    previewDownload.style.display = 'inline-block';
+                }
                 positionRect();
             };
             previewImg.src = url;
@@ -776,11 +847,18 @@
             for (const id of ['voice-form', 'bg-form', 'music-form', 'overlay-form']) {
                 const form = document.getElementById(id);
                 const res = await fetch(form.action, { method: 'POST', body: new FormData(form) });
-                if (!res.ok) throw new Error(`Lưu thất bại (HTTP ${res.status})`);
+                if (!res.ok) {
+                    let msg = `Lưu thất bại (HTTP ${res.status})`;
+                    try {
+                        const data = await res.json();
+                        if (data && data.detail) msg = data.detail;
+                    } catch (_) {}
+                    throw new Error(msg);
+                }
             }
             window.location.reload();
         } catch (err) {
-            alert(err.message || 'Lưu thất bại');
+            showToast(err.message || 'Lưu thất bại', 'error');
             saveBtn.disabled = false;
             saveBtn.textContent = originalText;
         }

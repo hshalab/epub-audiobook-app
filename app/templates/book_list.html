@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% from "_pagination.html" import render_pagination %}
-{% block title %}Books{% endblock %}
+{% block title %}Sách của tôi{% endblock %}
 {% block content %}
 <div class="card-header">
-    <h2 style="margin:0">My Books</h2>
-    <a href="/books/upload" class="btn-primary">+ Upload new epub</a>
+    <h2 style="margin:0">Sách của tôi</h2>
+    <a href="/books/upload" class="btn-primary">+ Tải lên EPUB</a>
 </div>
 
 <div class="table-wrap">
 <table>
     <thead>
         <tr>
-            <th>Title</th>
-            <th>Status</th>
-            <th>Progress</th>
+            <th>Tên sách</th>
+            <th>Trạng thái</th>
+            <th>Tiến độ</th>
             <th></th>
         </tr>
     </thead>
@@ -23,11 +23,11 @@
             <td><a href="/books/{{ book.id }}">{{ book.title }}</a></td>
             <td>
                 {% if book.status == 'done' %}
-                    <span class="badge badge-done">Done</span>
+                    <span class="badge badge-done">Hoàn tất</span>
                 {% elif book.status == 'processing' %}
-                    <span class="badge badge-processing">Processing</span>
+                    <span class="badge badge-processing">Đang xử lý</span>
                 {% elif book.status == 'failed' %}
-                    <span class="badge badge-failed">Failed</span>
+                    <span class="badge badge-failed">Thất bại</span>
                 {% else %}
                     <span class="badge badge-pending">{{ book.status }}</span>
                 {% endif %}
@@ -36,26 +36,27 @@
                 {% set done = patch_counts[book.id].done %}
                 {% set total = patch_counts[book.id].total %}
                 {% if total > 0 %}
-                    <strong>{{ done }}</strong> / {{ total }} patches
+                    <strong>{{ done }}</strong> / {{ total }} patch
                     {% if done == total and done > 0 %}
-                        <span class="badge badge-done" style="margin-left:0.3rem">Complete</span>
+                        <span class="badge badge-done" style="margin-left:0.3rem">Xong</span>
                     {% endif %}
                 {% else %}
-                    <span class="badge badge-pending">No patches</span>
+                    <span class="badge badge-pending">Chưa có patch</span>
                 {% endif %}
                 {% if patch_counts[book.id].pending %}
-                    <br><span class="queue-pending">Queue: {{ patch_counts[book.id].pending }} pending</span>
+                    <br><span class="queue-pending">Hàng đợi: {{ patch_counts[book.id].pending }} đang chờ</span>
                 {% endif %}
             </td>
             <td>
-                <form action="/books/{{ book.id }}/delete" method="post" style="display:inline">
-                    <button type="submit" class="btn-danger btn-sm" onclick="return confirm('Delete this book and all its files?')">Delete</button>
+                <form data-guard action="/books/{{ book.id }}/delete" method="post" style="display:inline"
+                      data-confirm="Xóa sách này và toàn bộ file liên quan?">
+                    <button type="submit" class="btn-danger btn-sm">Xóa</button>
                 </form>
             </td>
         </tr>
     {% else %}
         <tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:2rem">
-            No books yet. <a href="/books/upload">Upload your first EPUB</a>
+            Chưa có sách nào. <a href="/books/upload">Tải lên EPUB đầu tiên</a>
         </td></tr>
     {% endfor %}
     </tbody>

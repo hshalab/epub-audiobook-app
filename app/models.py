@@ -79,6 +79,8 @@ class Music:
     file_path: str
     duration_sec: float | None
     created_at: str
+    description: str = ""
+    license: str = ""
 
 
 @dataclass

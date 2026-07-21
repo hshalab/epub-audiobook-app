@@ -1003,6 +1003,32 @@ section {
   color: var(--text-secondary);
 }
 
+/* Reader font choice for chapter preview text (upload page) */
+.chapter-preview-text[data-font="sans"] { font-family: 'Be Vietnam Pro', var(--font-sans); }
+.chapter-preview-text[data-font="classic"] { font-family: 'Noto Serif', serif; }
+
+.font-picker {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  overflow: hidden;
+}
+
+.font-picker-btn {
+  padding: 0.35rem 0.75rem;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  transition: all var(--transition-fast);
+}
+
+.font-picker-btn.active {
+  background: var(--text-primary);
+  color: var(--bg-card);
+}
+
 /* --- Replace Rules --- */
 .replace-rule-table { 
   margin-bottom: var(--space-lg); 

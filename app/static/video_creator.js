@@ -271,194 +271,6 @@
     let batchFiles = [];
     let backgrounds = [];
 
-    // Overlay config: one shared default applied to every file, plus a
-    // sparse map of explicit per-file overrides. activeEditIndex is null
-    // when editing the shared default, or a file index once the user has
-    // clicked "Chỉnh" on that row.
-    let defaultOverlayConfig = getDefaultOverlayConfig();
-    let overlayConfigs = {};      // { [index]: configObject } -- overrides only
-    let activeEditIndex = null;
-
-    function getDefaultOverlayConfig() {
-        return {
-            text: "", position: "top", alignment: "center", font_size: 52,
-            text_color: "#FFFFFF", margin: 20, offset_x: 0, offset_y: 0,
-            shadow: { enabled: false, color: "#000000", offset: 3 },
-            box: { enabled: false, color: "#000000", opacity: 60, padding_x: 16, padding_y: 8, radius: 8 },
-            marquee: { enabled: false, height: 60, font_size: 36, text_color: "#FFFFFF", bg_color: "#000000", bg_opacity: 80, speed_px_per_sec: 50 }
-        };
-    }
-
-    function initOverlayConfigs(files) {
-        // New batch: drop per-file overrides from the previous batch, keep
-        // the shared default (it's a deliberate user setting, not tied to
-        // any one batch).
-        overlayConfigs = {};
-        activeEditIndex = null;
-        updateOverrideDots();
-    }
-
-    function hasOverride(index) {
-        return Object.prototype.hasOwnProperty.call(overlayConfigs, index);
-    }
-
-    // The config object the Studio form currently edits: a file's override
-    // once one exists for it, otherwise the shared default.
-    function currentOverlayTarget() {
-        if (activeEditIndex !== null && overlayConfigs[activeEditIndex]) {
-            return overlayConfigs[activeEditIndex];
-        }
-        return defaultOverlayConfig;
-    }
-
-    function updateOverrideDots() {
-        document.querySelectorAll('.btn-edit-overlay').forEach(btn => {
-            const idx = parseInt(btn.dataset.index);
-            const cell = btn.closest('td');
-            const dot = cell.querySelector('.override-dot');
-            const resetBtn = cell.querySelector('.btn-reset-overlay');
-            const has = hasOverride(idx);
-            if (dot) dot.style.display = has ? 'inline-block' : 'none';
-            if (resetBtn) resetBtn.style.display = has ? '' : 'none';
-        });
-    }
-
-    function loadOverlayConfigToForm(cfg) {
-        // Basic
-        document.getElementById('ov-text').value = cfg.text;
-        document.getElementById('ov-position').value = cfg.position;
-        document.getElementById('ov-alignment').value = cfg.alignment;
-        document.getElementById('ov-font-size').value = cfg.font_size;
-        document.getElementById('ov-text-color').value = cfg.text_color;
-        document.getElementById('ov-margin').value = cfg.margin;
-        document.getElementById('ov-offset-x').value = cfg.offset_x;
-        document.getElementById('ov-offset-y').value = cfg.offset_y;
-        document.getElementById('ov-offset-label').textContent = `${cfg.offset_x}, ${cfg.offset_y}`;
-
-        // Shadow
-        document.getElementById('ov-shadow-enabled').checked = cfg.shadow.enabled;
-        document.getElementById('ov-shadow-color').value = cfg.shadow.color;
-        document.getElementById('ov-shadow-offset').value = cfg.shadow.offset;
-
-        // Box
-        document.getElementById('ov-box-enabled').checked = cfg.box.enabled;
-        document.getElementById('ov-box-color').value = cfg.box.color;
-        document.getElementById('ov-box-opacity').value = cfg.box.opacity;
-        document.getElementById('ov-box-opacity-label').textContent = cfg.box.opacity + '%';
-        document.getElementById('ov-box-px').value = cfg.box.padding_x;
-        document.getElementById('ov-box-py').value = cfg.box.padding_y;
-        document.getElementById('ov-box-radius').value = cfg.box.radius;
-
-        // Marquee
-        document.getElementById('ov-marquee-enabled').checked = cfg.marquee.enabled;
-        document.getElementById('ov-marquee-height').value = cfg.marquee.height;
-        document.getElementById('ov-marquee-font-size').value = cfg.marquee.font_size;
-        document.getElementById('ov-marquee-text-color').value = cfg.marquee.text_color;
-        document.getElementById('ov-marquee-bg-color').value = cfg.marquee.bg_color;
-        document.getElementById('ov-marquee-opacity').value = cfg.marquee.bg_opacity;
-        document.getElementById('ov-marquee-opacity-label').textContent = cfg.marquee.bg_opacity + '%';
-        document.getElementById('ov-marquee-speed').value = cfg.marquee.speed_px_per_sec;
-    }
-
-    // Save-on-every-change: writes the form's current values into whichever
-    // config object is passed in. Called from every overlay field's input
-    // handler (wired in the drag-preview IIFE below via the
-    // window.__studioOnOverlayFieldChanged bridge) so nothing is lost
-    // whether or not the user switches rows or clicks "Chỉnh" before
-    // generating.
-    function saveFormToOverlayConfig(cfg) {
-        cfg.text = document.getElementById('ov-text').value;
-        cfg.position = document.getElementById('ov-position').value;
-        cfg.alignment = document.getElementById('ov-alignment').value;
-        cfg.font_size = parseInt(document.getElementById('ov-font-size').value) || 52;
-        cfg.text_color = document.getElementById('ov-text-color').value;
-        cfg.margin = parseInt(document.getElementById('ov-margin').value) || 20;
-        cfg.offset_x = parseInt(document.getElementById('ov-offset-x').value) || 0;
-        cfg.offset_y = parseInt(document.getElementById('ov-offset-y').value) || 0;
-
-        cfg.shadow.enabled = document.getElementById('ov-shadow-enabled').checked;
-        cfg.shadow.color = document.getElementById('ov-shadow-color').value;
-        cfg.shadow.offset = parseInt(document.getElementById('ov-shadow-offset').value) || 3;
-
-        cfg.box.enabled = document.getElementById('ov-box-enabled').checked;
-        cfg.box.color = document.getElementById('ov-box-color').value;
-        cfg.box.opacity = parseInt(document.getElementById('ov-box-opacity').value) || 60;
-        cfg.box.padding_x = parseInt(document.getElementById('ov-box-px').value) || 16;
-        cfg.box.padding_y = parseInt(document.getElementById('ov-box-py').value) || 8;
-        cfg.box.radius = parseInt(document.getElementById('ov-box-radius').value) || 8;
-
-        cfg.marquee.enabled = document.getElementById('ov-marquee-enabled').checked;
-        cfg.marquee.height = parseInt(document.getElementById('ov-marquee-height').value) || 60;
-        cfg.marquee.font_size = parseInt(document.getElementById('ov-marquee-font-size').value) || 36;
-        cfg.marquee.text_color = document.getElementById('ov-marquee-text-color').value;
-        cfg.marquee.bg_color = document.getElementById('ov-marquee-bg-color').value;
-        cfg.marquee.bg_opacity = parseInt(document.getElementById('ov-marquee-opacity').value) || 80;
-        cfg.marquee.speed_px_per_sec = parseInt(document.getElementById('ov-marquee-speed').value) || 50;
-    }
-
-    function updateStudioHeaderBadge() {
-        const badge = document.getElementById('overlay-active-badge');
-        const backBtn = document.getElementById('ov-edit-default');
-        if (!badge) return;
-        if (activeEditIndex === null) {
-            badge.textContent = 'Đang chỉnh: Mặc định (tất cả files)';
-            if (backBtn) backBtn.style.display = 'none';
-        } else {
-            const file = batchFiles.find(f => f.index === activeEditIndex);
-            badge.textContent = file ? 'Đang chỉnh: ' + file.name : '';
-            if (backBtn) backBtn.style.display = file ? 'inline-block' : 'none';
-        }
-        badge.style.display = 'inline-block';
-    }
-
-    // index === null switches to editing the shared default.
-    function switchOverlayEditTarget(index) {
-        activeEditIndex = index;
-        loadOverlayConfigToForm(currentOverlayTarget());
-        updateStudioHeaderBadge();
-        if (window.__studioRefreshPreview) window.__studioRefreshPreview();
-    }
-
-    // Bridge for the drag-preview IIFE (a separate closure further down the
-    // file) to save into whichever config is currently active, and to know
-    // which file (if any) is being edited, without reaching into this
-    // IIFE's private variables directly.
-    window.__studioOnOverlayFieldChanged = function() {
-        saveFormToOverlayConfig(currentOverlayTarget());
-    };
-    window.__studioGetActiveEditIndex = function() { return activeEditIndex; };
-
-    // "Apply to all": take whatever is on the form right now, make it the
-    // new shared default, and drop every per-file override so every file
-    // uses exactly these settings.
-    document.getElementById('ov-apply-all').addEventListener('click', function() {
-        if (!batchFiles.length) return;
-        saveFormToOverlayConfig(currentOverlayTarget());
-        defaultOverlayConfig = JSON.parse(JSON.stringify(currentOverlayTarget()));
-        overlayConfigs = {};
-        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
-        updateOverrideDots();
-        switchOverlayEditTarget(null);
-        alert(`Đã áp dụng overlay hiện tại cho tất cả ${batchFiles.length} files`);
-    });
-
-    // "Clear all": reset the shared default to factory defaults and drop
-    // every per-file override.
-    document.getElementById('ov-clear-all').addEventListener('click', function() {
-        if (!batchFiles.length) return;
-        defaultOverlayConfig = getDefaultOverlayConfig();
-        overlayConfigs = {};
-        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
-        updateOverrideDots();
-        switchOverlayEditTarget(null);
-        alert('Đã xóa overlay tất cả files');
-    });
-
-    document.getElementById('ov-edit-default').addEventListener('click', () => {
-        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
-        switchOverlayEditTarget(null);
-    });
-
     // Dropzone for audio files
     (function() {
         const dz = document.getElementById('dropzone-audio');
@@ -555,16 +367,9 @@
                 </td>
                 <td class="status-pending" data-status="${f.index}">Ready</td>
                 <td class="col-time" data-time="${f.index}">—</td>
-                <td class="col-edit">
-                    <button type="button" class="btn-edit-overlay btn-sm btn-outline" data-index="${f.index}" title="Chỉnh overlay riêng cho file này">Chỉnh</button>
-                    <button type="button" class="btn-reset-overlay btn-sm btn-outline" data-index="${f.index}" style="display:none" title="Bỏ overlay riêng, dùng mặc định">Mặc định</button>
-                    <span class="status-dot status-dot-blue override-dot" style="display:none" title="File này có overlay tuỳ chỉnh riêng"></span>
-                </td>
             `;
             tbody.appendChild(tr);
         });
-        initOverlayConfigs(files);
-        switchOverlayEditTarget(null);
         refreshBgSelects();
         refreshAllPreviews();
         updateSelectedCount();
@@ -582,32 +387,6 @@
         tbody.querySelectorAll('.bg-select').forEach(sel => {
             sel.addEventListener('change', function() {
                 updatePreview(this.dataset.index);
-                if (window.__studioOnRowBgChanged) window.__studioOnRowBgChanged(this.dataset.index);
-            });
-        });
-
-        tbody.querySelectorAll('.btn-edit-overlay').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.index);
-                if (!hasOverride(idx)) {
-                    overlayConfigs[idx] = JSON.parse(JSON.stringify(defaultOverlayConfig));
-                    updateOverrideDots();
-                }
-                tbody.querySelectorAll('tr').forEach(tr => tr.classList.remove('row-active'));
-                btn.closest('tr').classList.add('row-active');
-                switchOverlayEditTarget(idx);
-            });
-        });
-
-        tbody.querySelectorAll('.btn-reset-overlay').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.index);
-                delete overlayConfigs[idx];
-                updateOverrideDots();
-                if (activeEditIndex === idx) {
-                    btn.closest('tr').classList.remove('row-active');
-                    switchOverlayEditTarget(null);
-                }
             });
         });
 
@@ -629,7 +408,6 @@
                     const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
                     sel.value = data.path;
                     updatePreview(idx);
-                    if (window.__studioOnRowBgChanged) window.__studioOnRowBgChanged(idx);
                     statusEl.textContent = 'Ready';
                 } catch(e) {
                     statusEl.textContent = 'BG upload failed';
@@ -697,8 +475,6 @@
     const EVENT_LABELS = {
         'job.start': 'Bắt đầu...',
         'music.resolved': 'Đã chọn nhạc nền',
-        'overlay.rendered': 'Đã render text overlay',
-        'overlay.failed_fallback': 'Overlay lỗi — dùng ảnh gốc',
         'segment.start': 'Chuẩn bị FFmpeg...',
         'segment.probe_duration': 'Đo thời lượng audio...',
         'segment.ffmpeg_start': 'FFmpeg đang chạy...',
@@ -784,7 +560,7 @@
                     div.className = 'result-item';
                     
                     if (job && job.status === 'done' && result) {
-                        div.innerHTML = `<span class="status-ok">Done</span> <span>${escHtml(result.name)}</span> <a href="${result.video_url}" download>Download (${result.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${result.video_url}', '${escHtml(result.name)}')">YouTube</button>${result.elapsed_seconds ? ` <span class="result-time">${result.elapsed_seconds}s \u00b7 ${result.completed_at || ''}</span>` : ''}`;
+                        div.innerHTML = `<div class="result-main"><span class="status-ok">Hoàn thành</span> <strong>${escHtml(result.name)}</strong> <span class="result-time">${result.size_mb} MB${result.elapsed_seconds ? ` · ${result.elapsed_seconds}s` : ''}</span></div><video class="result-video" controls preload="metadata" src="${result.video_url}"></video><div class="result-actions"><a class="btn-outline btn-sm" href="${result.video_url}" download>Tải xuống</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${result.video_url}', '${escHtml(result.name)}')">YouTube</button></div>`;
                         if (statusEl) { statusEl.textContent = 'Done'; statusEl.className = 'status-ok'; }
                         if (timeEl) { timeEl.innerHTML = `Done ${result.elapsed_seconds ? `( ${result.elapsed_seconds}s )` : ''}`; if (result.completed_at) timeEl.title = 'Completed at ' + result.completed_at; }
                     } else if (job && job.status === 'error') {
@@ -844,19 +620,21 @@
         try {
             const res = await fetch(API.uploadBatch, { method: 'POST', body: fd });
             const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Không thể nạp audio');
             batchId = data.batch_id;
             batchFiles = data.files;
             if (window.__studioSetBatchId) window.__studioSetBatchId(batchId);
             if (data.errors.length) {
                 alert('Some files skipped:\n' + data.errors.join('\n'));
             }
-            document.getElementById('step-table').style.display = '';
+            document.getElementById('step-table').classList.remove('hidden');
             renderTable(batchFiles);
+            document.getElementById('step-table').scrollIntoView({behavior: 'smooth', block: 'start'});
         } catch(err) {
             alert('Upload failed: ' + err.message);
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = 'Nạp lại audio vào lô';
         }
     });
 
@@ -892,42 +670,31 @@
 
         const musicSel = document.getElementById('cfg-music');
 
-        // Make sure whatever's on the form right now is captured, even if
-        // the user never switched rows or clicked "Chỉnh" before generating.
-        saveFormToOverlayConfig(currentOverlayTarget());
-
-        // Per-file overrides: every file the user explicitly customized,
-        // sent as its full nested shape.
-        const overlayConfigsMap = {};
-        Object.entries(overlayConfigs).forEach(([idx, cfg]) => { overlayConfigsMap[idx] = cfg; });
-
         const config = {
-            resolution: document.getElementById('cfg-resolution').value,
-            fps: parseInt(document.getElementById('cfg-fps').value),
-            codec: document.getElementById('cfg-codec').value,
-            audio_bitrate: document.getElementById('cfg-audio-bitrate').value,
-            image_type: document.getElementById('cfg-image-type').value,
-            crf: parseInt(document.getElementById('cfg-crf').value),
             max_concurrent: parseInt(document.getElementById('cfg-concurrent').value) || 3,
             music_id: musicSel.value ? parseInt(musicSel.value) : null,
             music_volume: parseInt(document.getElementById('cfg-music-volume').value),
-            // Full nested shape, matching overlay_configs entries — the bug
-            // fix. Only sent when there's actual text (matches backend gate
-            // at video.py:549, which skips rendering when text is empty).
-            overlay: defaultOverlayConfig.text ? defaultOverlayConfig : null,
-            overlay_configs: Object.keys(overlayConfigsMap).length ? overlayConfigsMap : null
         };
 
         const btn = this;
         btn.disabled = true;
         btn.textContent = 'Generating...';
 
-        document.getElementById('step-results').style.display = '';
+        document.getElementById('step-results').classList.remove('hidden');
         const resultsList = document.getElementById('results-list');
         resultsList.innerHTML = '<p>Processing...</p>';
         startProgressPolling();
 
         try {
+            const greetingData = new FormData();
+            const introAudio = document.getElementById('cfg-intro-audio')?.files[0];
+            const outroAudio = document.getElementById('cfg-outro-audio')?.files[0];
+            if (introAudio) greetingData.append('intro_audio', introAudio);
+            if (outroAudio) greetingData.append('outro_audio', outroAudio);
+            if (introAudio || outroAudio) {
+                const greetingRes = await fetch(`/video/batch/${batchId}/greetings`, {method: 'POST', body: greetingData});
+                if (!greetingRes.ok) throw new Error((await greetingRes.json()).detail || 'Không thể upload audio chào');
+            }
             const res = await fetch(API.generateBatch, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -957,7 +724,7 @@
                         const elapsed = r.elapsed_seconds != null ? `${r.elapsed_seconds}s` : '';
                         const completed = r.completed_at ? formatTimeShort(r.completed_at) : '';
                         const timeParts = [elapsed, completed].filter(Boolean).join(' \u00b7 ');
-                        div.innerHTML = `<span class="status-ok">Done</span> <span>${escHtml(r.name)}</span> <a href="${r.video_url}" download>Download (${r.size_mb} MB)</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button>${timeParts ? ` <span class="result-time">${escHtml(timeParts)}</span>` : ''}`;
+                        div.innerHTML = `<div class="result-main"><span class="status-ok">Hoàn thành</span> <strong>${escHtml(r.name)}</strong> <span class="result-time">${r.size_mb} MB${timeParts ? ` · ${escHtml(timeParts)}` : ''}</span></div><video class="result-video" controls preload="metadata" src="${r.video_url}"></video><div class="result-actions"><a class="btn-outline btn-sm" href="${r.video_url}" download>Tải xuống</a> <button class="btn-yt-mini" onclick="uploadToYouTube('${r.video_url}', '${escHtml(r.name)}')">YouTube</button></div>`;
                         if (statusEl) {
                             statusEl.textContent = 'Done';
                             statusEl.className = 'status-ok';
@@ -1007,228 +774,9 @@
     // Keeps the studio's "preview với file" and "audio chính" dropdowns in
     // sync with the uploaded batch, and kicks off an initial preview render.
     function refreshStudioFileLists(files) {
-        const previewRowSelect = document.getElementById('preview-row-select');
-        if (previewRowSelect) {
-            const prev = previewRowSelect.value;
-            previewRowSelect.innerHTML = '';
-            files.forEach(f => {
-                const opt = document.createElement('option');
-                opt.value = f.index;
-                opt.textContent = f.name;
-                previewRowSelect.appendChild(opt);
-            });
-            if (files.some(f => String(f.index) === prev)) previewRowSelect.value = prev;
-        }
         if (window.__studioRepopulateMixRef) window.__studioRepopulateMixRef(files);
-        if (window.__studioRefreshPreview) window.__studioRefreshPreview();
     }
     window.refreshStudioFileLists = refreshStudioFileLists;
-})();
-
-// --- Studio: live overlay preview + drag-to-position (mirrors the book
-//     detail studio's /books/{id}/overlay-preview against /video/overlay-preview) ---
-(function() {
-    const ovImg = document.getElementById('ov-preview');
-    const ovEmpty = document.getElementById('ov-preview-empty');
-    const dragRect = document.getElementById('ov-drag-rect');
-    const previewRowSelect = document.getElementById('preview-row-select');
-    const offX = document.getElementById('ov-offset-x');
-    const offY = document.getElementById('ov-offset-y');
-    const offsetLabel = document.getElementById('ov-offset-label');
-    if (!ovImg || !previewRowSelect) return;
-
-    let rect = null;
-    let objectUrl = null;
-    let refreshTimer = null;
-    let refreshing = false;
-    let refreshQueued = false;
-
-    function currentBgPath() {
-        // If actively editing a specific file's overlay override, preview
-        // against that file's background (via the batch-upload IIFE's
-        // bridge — activeEditIndex lives in that other closure).
-        const activeIdx = window.__studioGetActiveEditIndex ? window.__studioGetActiveEditIndex() : null;
-        if (activeIdx !== null && activeIdx !== undefined) {
-            const sel = document.querySelector(`.bg-select[data-index="${activeIdx}"]`);
-            if (sel) return sel.value;
-        }
-        // Otherwise (editing the shared default) fall back to whichever
-        // file is chosen in the "Preview với file" dropdown.
-        const idx = previewRowSelect.value;
-        if (idx === '') return '';
-        const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
-        return sel ? sel.value : '';
-    }
-
-    function previewParams() {
-        const params = new URLSearchParams();
-        params.set('background_path', currentBgPath());
-        params.set('text', document.getElementById('ov-text').value);
-        params.set('position', document.getElementById('ov-position').value);
-        params.set('alignment', document.getElementById('ov-alignment').value);
-        params.set('font_size', document.getElementById('ov-font-size').value || '52');
-        params.set('text_color', document.getElementById('ov-text-color').value);
-        params.set('margin', document.getElementById('ov-margin').value || '20');
-        params.set('offset_x', offX.value || '0');
-        params.set('offset_y', offY.value || '0');
-        
-        // Shadow
-        params.set('shadow_enabled', document.getElementById('ov-shadow-enabled').checked ? '1' : '0');
-        params.set('shadow_color', document.getElementById('ov-shadow-color').value);
-        params.set('shadow_offset', document.getElementById('ov-shadow-offset').value || '3');
-        
-        // Box
-        params.set('box_enabled', document.getElementById('ov-box-enabled').checked ? '1' : '0');
-        params.set('box_color', document.getElementById('ov-box-color').value);
-        params.set('box_opacity', document.getElementById('ov-box-opacity').value || '60');
-        params.set('box_padding_x', document.getElementById('ov-box-px').value || '16');
-        params.set('box_padding_y', document.getElementById('ov-box-py').value || '8');
-        params.set('box_radius', document.getElementById('ov-box-radius').value || '8');
-        
-        // Marquee
-        params.set('marquee_enabled', document.getElementById('ov-marquee-enabled').checked ? '1' : '0');
-        params.set('marquee_height', document.getElementById('ov-marquee-height').value || '60');
-        params.set('marquee_font_size', document.getElementById('ov-marquee-font-size').value || '36');
-        params.set('marquee_text_color', document.getElementById('ov-marquee-text-color').value);
-        params.set('marquee_bg_color', document.getElementById('ov-marquee-bg-color').value);
-        params.set('marquee_bg_opacity', document.getElementById('ov-marquee-opacity').value || '80');
-        params.set('marquee_speed_px_per_sec', document.getElementById('ov-marquee-speed').value || '50');
-        
-        params.set('t', Date.now());
-        return params;
-    }
-
-    function positionRect() {
-        if (!rect || !rect.img_w || !rect.img_h) { dragRect.style.display = 'none'; return; }
-        dragRect.style.display = 'block';
-        dragRect.style.left = (rect.x / rect.img_w * 100) + '%';
-        dragRect.style.top = (rect.y / rect.img_h * 100) + '%';
-        dragRect.style.width = (rect.w / rect.img_w * 100) + '%';
-        dragRect.style.height = (rect.h / rect.img_h * 100) + '%';
-        dragRect.style.transform = '';
-    }
-
-    async function refreshPreview() {
-        if (previewRowSelect.options.length === 0) return;
-        if (refreshing) { refreshQueued = true; return; }
-        refreshing = true;
-        try {
-            const res = await fetch('/video/overlay-preview?' + previewParams());
-            if (!res.ok) {
-                ovEmpty.style.display = 'block';
-                dragRect.style.display = 'none';
-                return;
-            }
-            ovEmpty.style.display = 'none';
-            const header = res.headers.get('X-Overlay-Rect');
-            rect = header ? JSON.parse(header) : null;
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            ovImg.onload = function() {
-                if (objectUrl && objectUrl !== url) URL.revokeObjectURL(objectUrl);
-                objectUrl = url;
-                positionRect();
-            };
-            ovImg.src = url;
-            offsetLabel.textContent = `${offX.value || 0}, ${offY.value || 0}`;
-        } catch (_) {
-        } finally {
-            refreshing = false;
-            if (refreshQueued) { refreshQueued = false; refreshPreview(); }
-        }
-    }
-
-    function scheduleRefresh() {
-        clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(refreshPreview, 250);
-    }
-
-    // Form input handlers for new overlay form
-    const overlayFormIds = [
-        'ov-text', 'ov-position', 'ov-alignment', 'ov-font-size', 'ov-text-color', 'ov-margin',
-        'ov-shadow-enabled', 'ov-shadow-color', 'ov-shadow-offset',
-        'ov-box-enabled', 'ov-box-color', 'ov-box-opacity', 'ov-box-px', 'ov-box-py', 'ov-box-radius',
-        'ov-marquee-enabled', 'ov-marquee-height', 'ov-marquee-font-size', 'ov-marquee-text-color', 'ov-marquee-bg-color', 'ov-marquee-opacity', 'ov-marquee-speed'
-    ];
-    function saveOverlayField() {
-        if (window.__studioOnOverlayFieldChanged) window.__studioOnOverlayFieldChanged();
-    }
-
-    overlayFormIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.addEventListener('input', () => { saveOverlayField(); scheduleRefresh(); });
-            el.addEventListener('change', () => { saveOverlayField(); scheduleRefresh(); });
-        }
-    });
-
-    // Changing anchor position/alignment resets drag offset
-    ['ov-position', 'ov-alignment'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', () => {
-            document.getElementById('ov-offset-x').value = 0;
-            document.getElementById('ov-offset-y').value = 0;
-            document.getElementById('ov-offset-label').textContent = '0, 0';
-            saveOverlayField();
-            scheduleRefresh();
-        });
-    });
-
-    // Only controls which file's background shows in the live preview now
-    // — which overlay config is being edited is controlled solely by the
-    // "Chỉnh" button / "Overlay mặc định" control (batch-upload IIFE).
-    previewRowSelect.addEventListener('change', () => {
-        refreshPreview();
-    });
-
-    document.getElementById('ov-offset-reset').addEventListener('click', () => {
-        document.getElementById('ov-offset-x').value = 0;
-        document.getElementById('ov-offset-y').value = 0;
-        document.getElementById('ov-offset-label').textContent = '0, 0';
-        saveOverlayField();
-        scheduleRefresh();
-    });
-
-    // Drag the text block; on release the delta is folded into offset_x/y and
-    // the server re-renders (it applies the same clamping as the final render).
-    let drag = null;
-    dragRect.addEventListener('pointerdown', (e) => {
-        if (!rect) return;
-        e.preventDefault();
-        dragRect.setPointerCapture(e.pointerId);
-        dragRect.classList.add('dragging');
-        drag = { startX: e.clientX, startY: e.clientY, dx: 0, dy: 0 };
-    });
-    dragRect.addEventListener('pointermove', (e) => {
-        if (!drag || !rect) return;
-        const scale = rect.img_w / ovImg.clientWidth;
-        let dx = (e.clientX - drag.startX) * scale;
-        let dy = (e.clientY - drag.startY) * scale;
-        dx = Math.max(-rect.x, Math.min(rect.img_w - rect.w - rect.x, dx));
-        dy = Math.max(-rect.y, Math.min(rect.img_h - rect.h - rect.y, dy));
-        drag.dx = dx;
-        drag.dy = dy;
-        dragRect.style.transform = `translate(${dx / scale}px, ${dy / scale}px)`;
-    });
-    dragRect.addEventListener('pointerup', () => {
-        if (!drag) return;
-        offX.value = Math.round((parseInt(offX.value, 10) || 0) + drag.dx);
-        offY.value = Math.round((parseInt(offY.value, 10) || 0) + drag.dy);
-        drag = null;
-        dragRect.classList.remove('dragging');
-        saveOverlayField();
-        refreshPreview();
-    });
-    dragRect.addEventListener('pointercancel', () => {
-        drag = null;
-        dragRect.classList.remove('dragging');
-        positionRect();
-    });
-
-    window.__studioRefreshPreview = refreshPreview;
-    window.__studioOnRowBgChanged = function(idx) {
-        if (String(idx) === previewRowSelect.value) scheduleRefresh();
-    };
 })();
 
 // --- Mix check: audio chính (uploaded file) at 100% + looping background

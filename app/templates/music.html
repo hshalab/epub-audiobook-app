@@ -31,6 +31,7 @@
                 <th>Tên</th>
                 <th>Thời lượng</th>
                 <th>Preview</th>
+                <th>Mô tả / License</th>
                 <th>Đổi tên</th>
                 <th></th>
             </tr>
@@ -51,6 +52,7 @@
                         <source src="/music/{{ m.id }}/file">
                     </audio>
                 </td>
+                <td><form method="post" action="/music/{{ m.id }}/metadata" style="display:grid;gap:var(--space-xs);min-width:220px"><textarea name="description" rows="2" placeholder="Mô tả dùng khi upload YouTube">{{ m.description }}</textarea><input type="text" name="license" value="{{ m.license }}" placeholder="License / nguồn bản quyền"><button type="submit" class="btn-sm">Lưu metadata</button></form></td>
                 <td>
                     <form method="post" action="/music/{{ m.id }}/rename" style="display:flex;gap:var(--space-sm)">
                         <input type="text" name="name" placeholder="Tên mới" required
