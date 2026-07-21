@@ -169,7 +169,6 @@ def book_detail(request: Request, book_id: int):
         rules = repository.list_replace_rules(conn, book_id)
         chapters = repository.list_chapters(conn, book_id)
         last_error = repository.get_last_error_for_book(conn, book_id)
-        video_job = repository.get_book_job(conn, book_id, "video")
         drive_connected = google_drive.any_account_connected(conn)
         music_list = repository.list_music(conn)
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
@@ -192,7 +191,6 @@ def book_detail(request: Request, book_id: int):
             "rules": rules,
             "chapters": chapters,
             "last_error": last_error,
-            "video_job": video_job,
             "has_active_patches": has_active_patches,
             "drive_connected": drive_connected,
             "drive_configured": google_drive.is_configured(conn),
@@ -214,7 +212,6 @@ def book_status(request: Request, book_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         patch_list = repository.list_patches(conn, book_id)
-        video_job = repository.get_book_job(conn, book_id, "video")
     worker = request.app.state.worker
     live_chunk_index = (
         worker.current_chunk_index
@@ -241,11 +238,6 @@ def book_status(request: Request, book_id: int):
             }
             for p in patch_list
         ],
-        "video_job": {
-            "status": video_job.status,
-            "error_message": video_job.error_message,
-            "output_path": video_job.output_path,
-        } if video_job else None,
         "current_chunk_count": live_chunk_count,
     })
 

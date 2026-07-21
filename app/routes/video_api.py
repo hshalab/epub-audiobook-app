@@ -24,6 +24,15 @@ def list_videos(
     date_from: str = "",
     date_to: str = "",
 ):
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page < 1 or per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be 1-100")
+    valid_sorts = {"created_at", "filename", "file_size_bytes", "upload_status"}
+    if sort not in valid_sorts:
+        raise HTTPException(status_code=400, detail=f"sort must be one of {valid_sorts}")
+    if order not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="order must be 'asc' or 'desc'")
     with locked_conn(request) as conn:
         result = video_repository.list_videos(
             conn,
@@ -52,6 +61,10 @@ def get_video(request: Request, video_id: int):
 @router.patch("/video/api/videos/{video_id}")
 async def update_video(request: Request, video_id: int):
     body = await request.json()
+    allowed_fields = {"title", "description", "tags", "privacy"}
+    invalid = set(body.keys()) - allowed_fields
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid fields: {invalid}")
     with locked_conn(request) as conn:
         video = video_repository.get_video(conn, video_id)
         if not video:

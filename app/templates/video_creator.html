@@ -243,6 +243,11 @@
                     <div class="form-group"><label for="ov-margin">Margin (px)</label><input type="number" id="ov-margin" min="0" max="200" value="20"></div>
                 </div>
 
+                <div style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md)">
+                    <button type="button" id="ov-apply-all" class="btn-outline btn-sm">Áp dụng cho tất cả files</button>
+                    <button type="button" id="ov-clear-all" class="btn-outline btn-sm">Xóa overlay tất cả</button>
+                </div>
+
                 <div class="drag-offset">
                     <span>Offset kéo: <code id="ov-offset-label">0, 0</code> px</span>
                     <input type="hidden" id="ov-offset-x" value="0">
@@ -628,6 +633,7 @@
     loadVideos();
 })();
 </script>
+<script>
 (function() {
     const API = {
         uploadBatch: '/video/upload-batch',
@@ -706,7 +712,8 @@
         
         activeEditIndex = index;
         updateStudioHeaderBadge(index);
-        scheduleRefresh();
+        // Note: scheduleRefresh is defined in studio preview IIFE, not accessible here
+        // The preview will be refreshed when user makes changes via input handlers
     }
 
     function saveFormToOverlayConfig(index) {
@@ -752,6 +759,70 @@
             badge.style.display = 'inline-block';
         }
     }
+
+    // Apply overlay to all files
+    document.getElementById('ov-apply-all').addEventListener('click', function() {
+        if (!batchFiles.length) return;
+        
+        // Save current form to active edit index first
+        if (activeEditIndex !== null) {
+            saveFormToOverlayConfig(activeEditIndex);
+        }
+        
+        // Get current form values
+        const currentConfig = {
+            text: document.getElementById('ov-text').value,
+            position: document.getElementById('ov-position').value,
+            alignment: document.getElementById('ov-alignment').value,
+            font_size: parseInt(document.getElementById('ov-font-size').value) || 52,
+            text_color: document.getElementById('ov-text-color').value,
+            margin: parseInt(document.getElementById('ov-margin').value) || 20,
+            offset_x: parseInt(document.getElementById('ov-offset-x').value) || 0,
+            offset_y: parseInt(document.getElementById('ov-offset-y').value) || 0,
+            shadow: {
+                enabled: document.getElementById('ov-shadow-enabled').checked,
+                color: document.getElementById('ov-shadow-color').value,
+                offset: parseInt(document.getElementById('ov-shadow-offset').value) || 3,
+            },
+            box: {
+                enabled: document.getElementById('ov-box-enabled').checked,
+                color: document.getElementById('ov-box-color').value,
+                opacity: parseInt(document.getElementById('ov-box-opacity').value) || 60,
+                padding_x: parseInt(document.getElementById('ov-box-px').value) || 16,
+                padding_y: parseInt(document.getElementById('ov-box-py').value) || 8,
+                radius: parseInt(document.getElementById('ov-box-radius').value) || 8,
+            },
+            marquee: {
+                enabled: document.getElementById('ov-marquee-enabled').checked,
+                height: parseInt(document.getElementById('ov-marquee-height').value) || 60,
+                font_size: parseInt(document.getElementById('ov-marquee-font-size').value) || 36,
+                text_color: document.getElementById('ov-marquee-text-color').value,
+                bg_color: document.getElementById('ov-marquee-bg-color').value,
+                bg_opacity: parseInt(document.getElementById('ov-marquee-opacity').value) || 80,
+                speed_px_per_sec: parseInt(document.getElementById('ov-marquee-speed').value) || 50,
+            }
+        };
+        
+        // Apply to all files
+        batchFiles.forEach(f => {
+            overlayConfigs[f.index] = JSON.parse(JSON.stringify(currentConfig));
+        });
+        
+        alert(`Đã áp dụng overlay cho ${batchFiles.length} files`);
+    });
+
+    // Clear all overlays
+    document.getElementById('ov-clear-all').addEventListener('click', function() {
+        if (!batchFiles.length) return;
+        
+        batchFiles.forEach(f => {
+            overlayConfigs[f.index] = getDefaultOverlayConfig();
+        });
+        
+        // Reset form
+        loadOverlayConfigToForm(activeEditIndex || batchFiles[0].index);
+        alert('Đã xóa overlay tất cả files');
+    });
 
     // Dropzone for audio files
     (function() {
@@ -1168,6 +1239,9 @@
             }
         });
 
+        // Get global overlay text directly from form input
+        const globalOverlayText = document.getElementById('ov-text').value.trim();
+
         const config = {
             resolution: document.getElementById('cfg-resolution').value,
             fps: parseInt(document.getElementById('cfg-fps').value),
@@ -1178,7 +1252,7 @@
             max_concurrent: parseInt(document.getElementById('cfg-concurrent').value) || 3,
             music_id: musicSel.value ? parseInt(musicSel.value) : null,
             music_volume: parseInt(document.getElementById('cfg-music-volume').value),
-            overlay: null,
+            overlay: globalOverlayText ? { text: globalOverlayText } : null,
             overlay_configs: Object.keys(overlayConfigsMap).length ? overlayConfigsMap : null
         };
 

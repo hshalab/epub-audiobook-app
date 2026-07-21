@@ -133,6 +133,46 @@ def _overlay_values_with_defaults(values) -> dict:
     return merged
 
 
+def _convert_overlay_config_to_flat(cfg: dict) -> dict:
+    """Convert frontend nested overlay config to backend flat format."""
+    flat = {
+        "position": cfg.get("position", "top"),
+        "alignment": cfg.get("alignment", "center"),
+        "font_size": cfg.get("font_size", 52),
+        "text_color": cfg.get("text_color", "#FFFFFF"),
+        "margin": cfg.get("margin", 20),
+        "offset_x": cfg.get("offset_x", 0),
+        "offset_y": cfg.get("offset_y", 0),
+    }
+    
+    # Shadow
+    shadow = cfg.get("shadow", {})
+    flat["shadow_enabled"] = "on" if shadow.get("enabled", False) else "off"
+    flat["shadow_color"] = shadow.get("color", "#000000")
+    flat["shadow_offset"] = shadow.get("offset", 3)
+    
+    # Box
+    box = cfg.get("box", {})
+    flat["box_enabled"] = "on" if box.get("enabled", False) else "off"
+    flat["box_color"] = box.get("color", "#000000")
+    flat["box_opacity"] = box.get("opacity", 60)
+    flat["box_padding_x"] = box.get("padding_x", 16)
+    flat["box_padding_y"] = box.get("padding_y", 8)
+    flat["box_radius"] = box.get("radius", 8)
+    
+    # Marquee
+    marquee = cfg.get("marquee", {})
+    flat["marquee_enabled"] = "on" if marquee.get("enabled", False) else "off"
+    flat["marquee_height"] = marquee.get("height", 60)
+    flat["marquee_font_size"] = marquee.get("font_size", 36)
+    flat["marquee_text_color"] = marquee.get("text_color", "#FFFFFF")
+    flat["marquee_bg_color"] = marquee.get("bg_color", "#000000")
+    flat["marquee_bg_opacity"] = marquee.get("bg_opacity", 80)
+    flat["marquee_speed"] = marquee.get("speed_px_per_sec", 50)
+    
+    return flat
+
+
 def _render_overlay_for_batch(
     bg_path: Path, text: str, overlay_opts: dict, out_path: Path,
 ) -> Path | None:
@@ -140,9 +180,15 @@ def _render_overlay_for_batch(
     falls back to the plain background rather than failing the video)."""
     try:
         from PIL import Image
-        cfg = image_overlay.overlay_cfg_from_values(_overlay_values_with_defaults(overlay_opts))
+        # Convert nested config to flat format
+        flat_opts = _convert_overlay_config_to_flat(overlay_opts)
+        logger.info("video_creator: overlay_opts=%r", overlay_opts)
+        logger.info("video_creator: flat_opts=%r", flat_opts)
+        cfg = image_overlay.overlay_cfg_from_values(_overlay_values_with_defaults(flat_opts))
+        logger.info("video_creator: cfg=%r", cfg)
         img = Image.open(str(bg_path)).convert("RGB")
         lines = image_overlay.build_overlay_lines(img, text, cfg)
+        logger.info("video_creator: text=%r lines=%r", text, lines)
         image_overlay.render_overlay(img, lines, cfg)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(out_path), "PNG")
@@ -381,6 +427,10 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
     raw_cfg = body.get("config", {})
     max_concurrent = max(1, min(8, int(raw_cfg.get("max_concurrent", 3))))
 
+    # Get database connection and lock from app state
+    conn = request.app.state.conn
+    db_lock = request.app.state.db_lock
+
     batch_dir = _TMP_DIR / batch_id
     meta_path = batch_dir / "meta.json"
     if not meta_path.exists():
@@ -464,6 +514,7 @@ async def generate_batch(request: Request, background_tasks: BackgroundTasks):
             return await _run_single_video(
                 idx, finfo, audio_path, image_path, job_key,
                 eff_text, eff_opts, music_path, music_volume, cfg, batch_id,
+                conn, db_lock,
             )
 
     async def run_batch():
@@ -490,16 +541,20 @@ async def _run_single_video(
     idx, finfo, audio_path, image_path, job_key,
     effective_overlay_text, effective_overlay_opts,
     music_path, music_volume, cfg, batch_id,
+    conn, db_lock,
 ):
     overlay_png = _TMP_DIR / f"{batch_id}_{idx}_overlay.png"
     render_path = image_path
+    logger.info("video_creator: idx=%s overlay_text=%r overlay_opts=%r", idx, effective_overlay_text, effective_overlay_opts)
     if effective_overlay_text:
         rendered = _render_overlay_for_batch(image_path, effective_overlay_text, effective_overlay_opts, overlay_png)
         if rendered is not None:
             render_path = rendered
             _record_step(job_key, "overlay.rendered", {"path": overlay_png.name})
+            logger.info("video_creator: overlay rendered to %s", overlay_png)
         else:
             _record_step(job_key, "overlay.failed_fallback", {"detail": "using plain background"})
+            logger.warning("video_creator: overlay render failed for idx=%s", idx)
 
     stem = _sanitize_basename(finfo["original_name"])
     final_path = _unique_video_path(stem)
@@ -521,27 +576,24 @@ async def _run_single_video(
         shutil.move(str(tmp_out), str(final_path))
         # Register video in database
         from app.video_repository import insert_video
-        from app.db import get_conn
-        db_conn = get_conn()
         try:
-            video_record = insert_video(
-                db_conn,
-                filename=final_path.name,
-                original_name=finfo["original_name"],
-                file_path=str(final_path),
-                file_size_bytes=final_path.stat().st_size,
-                resolution=cfg.get("resolution", "1920x1080"),
-                batch_id=batch_id,
-                source_audio=finfo["original_name"],
-                background_path=str(image_path),
-                title=finfo["original_name"],
-            )
-            video_db_id = video_record["id"]
+            with db_lock:
+                video_record = insert_video(
+                    conn,
+                    filename=final_path.name,
+                    original_name=finfo["original_name"],
+                    file_path=str(final_path),
+                    file_size_bytes=final_path.stat().st_size,
+                    resolution=cfg.get("resolution", "1920x1080"),
+                    batch_id=batch_id,
+                    source_audio=finfo["original_name"],
+                    background_path=str(image_path),
+                    title=finfo["original_name"],
+                )
+                video_db_id = video_record["id"]
         except Exception as e:
             logger.warning("Failed to register video in database: %s", e)
             video_db_id = 0
-        finally:
-            db_conn.close()
         _record_step(job_key, "job.done", {"video": final_path.name})
         completed_at = datetime.now()
         _progress_store[job_key]["result"] = {

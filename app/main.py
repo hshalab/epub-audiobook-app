@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import db, repository
+from app import db, repository, upload_worker as upload_worker_mod
 from app.config import settings
 from app.routes import books, database_io, downloads, drive, logs, music, patches, photos, queue, video, video_api, voices, youtube
 from app.tts_engine import VoxCPMEngine
@@ -79,6 +79,7 @@ async def lifespan(app: FastAPI):
     db_lock = threading.Lock()
     app.state.conn = conn
     app.state.db_lock = db_lock
+    upload_worker_mod.init_worker(conn, db_lock)
 
     worker_task: asyncio.Task | None = None
     if settings.enable_worker:
@@ -109,6 +110,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if upload_worker_mod.upload_worker:
+            await upload_worker_mod.upload_worker.stop()
         if worker_task is not None:
             worker.stop()
             try:

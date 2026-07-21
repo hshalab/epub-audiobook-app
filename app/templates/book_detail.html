@@ -70,53 +70,6 @@
     <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">Final audio is ready for download.</p>
 </div>
 
-<div class="card">
-    <div class="card-header">
-        <h3 style="margin:0">Video</h3>
-    </div>
-    {% if not book.background_image_path %}
-        <p style="margin:0;color:var(--text-muted)">
-            <em>No background image set — video generation skipped.</em>
-        </p>
-    {% elif video_job %}
-        <div style="margin-bottom:var(--space-md)" id="video-job-status">
-            {% if video_job.status == "pending" %}
-                <span class="badge badge-pending">Pending (queued)</span>
-                <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline;margin-left:0.5rem">
-                    <button type="submit" class="btn-sm btn-outline">Regenerate</button>
-                </form>
-            {% elif video_job.status == "processing" %}
-                <span class="badge badge-processing">Processing</span>
-            {% elif video_job.status == "done" %}
-                <span class="badge badge-done">Done</span>
-                <span style="margin-left:0.5rem;font-size:var(--font-size-xs);color:var(--text-muted)">
-                    <code>{{ video_job.output_path }}</code>
-                </span>
-            {% elif video_job.status == "failed" %}
-                <span class="badge badge-failed">Failed</span>
-                <span style="margin-left:0.5rem;font-size:var(--font-size-xs);color:var(--text-muted)">
-                    {{ video_job.error_message }}
-                </span>
-            {% endif %}
-        </div>
-        {% if video_job.status == "done" %}
-            <div class="btn-group">
-                <a href="/books/{{ book.id }}/download/video" class="btn-success">Download .mp4</a>
-                <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
-                    <button type="submit" class="btn-outline">Regenerate</button>
-                </form>
-            </div>
-        {% elif video_job.status == "failed" %}
-            <form action="/books/{{ book.id }}/video/regenerate" method="post" style="display:inline">
-                <button type="submit" class="btn-primary btn-sm">Regenerate</button>
-            </form>
-        {% endif %}
-    {% else %}
-        <form action="/books/{{ book.id }}/video" method="post" style="margin:0">
-            <button type="submit" class="btn-primary">Generate video</button>
-        </form>
-    {% endif %}
-</div>
 {% else %}
 <div class="card">
     <p style="margin:0;color:var(--text-muted)">
@@ -585,11 +538,6 @@
                         progEl.innerHTML = '<span style="color:var(--text-muted)">&mdash;</span>';
                     }
                 }
-            }
-
-            const videoEl = document.getElementById('video-job-status');
-            if (videoEl && data.video_job) {
-                videoEl.innerHTML = badgeFor(data.video_job.status);
             }
 
             if (!data.has_active_patches && data.book_status !== 'processing') {
