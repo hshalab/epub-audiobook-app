@@ -82,7 +82,7 @@
     <style>
         #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
         @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
-        .studio-section { border:1px solid var(--border-color); border-radius:var(--radius-md); padding:var(--space-md); }
+        .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
         .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
         #drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
         #drag-rect:hover, #drag-rect.dragging { background:rgba(56,189,248,.22); }
@@ -94,7 +94,7 @@
     <div id="studio-grid">
         <div style="position:sticky;top:var(--space-md);display:flex;flex-direction:column;gap:var(--space-md)">
             <div>
-                <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden">
+                <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                     <img id="overlay-preview" alt="Preview" style="width:100%;display:block">
                     <div id="drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
                 </div>

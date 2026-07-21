@@ -1082,11 +1082,20 @@ section {
 }
 
 /* --- Video Creator --- */
-.video-creator-form { 
-  max-width: 700px; 
+.video-creator-form {
+  max-width: 700px;
 }
 
-.required { 
+/* Video Creator: layout helpers replacing ad hoc inline styles */
+.vc-muted-intro { color: var(--text-muted); margin-bottom: var(--space-lg); }
+.vc-row-between { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-md); }
+.vc-row-wrap { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-md); }
+.vc-inline-flex { display: flex; align-items: center; gap: var(--space-sm); }
+.vc-flex-1 { flex: 1; min-width: 200px; }
+.vc-justify-end { justify-content: flex-end; }
+.hidden { display: none; }
+
+.required {
   color: var(--accent-red-text); 
 }
 
