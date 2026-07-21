@@ -95,6 +95,20 @@ class PatchExport:
     updated_at: str
     drive_account_id: int | None = None  # NULL = export from before multi-account
     account_email: str | None = None  # joined in from google_drive_credentials for display
+    sync_target_id: int | None = None
+    local_folder_path: str | None = None
+    sync_target_name: str | None = None
+    sync_target_email: str | None = None
+
+
+@dataclass
+class DriveSyncTarget:
+    id: int
+    name: str
+    account_email: str
+    folder_path: str
+    created_at: str
+    updated_at: str
 
 
 @dataclass

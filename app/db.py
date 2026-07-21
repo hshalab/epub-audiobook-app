@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS drive_oauth_client (
     updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS drive_sync_target (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    account_email   TEXT NOT NULL,
+    folder_path     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_state (
     key             TEXT PRIMARY KEY,
     value           TEXT
@@ -104,67 +113,6 @@ CREATE TABLE IF NOT EXISTS youtube_credentials (
     channel_name    TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS youtube_uploads (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    video_id        INTEGER REFERENCES videos(id) ON DELETE SET NULL,
-    video_path      TEXT NOT NULL,
-    youtube_video_id TEXT,
-    title           TEXT,
-    description     TEXT,
-    tags            TEXT,
-    privacy_status  TEXT NOT NULL DEFAULT 'private',
-    status          TEXT NOT NULL DEFAULT 'pending',
-    error_message   TEXT,
-    uploaded_at     TEXT,
-    created_at      TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_youtube_uploads_video_id ON youtube_uploads(video_id);
-
-CREATE TABLE IF NOT EXISTS google_drive_credentials (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    access_token    TEXT NOT NULL,
-    refresh_token   TEXT NOT NULL,
-    token_expiry    TEXT NOT NULL,
-    account_email   TEXT,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS music (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    name            TEXT NOT NULL,
-    file_path       TEXT NOT NULL,
-    duration_sec    REAL,
-    created_at      TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS patch_export (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
-    -- google_drive_credentials.id of the account the export went to; NULL = legacy
-    -- export from before multi-account. Deliberately not a FK: disconnecting an
-    -- account must neither be blocked by export history nor erase it.
-    drive_account_id        INTEGER,
-    drive_folder_id         TEXT NOT NULL,
-    drive_folder_link       TEXT NOT NULL,
-    status                  TEXT NOT NULL DEFAULT 'exported',
-    exported_chunk_count    INTEGER NOT NULL DEFAULT 0,
-    imported_chunk_count    INTEGER NOT NULL DEFAULT 0,
-    error_message           TEXT,
-    created_at              TEXT NOT NULL,
-    updated_at              TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_patch_export_patch ON patch_export(patch_id, id DESC);
-
-CREATE TABLE IF NOT EXISTS voice_meta (
-    filename    TEXT PRIMARY KEY,
-    description TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -205,6 +153,67 @@ CREATE TABLE IF NOT EXISTS batches (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS youtube_uploads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_path      TEXT NOT NULL,
+    youtube_video_id TEXT,
+    title           TEXT,
+    description     TEXT,
+    tags            TEXT,
+    privacy_status  TEXT NOT NULL DEFAULT 'private',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error_message   TEXT,
+    uploaded_at     TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS google_drive_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT NOT NULL,
+    token_expiry    TEXT NOT NULL,
+    account_email   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS music (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    duration_sec    REAL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS patch_export (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
+    -- google_drive_credentials.id of the account the export went to; NULL = legacy
+    -- export from before multi-account. Deliberately not a FK: disconnecting an
+    -- account must neither be blocked by export history nor erase it.
+    drive_account_id        INTEGER,
+    sync_target_id          INTEGER,
+    local_folder_path       TEXT,
+    drive_folder_id         TEXT NOT NULL,
+    drive_folder_link       TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'exported',
+    exported_chunk_count    INTEGER NOT NULL DEFAULT 0,
+    imported_chunk_count    INTEGER NOT NULL DEFAULT 0,
+    error_message           TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_patch_export_patch ON patch_export(patch_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS voice_meta (
+    filename    TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 """
 
 
@@ -269,6 +278,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     export_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_export)")}
     if "drive_account_id" not in export_existing:
         conn.execute("ALTER TABLE patch_export ADD COLUMN drive_account_id INTEGER")
+    if "sync_target_id" not in export_existing:
+        conn.execute("ALTER TABLE patch_export ADD COLUMN sync_target_id INTEGER")
+    if "local_folder_path" not in export_existing:
+        conn.execute("ALTER TABLE patch_export ADD COLUMN local_folder_path TEXT")
     gdc_existing = {row["name"] for row in conn.execute("PRAGMA table_info(google_drive_credentials)")}
     if "oauth_client_id" not in gdc_existing:
         conn.execute("ALTER TABLE google_drive_credentials ADD COLUMN oauth_client_id INTEGER")

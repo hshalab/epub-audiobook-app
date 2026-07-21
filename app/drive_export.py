@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import sqlite3
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,38 @@ from app.models import Book, Patch
 _NOTEBOOK_TEMPLATE = Path(__file__).parent / "assets" / "colab_kaggle_tts_template.ipynb"
 _BATCH_NOTEBOOK_TEMPLATE = Path(__file__).parent / "assets" / "colab_kaggle_batch_tts_template.ipynb"
 _TMP_DIR = Path(settings.data_root) / "tmp" / "patch_export"
+
+
+def validate_sync_folder(folder_path: str) -> Path:
+    raw = Path(folder_path.strip()).expanduser()
+    if not raw.is_absolute():
+        raise ValueError("Folder path must be absolute")
+    path = raw.resolve()
+    if not path.exists():
+        raise ValueError("Folder path does not exist")
+    if not path.is_dir():
+        raise ValueError("Folder path is not a directory")
+    try:
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".epub-audiobook-write-test-", delete=True):
+            pass
+    except OSError as exc:
+        raise ValueError(f"Folder is not writable: {exc}") from exc
+    return path
+
+
+def publish_package(package_dir: Path, target_folder: str, folder_name: str) -> Path:
+    target = validate_sync_folder(target_folder)
+    final = target / folder_name
+    if final.exists():
+        raise FileExistsError(f"Export folder already exists: {final}")
+    temp = Path(tempfile.mkdtemp(prefix=".epub-audiobook-export-", dir=target))
+    try:
+        shutil.copytree(package_dir, temp, dirs_exist_ok=True)
+        temp.rename(final)
+        return final
+    except Exception:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
 
 
 def _sanitize_name(name: str) -> str:

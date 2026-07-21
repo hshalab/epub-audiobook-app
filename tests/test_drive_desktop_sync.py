@@ -1,0 +1,273 @@
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import db, drive_export, repository
+from app.config import settings
+from app.main import app
+
+
+NOW = datetime.now(timezone.utc).isoformat()
+
+
+def make_conn():
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    return conn
+
+
+def add_patch(conn):
+    conn.execute(
+        "INSERT INTO book (id, title, original_filename, epub_path, patch_size, status, created_at, updated_at) VALUES (1, 'Book', 'b.epub', 'b.epub', 1, 'ready', ?, ?)",
+        (NOW, NOW),
+    )
+    cur = conn.execute(
+        "INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at) VALUES (1, 0, 0, 0, 'pending', ?, ?)",
+        (NOW, NOW),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_migration_and_deleted_target_preserve_export(tmp_path):
+    conn = make_conn()
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(patch_export)")}
+    assert {"sync_target_id", "local_folder_path"} <= columns
+
+    patch_id = add_patch(conn)
+    target = repository.create_drive_sync_target(conn, "A", "a@example.com", str(tmp_path))
+    export = repository.create_patch_export(
+        conn, patch_id, str(tmp_path), str(tmp_path), 1,
+        sync_target_id=target["id"], local_folder_path=str(tmp_path),
+    )
+    repository.delete_drive_sync_target(conn, target["id"])
+    saved = repository.get_latest_patch_export(conn, patch_id)
+    assert saved.id == export.id
+    assert saved.local_folder_path == str(tmp_path)
+
+
+def test_sync_target_crud(tmp_path):
+    conn = make_conn()
+    target = repository.create_drive_sync_target(conn, "A", "a@example.com", str(tmp_path))
+    assert repository.get_drive_sync_target(conn, target["id"])["name"] == "A"
+    assert repository.update_drive_sync_target(conn, target["id"], "B", "b@example.com", str(tmp_path))
+    assert repository.list_drive_sync_targets(conn)[0]["name"] == "B"
+    assert repository.delete_drive_sync_target(conn, target["id"])
+
+
+def test_validate_and_publish_package(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "manifest.json").write_text("{}", encoding="utf-8")
+
+    final = drive_export.publish_package(source, str(target), "package")
+    assert (final / "manifest.json").read_text(encoding="utf-8") == "{}"
+    with pytest.raises(FileExistsError):
+        drive_export.publish_package(source, str(target), "package")
+    assert not list(target.glob(".epub-audiobook-export-*"))
+
+
+def test_validate_sync_folder_rejects_invalid_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="absolute"):
+        drive_export.validate_sync_folder("relative")
+    with pytest.raises(ValueError, match="does not exist"):
+        drive_export.validate_sync_folder(str(tmp_path / "missing"))
+    file_path = tmp_path / "file"
+    file_path.write_text("x")
+    with pytest.raises(ValueError, match="not a directory"):
+        drive_export.validate_sync_folder(str(file_path))
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "app.db"))
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings, "enable_worker", False)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_target_routes_create_edit_delete(client, tmp_path):
+    folder = tmp_path / "drive"
+    folder.mkdir()
+    response = client.post("/drive/targets", data={
+        "name": "Personal", "account_email": "a@example.com", "folder_path": str(folder),
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert "Personal" in client.get("/drive").text
+
+    response = client.post("/drive/targets/1/edit", data={
+        "name": "Work", "account_email": "b@example.com", "folder_path": str(folder),
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert "Work" in client.get("/drive").text
+    assert client.post("/drive/targets/1/delete", follow_redirects=False).status_code == 303
+
+
+def test_target_route_rejects_invalid_folder(client, tmp_path):
+    response = client.post("/drive/targets", data={
+        "name": "Bad", "account_email": "a@example.com", "folder_path": str(tmp_path / "missing"),
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+
+def test_drive_page_explains_setup_and_folder_picker(client):
+    response = client.get("/drive")
+    assert response.status_code == 200
+    assert "Cài Drive for desktop" in response.text
+    assert "Chọn folder" in response.text
+    assert "/drive/pick-folder" in response.text
+
+
+def test_pick_folder_route_returns_native_selection(client, monkeypatch):
+    import sys
+    import types
+
+    class FakeRoot:
+        def withdraw(self): pass
+        def attributes(self, *_args): pass
+        def destroy(self): pass
+
+    fake_tk = types.ModuleType("tkinter")
+    fake_tk.Tk = FakeRoot
+    fake_dialog = types.ModuleType("tkinter.filedialog")
+    fake_dialog.askdirectory = lambda **kwargs: r"G:\My Drive\Audiobooks"
+    fake_tk.filedialog = fake_dialog
+    monkeypatch.setitem(sys.modules, "tkinter", fake_tk)
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", fake_dialog)
+    response = client.get("/drive/pick-folder")
+    assert response.status_code == 200
+    assert response.json() == {"folder_path": r"G:\My Drive\Audiobooks"}
+
+
+# ---------------------------------------------------------------------------
+# Export and import via filesystem (tasks 3.5, 4.4)
+# ---------------------------------------------------------------------------
+
+
+def _seed_book_patch(conn, tmp_path, voice=True):
+    now = NOW
+    clip = None
+    if voice:
+        clip = str(tmp_path / "voice.wav")
+        (tmp_path / "voice.wav").write_bytes(b"RIFF")
+    cur = conn.execute(
+        "INSERT INTO book (title, original_filename, epub_path, patch_size, status, "
+        "voice_clip_path, created_at, updated_at) VALUES ('B', 'b.epub', 'b.epub', 1, 'ready', ?, ?, ?)",
+        (clip, now, now),
+    )
+    book_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO chapter (book_id, chapter_index, title, text, char_count) VALUES (?, 0, 'C', 'Hello world text.', 17)",
+        (book_id,),
+    )
+    cur = conn.execute(
+        "INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at) VALUES (?, 0, 0, 0, 'pending', ?, ?)",
+        (book_id, now, now),
+    )
+    conn.commit()
+    return book_id, cur.lastrowid
+
+
+@pytest.fixture
+def client_with_target(tmp_path, monkeypatch):
+    drive_dir = tmp_path / "gdrive"
+    drive_dir.mkdir()
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "app.db"))
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings, "enable_worker", False)
+    with TestClient(app) as c:
+        conn = db.connect(str(tmp_path / "app.db"))
+        book_id, patch_id = _seed_book_patch(conn, tmp_path)
+        target = repository.create_drive_sync_target(conn, "T", "t@example.com", str(drive_dir))
+        conn.close()
+        yield c, book_id, patch_id, target["id"], drive_dir
+
+
+def test_export_no_target_returns_400(client):
+    with TestClient(app) as c:
+        resp = c.post("/books/1/patches/1/export", data={}, follow_redirects=False)
+    assert resp.status_code == 422
+
+
+def test_export_unknown_target_returns_400(client, tmp_path):
+    drive_dir = tmp_path / "gd"
+    drive_dir.mkdir()
+    with db.connect(str(tmp_path / "app.db")) as conn:
+        _seed_book_patch(conn, tmp_path)
+    resp = client.post("/books/1/patches/1/export", data={"sync_target_id": "999"}, follow_redirects=False)
+    assert resp.status_code == 400
+
+
+def test_export_collision_leaves_existing_folder(tmp_path):
+    source = tmp_path / "pkg"
+    target = tmp_path / "tgt"
+    source.mkdir(); target.mkdir()
+    (source / "f.txt").write_text("a")
+    drive_export.publish_package(source, str(target), "mypkg")
+    existing = (target / "mypkg" / "f.txt").read_text()
+    with pytest.raises(FileExistsError):
+        (source / "f.txt").write_text("b")
+        drive_export.publish_package(source, str(target), "mypkg")
+    assert (target / "mypkg" / "f.txt").read_text() == existing
+
+
+def test_publish_cleanup_on_copy_error(tmp_path):
+    source = tmp_path / "pkg"
+    target = tmp_path / "tgt"
+    source.mkdir(); target.mkdir()
+    import shutil as _shutil
+    original_copytree = _shutil.copytree
+    def failing_copy(*a, **k):
+        raise OSError("disk full")
+    import unittest.mock as mock
+    with mock.patch("shutil.copytree", side_effect=failing_copy):
+        with pytest.raises(OSError):
+            drive_export.publish_package(source, str(target), "mypkg")
+    assert not list(target.glob(".epub-audiobook-export-*"))
+    assert not (target / "mypkg").exists()
+
+
+def test_import_legacy_export_returns_400(client_with_target):
+    c, book_id, patch_id, target_id, drive_dir = client_with_target
+    with db.connect(str(settings.db_path)) as conn:
+        repository.create_patch_export(conn, patch_id, "legacy-id", "https://example.com", 2)
+    resp = c.post(f"/books/{book_id}/patches/{patch_id}/import", follow_redirects=False)
+    assert resp.status_code == 400
+    assert "Legacy" in resp.json()["detail"] or "legacy" in resp.json()["detail"].lower()
+
+
+def test_import_missing_folder_returns_400(client_with_target):
+    c, book_id, patch_id, target_id, drive_dir = client_with_target
+    with db.connect(str(settings.db_path)) as conn:
+        repository.create_patch_export(conn, patch_id, "x", "x", 1,
+                                       sync_target_id=target_id,
+                                       local_folder_path=str(drive_dir / "gone"))
+    resp = c.post(f"/books/{book_id}/patches/{patch_id}/import", follow_redirects=False)
+    assert resp.status_code == 400
+
+
+def test_import_partial_prefix(tmp_path):
+    source = tmp_path / "pkg"
+    output = source / "output"
+    output.mkdir(parents=True)
+    (output / "chunk_000.wav").write_bytes(b"RIFF")
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    now = NOW
+    conn.execute("INSERT INTO book (title, original_filename, epub_path, patch_size, status, created_at, updated_at) VALUES ('B', 'b.epub', 'b.epub', 1, 'ready', ?, ?)", (now, now))
+    conn.execute("INSERT INTO chapter (book_id, chapter_index, title, text, char_count) VALUES (1, 0, 'C', 'Hello world.', 12)", ())
+    cur = conn.execute("INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at) VALUES (1, 0, 0, 0, 'pending', ?, ?)", (now, now))
+    patch_id = cur.lastrowid
+    conn.commit()
+    export = repository.create_patch_export(conn, patch_id, str(source), str(source), 3,
+                                            local_folder_path=str(source))
+    assert export.local_folder_path == str(source)
+    assert (output / "chunk_000.wav").exists()
+    conn.close()

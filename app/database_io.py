@@ -79,6 +79,7 @@ def _table_order() -> list[str]:
         "youtube_uploads",
         "youtube_credentials",
         "drive_oauth_client",
+        "drive_sync_target",
         "app_state",
         "music",
         "book",

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+import threading
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import google_drive, repository
+from app import drive_export, google_drive, repository
 from app.config import settings
 from app.deps import locked_conn
 
@@ -17,32 +19,84 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
+@router.get("/drive/pick-folder")
+def pick_drive_folder():
+    """Open a native folder picker on the machine running the app."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as exc:
+        raise HTTPException(status_code=501, detail="Native folder picker is unavailable") from exc
+
+    selected: list[str] = []
+    error: list[Exception] = []
+
+    def choose() -> None:
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            selected.append(filedialog.askdirectory(title="Chọn thư mục Google Drive Desktop"))
+            root.destroy()
+        except Exception as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=choose)
+    thread.start()
+    thread.join()
+    if error:
+        raise HTTPException(status_code=500, detail=str(error[0]))
+    return {"folder_path": selected[0] if selected else ""}
+
+
 @router.get("/drive", response_class=HTMLResponse)
 def drive_page(request: Request):
     with locked_conn(request) as conn:
-        accounts = google_drive.list_accounts(conn)
-        pending_counts = {
-            a["id"]: repository.count_pending_exports_for_account(conn, a["id"])
-            for a in accounts
-        }
+        targets = repository.list_drive_sync_targets(conn)
         exports = repository.list_all_patch_exports(conn, limit=30)
-        clients = google_drive.list_clients(conn)
-        client_names = {c["id"]: c["name"] for c in clients}
-        client_counts = {}
-        for a in accounts:
-            ocid = a.get("oauth_client_id")
-            if ocid:
-                client_counts[ocid] = client_counts.get(ocid, 0) + 1
     return templates.TemplateResponse(request, "drive.html", {
         "request": request,
-        "accounts": accounts,
-        "pending_counts": pending_counts,
+        "targets": targets,
         "exports": exports,
-        "configured": google_drive.is_configured(conn),
-        "clients": clients,
-        "client_names": client_names,
-        "client_counts": client_counts,
     })
+
+
+def _target_fields(name: str, account_email: str, folder_path: str) -> tuple[str, str, str]:
+    name, account_email = name.strip(), account_email.strip()
+    if not name or not account_email:
+        raise ValueError("Name and account email are required")
+    return name, account_email, str(drive_export.validate_sync_folder(folder_path))
+
+
+@router.post("/drive/targets")
+def create_sync_target(request: Request, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...)):
+    try:
+        fields = _target_fields(name, account_email, folder_path)
+        with locked_conn(request) as conn:
+            repository.create_drive_sync_target(conn, *fields)
+    except ValueError as exc:
+        return RedirectResponse(url=f"/drive?error={quote(str(exc))}", status_code=303)
+    return RedirectResponse(url="/drive", status_code=303)
+
+
+@router.post("/drive/targets/{target_id}/edit")
+def update_sync_target(request: Request, target_id: int, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...)):
+    try:
+        fields = _target_fields(name, account_email, folder_path)
+        with locked_conn(request) as conn:
+            if not repository.update_drive_sync_target(conn, target_id, *fields):
+                raise HTTPException(status_code=404, detail="Sync target not found")
+    except ValueError as exc:
+        return RedirectResponse(url=f"/drive?error={quote(str(exc))}", status_code=303)
+    return RedirectResponse(url="/drive", status_code=303)
+
+
+@router.post("/drive/targets/{target_id}/delete")
+def delete_sync_target(request: Request, target_id: int):
+    with locked_conn(request) as conn:
+        if not repository.delete_drive_sync_target(conn, target_id):
+            raise HTTPException(status_code=404, detail="Sync target not found")
+    return RedirectResponse(url="/drive", status_code=303)
 
 
 @router.get("/drive/connect")

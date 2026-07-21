@@ -381,10 +381,10 @@ def test_connect_with_valid_client_redirects_to_google(client):
     assert "accounts.google.com" in location or "google.com/o/oauth2" in location
 
 
-def test_drive_page_has_clients(client):
+def test_drive_page_has_desktop_targets(client):
     resp = client.get("/drive")
     assert resp.status_code == 200
-    assert b"OAuth Clients" in resp.content
+    assert b"Google Drive Desktop" in resp.content
 
 
 # ---------------------------------------------------------------------------

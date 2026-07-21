@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen
+from app import audio_merge, drive_export, image_overlay, repository, video_gen
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
@@ -208,15 +208,14 @@ def chunk_manager_page(request: Request, book_id: int, patch_id: int):
         worker = request.app.state.worker
         chunks = repository.get_patch_chunk_view(conn, patch, worker)
         exports = repository.list_patch_exports(conn, patch_id)
-        drive_connected = google_drive.any_account_connected(conn)
+        sync_targets = repository.list_drive_sync_targets(conn)
     return templates.TemplateResponse(request, "chunk_manager.html", {
         "request": request,
         "book": book,
         "patch": patch,
         "chunks": chunks,
         "exports": exports,
-        "drive_connected": drive_connected,
-        "drive_configured": google_drive.is_configured(conn),
+        "sync_targets": sync_targets,
     })
 
 
@@ -259,10 +258,7 @@ def resume_patch_from_chunk(
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/export")
-def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
-    # Mirrors worker.py's convention of holding db_lock for the full duration of a Google
-    # API call (see the youtube upload in _process_book_job) - simpler than fine-grained
-    # locking, acceptable for a single-user local app.
+def export_patch_to_drive(request: Request, book_id: int, patch_id: int, sync_target_id: int = Form(...)):
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)
         if patch is None or patch.book_id != book_id:
@@ -272,10 +268,9 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
-        try:
-            account = google_drive.pick_export_account(conn)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        target = repository.get_drive_sync_target(conn, sync_target_id)
+        if target is None:
+            raise HTTPException(status_code=400, detail="Sync target not found")
 
         # Compute the folder name up front so the same name is baked into the notebook and
         # used for the actual Drive folder (folder_name_for_patch has a timestamp, so it must
@@ -283,19 +278,15 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int):
         folder_name = drive_export.folder_name_for_patch(book.title, patch)
         package_dir = _build_or_400(drive_export.build_export_package, conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
         try:
-            service = google_drive.get_drive_service(conn, account["id"])
-            root_id = google_drive.get_or_create_root_folder(service)
-            folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
-            for f in sorted(package_dir.iterdir()):
-                google_drive.upload_file(service, folder["id"], str(f))
+            folder = drive_export.publish_package(package_dir, target["folder_path"], folder_name)
             chunk_count = sum(1 for f in package_dir.iterdir() if f.name.startswith("chunk_") and f.suffix == ".txt")
-            repository.create_patch_export(conn, patch_id, folder["id"], folder["link"], chunk_count, drive_account_id=account["id"])
-        except Exception as exc:
-            logger.exception(
-                "export to Google Drive failed for patch %s (account %s)",
-                patch_id, account.get("account_email") or account["id"],
+            repository.create_patch_export(
+                conn, patch_id, str(folder), str(folder), chunk_count,
+                sync_target_id=target["id"], local_folder_path=str(folder),
             )
-            raise HTTPException(status_code=500, detail=f"Drive export failed: {exc}")
+        except Exception as exc:
+            logger.exception("export to Google Drive Desktop failed for patch %s", patch_id)
+            raise HTTPException(status_code=500, detail=f"Drive Desktop export failed: {exc}")
         finally:
             shutil.rmtree(package_dir, ignore_errors=True)
 
@@ -363,12 +354,12 @@ def download_batch_export(request: Request, book_id: int, patch_ids: list[int] =
 
 
 @router.post("/books/{book_id}/patches/export-batch")
-def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] = Form(...)):
+def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] = Form(...), sync_target_id: int = Form(...)):
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
-        accounts = google_drive.list_accounts(conn)
-        if not accounts:
-            raise HTTPException(status_code=400, detail="No Google Drive accounts connected.")
+        target = repository.get_drive_sync_target(conn, sync_target_id)
+        if target is None:
+            raise HTTPException(status_code=400, detail="Sync target not found")
 
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
         package_dir, batch_manifest = _build_or_400(
@@ -376,28 +367,18 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
         )
         try:
-            # Distribute patches round-robin across all connected accounts
-            patch_account = {}
-            for i, entry in enumerate(batch_manifest["patches"]):
-                patch_account[entry["patch_id"]] = accounts[i % len(accounts)]
-
-            # Upload the full batch to each account, then record only the patches
-            # assigned to that account with the folder id from that account's Drive.
-            for account in accounts:
-                svc = google_drive.get_drive_service(conn, account["id"])
-                root = google_drive.get_or_create_root_folder(svc)
-                batch = google_drive.create_folder(svc, folder_name, parent_id=root)
-                fm = google_drive.upload_directory(svc, batch["id"], str(package_dir))
-                for entry in batch_manifest["patches"]:
-                    if patch_account[entry["patch_id"]]["id"] == account["id"]:
-                        info = fm[entry["folder"]]
-                        repository.create_patch_export(
-                            conn, entry["patch_id"], info["id"], info["link"],
-                            entry["chunk_count"], drive_account_id=account["id"],
-                        )
+            batch_folder = drive_export.publish_package(package_dir, target["folder_path"], folder_name)
+            for entry in batch_manifest["patches"]:
+                patch_folder = batch_folder / entry["folder"]
+                repository.create_patch_export(
+                    conn, entry["patch_id"], str(patch_folder), str(patch_folder), entry["chunk_count"],
+                    sync_target_id=target["id"], local_folder_path=str(patch_folder), commit=False,
+                )
+            conn.commit()
         except Exception as exc:
             logger.exception("batch export to Google Drive failed for book %s", book_id)
-            raise HTTPException(status_code=500, detail=f"Drive export failed: {exc}")
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=f"Drive Desktop export failed: {exc}")
         finally:
             shutil.rmtree(package_dir, ignore_errors=True)
 
@@ -414,13 +395,12 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=400, detail="cannot import while the patch is processing")
         export = repository.get_latest_patch_export(conn, patch_id)
         if export is None:
-            raise HTTPException(status_code=400, detail="this patch has never been exported to Drive")
-        # Resolve the account before the try-block below: a disconnected account is a
-        # user-fixable 400, not something that should mark the export as failed.
-        try:
-            account = google_drive.resolve_import_account(conn, export.drive_account_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail="this patch has never been exported")
+        if not export.local_folder_path:
+            raise HTTPException(status_code=400, detail="Legacy Drive API export: export again through Google Drive Desktop or upload result files manually")
+        package_folder = Path(export.local_folder_path)
+        if not package_folder.is_dir():
+            raise HTTPException(status_code=400, detail="Export folder is unavailable; check Google Drive Desktop or export again")
 
         text = repository.build_patch_text(conn, patch)
         max_chars = patch.max_chars or settings.tts_max_chars
@@ -430,13 +410,9 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
         chunk_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            service = google_drive.get_drive_service(conn, account["id"])
-            # The notebook writes chunk_NNN.wav into an "output" subfolder of the exported
-            # folder (see colab_kaggle_tts_template.ipynb) - look there first, falling back
-            # to the export folder's top level for exports made before this existed.
-            output_folder_id = google_drive.find_subfolder(service, export.drive_folder_id, "output")
-            list_from_id = output_folder_id or export.drive_folder_id
-            drive_files = {f["name"]: f["id"] for f in google_drive.list_files(service, list_from_id)}
+            source_dir = package_folder / "output"
+            if not source_dir.is_dir():
+                source_dir = package_folder
 
             imported = 0
             for i in range(expected_chunk_count):
@@ -445,9 +421,10 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                 if local_path.exists():
                     imported += 1
                     continue
-                if name not in drive_files:
+                source_path = source_dir / name
+                if not source_path.is_file():
                     break  # first missing chunk: stop here, contiguous prefix ends
-                google_drive.download_file(service, drive_files[name], str(local_path))
+                shutil.copy2(source_path, local_path)
                 imported += 1
 
             if imported >= expected_chunk_count:
@@ -463,9 +440,9 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                 repository.update_patch_chunk_progress(conn, patch_id, imported)
                 repository.update_patch_export(conn, export.id, status="partially_imported", imported_chunk_count=imported)
         except Exception as exc:
-            logger.exception("import from Google Drive failed for patch %s", patch_id)
+            logger.exception("import from Google Drive Desktop failed for patch %s", patch_id)
             repository.update_patch_export(conn, export.id, status="failed", error_message=str(exc))
-            raise HTTPException(status_code=500, detail=f"Drive import failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"Drive Desktop import failed: {exc}")
 
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
 

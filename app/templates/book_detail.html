@@ -378,18 +378,22 @@
                     title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
                 Download selected (.zip)
             </button>
-            {% if drive_configured and drive_connected %}
+             {% if sync_targets %}
+             <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
+                 <option value="">Chọn tài khoản Drive</option>
+                 {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
+             </select>
             <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
                     formaction="/books/{{ book.id }}/patches/export-batch"
                     title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
-                Export selected to Drive
+                 Export vào Drive Desktop
             </button>
             {% endif %}
         </div>
     </div>
     {# The table rows contain their own nested forms, so the batch form stays empty
        and the checkboxes/buttons bind to it via the HTML5 form="" attribute. #}
-    <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download"></form>
+     <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
     <div class="table-wrap">
     <table>
         <thead>
@@ -476,10 +480,11 @@
     const checkboxes = Array.from(document.querySelectorAll('.batch-patch-checkbox'));
     const batchButtons = ['batch-download-btn', 'batch-drive-btn']
         .map(id => document.getElementById(id)).filter(Boolean);
+    const target = document.getElementById('batch-sync-target');
 
     function refreshBatchButtons() {
         const anyChecked = checkboxes.some(cb => cb.checked);
-        batchButtons.forEach(btn => { btn.disabled = !anyChecked; });
+        batchButtons.forEach(btn => { btn.disabled = !anyChecked || (btn.id === 'batch-drive-btn' && !target.value); });
         if (selectAll) {
             const enabled = checkboxes.filter(cb => !cb.disabled);
             selectAll.checked = enabled.length > 0 && enabled.every(cb => cb.checked);
@@ -493,7 +498,38 @@
         });
     }
     checkboxes.forEach(cb => cb.addEventListener('change', refreshBatchButtons));
+    if (target) target.addEventListener('change', refreshBatchButtons);
     refreshBatchButtons();
+})();
+
+(function () {
+    const form = document.getElementById('batch-export-form');
+    if (!form) return;
+    form.addEventListener('submit', async function (event) {
+        const submitter = event.submitter;
+        if (!submitter || submitter.id !== 'batch-drive-btn') return;
+        event.preventDefault();
+        const action = submitter.formAction || form.action;
+        submitter.disabled = true;
+        const label = submitter.textContent;
+        submitter.textContent = 'Đang export...';
+        try {
+            const response = await fetch(action, {
+                method: 'POST',
+                body: new FormData(form),
+                headers: { 'Accept': 'application/json' }
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.detail || 'Export thất bại');
+            }
+            window.location.href = response.url;
+        } catch (error) {
+            alert(error.message);
+            submitter.disabled = false;
+            submitter.textContent = label;
+        }
+    });
 })();
 
 (function() {

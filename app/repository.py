@@ -1392,8 +1392,42 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Patch export (Google Drive / Colab / Kaggle round trip)
+# Google Drive Desktop sync targets and patch export history
 # ---------------------------------------------------------------------------
+
+
+def create_drive_sync_target(conn: sqlite3.Connection, name: str, account_email: str, folder_path: str):
+    now = _now()
+    cur = conn.execute(
+        "INSERT INTO drive_sync_target (name, account_email, folder_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (name, account_email, folder_path, now, now),
+    )
+    conn.commit()
+    return get_drive_sync_target(conn, cur.lastrowid)
+
+
+def get_drive_sync_target(conn: sqlite3.Connection, target_id: int):
+    row = conn.execute("SELECT * FROM drive_sync_target WHERE id = ?", (target_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_drive_sync_targets(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(r) for r in conn.execute("SELECT * FROM drive_sync_target ORDER BY name, id").fetchall()]
+
+
+def update_drive_sync_target(conn: sqlite3.Connection, target_id: int, name: str, account_email: str, folder_path: str) -> bool:
+    cur = conn.execute(
+        "UPDATE drive_sync_target SET name = ?, account_email = ?, folder_path = ?, updated_at = ? WHERE id = ?",
+        (name, account_email, folder_path, _now(), target_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_drive_sync_target(conn: sqlite3.Connection, target_id: int) -> bool:
+    cur = conn.execute("DELETE FROM drive_sync_target WHERE id = ?", (target_id,))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def _patch_export_from_row(row: sqlite3.Row) -> PatchExport:
@@ -1407,24 +1441,30 @@ def create_patch_export(
     drive_folder_link: str,
     exported_chunk_count: int,
     drive_account_id: int | None = None,
+    sync_target_id: int | None = None,
+    local_folder_path: str | None = None,
+    commit: bool = True,
 ) -> PatchExport:
     now = _now()
     cur = conn.execute(
-        """INSERT INTO patch_export (patch_id, drive_account_id, drive_folder_id, drive_folder_link,
+        """INSERT INTO patch_export (patch_id, drive_account_id, sync_target_id, local_folder_path, drive_folder_id, drive_folder_link,
                                       status, exported_chunk_count, imported_chunk_count, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'exported', ?, 0, ?, ?)""",
-        (patch_id, drive_account_id, drive_folder_id, drive_folder_link, exported_chunk_count, now, now),
+           VALUES (?, ?, ?, ?, ?, ?, 'exported', ?, 0, ?, ?)""",
+        (patch_id, drive_account_id, sync_target_id, local_folder_path, drive_folder_id, drive_folder_link, exported_chunk_count, now, now),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     row = conn.execute("SELECT * FROM patch_export WHERE id = ?", (cur.lastrowid,)).fetchone()
     return _patch_export_from_row(row)
 
 
 def list_patch_exports(conn: sqlite3.Connection, patch_id: int) -> list[PatchExport]:
     rows = conn.execute(
-        """SELECT pe.*, gdc.account_email
+        """SELECT pe.*, gdc.account_email, dst.name AS sync_target_name,
+                  dst.account_email AS sync_target_email
              FROM patch_export pe
              LEFT JOIN google_drive_credentials gdc ON gdc.id = pe.drive_account_id
+             LEFT JOIN drive_sync_target dst ON dst.id = pe.sync_target_id
             WHERE pe.patch_id = ? ORDER BY pe.id DESC""",
         (patch_id,),
     ).fetchall()
@@ -1469,11 +1509,13 @@ def update_patch_export(
 def list_all_patch_exports(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     """For the /drive settings page: export history across every book, newest first."""
     rows = conn.execute(
-        """SELECT pe.*, p.patch_index, p.book_id, b.title AS book_title, gdc.account_email
+        """SELECT pe.*, p.patch_index, p.book_id, b.title AS book_title, gdc.account_email,
+                  dst.name AS sync_target_name, dst.account_email AS sync_target_email
              FROM patch_export pe
              JOIN patch p ON p.id = pe.patch_id
              JOIN book b ON b.id = p.book_id
              LEFT JOIN google_drive_credentials gdc ON gdc.id = pe.drive_account_id
+             LEFT JOIN drive_sync_target dst ON dst.id = pe.sync_target_id
             ORDER BY pe.id DESC LIMIT ?""",
         (limit,),
     ).fetchall()

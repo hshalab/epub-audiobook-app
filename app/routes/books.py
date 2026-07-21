@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app import google_drive, repository
+from app import repository
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -169,7 +169,7 @@ def book_detail(request: Request, book_id: int):
         rules = repository.list_replace_rules(conn, book_id)
         chapters = repository.list_chapters(conn, book_id)
         last_error = repository.get_last_error_for_book(conn, book_id)
-        drive_connected = google_drive.any_account_connected(conn)
+        sync_targets = repository.list_drive_sync_targets(conn)
         music_list = repository.list_music(conn)
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
@@ -192,8 +192,7 @@ def book_detail(request: Request, book_id: int):
             "chapters": chapters,
             "last_error": last_error,
             "has_active_patches": has_active_patches,
-            "drive_connected": drive_connected,
-            "drive_configured": google_drive.is_configured(conn),
+            "sync_targets": sync_targets,
             "music_list": music_list,
             "current_music": current_music,
             "backgrounds": _list_backgrounds(),

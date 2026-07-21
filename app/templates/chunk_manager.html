@@ -15,22 +15,18 @@
         on an external GPU, then import the resulting audio back.
     </p>
 
-    {% if not drive_configured %}
+    {% if not sync_targets %}
     <div class="warning-block">
-        <p style="margin:0 0 0.3rem 0"><strong>Google Drive not configured.</strong></p>
-        <p style="margin:0">Set <code>GOOGLE_DRIVE_CLIENT_ID</code> / <code>GOOGLE_DRIVE_CLIENT_SECRET</code> in <code>.env</code>, then <a href="/drive">connect Google Drive</a>.</p>
-    </div>
-    {% elif not drive_connected %}
-    <div class="warning-block">
-        <p style="margin:0"><strong>Google Drive not connected.</strong> <a href="/drive">Connect it</a> to upload exports automatically.</p>
+        <p style="margin:0"><strong>Chưa có folder đồng bộ.</strong> <a href="/drive">Thêm folder Google Drive Desktop</a> trước khi export tự động.</p>
     </div>
     {% endif %}
 
     <div class="btn-group">
         <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-primary btn-sm">Download package (.zip)</a>
-        {% if drive_configured and drive_connected and patch.status != 'processing' %}
-        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline">
-            <button type="submit" class="btn-outline btn-sm">Export &amp; upload to Drive</button>
+        {% if sync_targets and patch.status != 'processing' %}
+        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline" class="drive-export-form">
+            <select name="sync_target_id" required><option value="">Chọn tài khoản</option>{% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}</select>
+            <button type="submit" class="btn-outline btn-sm">Export vào Drive Desktop</button>
         </form>
         {% endif %}
     </div>
@@ -70,14 +66,14 @@
         {% for e in exports %}
             <tr>
                 <td>{{ e.created_at }}</td>
-                <td>{{ e.account_email or '—' }}</td>
-                <td><a href="{{ e.drive_folder_link }}" target="_blank">Open folder</a></td>
+                <td>{{ e.sync_target_name or e.sync_target_email or e.account_email or 'Legacy' }}</td>
+                <td><code>{{ e.local_folder_path or e.drive_folder_link }}</code></td>
                 <td>{{ e.status }}</td>
                 <td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td>
                 <td>
                     {% if loop.first and patch.status != 'processing' %}
                     <form action="/books/{{ book.id }}/patches/{{ patch.id }}/import" method="post" style="display:inline">
-                        <button type="submit" class="btn-outline btn-sm">Import results from Drive</button>
+                        <button type="submit" class="btn-outline btn-sm">Import từ Drive Desktop</button>
                     </form>
                     {% endif %}
                 </td>
@@ -106,7 +102,8 @@
             <span class="badge badge-failed">Failed</span>
         {% else %}
             <span class="badge badge-pending">{{ patch.status }}</span>
-        {% endif %}
+{% endif %}
+
         &nbsp;&middot;&nbsp; {{ chunks|length }} chunk(s)
     </p>
     {% if patch.status == 'failed' and patch.error_message %}
@@ -177,4 +174,29 @@
     </table>
     </div>
 </div>
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+    document.querySelectorAll('.drive-export-form').forEach(function (form) {
+        form.addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const button = form.querySelector('button[type="submit"]');
+            if (button) { button.disabled = true; button.dataset.label = button.textContent; button.textContent = 'Đang export...'; }
+            try {
+                const response = await fetch(form.action, { method: 'POST', body: new FormData(form), headers: { 'Accept': 'application/json' } });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Export thất bại');
+                }
+                window.location.href = response.url;
+            } catch (error) {
+                alert(error.message);
+                if (button) { button.disabled = false; button.textContent = button.dataset.label; }
+            }
+        });
+    });
+})();
+</script>
+{% endblock %}
 {% endblock %}
