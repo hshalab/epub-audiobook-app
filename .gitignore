@@ -21,3 +21,5 @@ data/voices
 data/music
 .superpowers/sdd/
 .superpowers/plans/
+# Isolated worktrees for agent-driven development
+.worktrees/
