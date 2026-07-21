@@ -42,14 +42,14 @@
                 <div class="dropzone-hint">Chọn nhiều file cùng lúc (giữ Ctrl/Cmd). WAV, MP3, M4A, OGG.</div>
                 <input type="file" id="audio-files" name="files" accept=".wav,.mp3,.m4a,.ogg" multiple required>
             </div>
-            <div id="audio-preview" class="img-preview" style="display:none"></div>
+            <div id="audio-preview" class="img-preview hidden"></div>
         </div>
         <button type="submit" class="btn-primary" id="btn-upload">Upload</button>
     </form>
 </div>
 
 <!-- Step 2: File Table + Background Selection -->
-<div class="batch-section" id="step-table" style="display:none">
+<div class="batch-section hidden" id="step-table">
     <h3 style="margin-top:0">2. Configure Each File</h3>
     <div class="batch-toolbar">
         <label><input type="checkbox" id="select-all" checked> Select All</label>
@@ -87,7 +87,7 @@
         <style>
             #studio-grid { display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:var(--space-lg); align-items:start; }
             @media (max-width: 960px) { #studio-grid { grid-template-columns:1fr; } }
-            .studio-section { border:1px solid var(--border-color); border-radius:var(--radius-md); padding:var(--space-md); }
+            .studio-section { border:1px solid var(--border-color); border-radius:var(--border-radius); padding:var(--space-md); }
             .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
             #ov-drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
             #ov-drag-rect:hover, #ov-drag-rect.dragging { background:rgba(56,189,248,.22); }
@@ -102,7 +102,7 @@
                         <label for="preview-row-select">Preview với file</label>
                         <select id="preview-row-select"></select>
                     </div>
-                    <div id="ov-preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden">
+                    <div id="ov-preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                         <img id="ov-preview" alt="Preview" style="width:100%;display:block">
                         <div id="ov-drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
                     </div>
@@ -114,11 +114,11 @@
 
                 <div class="studio-section">
                     <h4>Nghe thử mix (audio chính + nhạc nền)</h4>
-                    <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+                    <div class="vc-row-wrap">
                         <button type="button" id="mix-play" class="btn-outline btn-sm">&#9654; Nghe thử</button>
                         <select id="mix-ref" style="flex:1;min-width:160px"></select>
                     </div>
-                    <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm)">
+                    <div class="vc-inline-flex">
                         <input type="range" id="mix-seek" min="0" max="100" value="0" step="0.1" style="flex:1" disabled>
                         <span id="mix-time" style="font-size:var(--font-size-xs);color:var(--text-muted);min-width:96px;text-align:right">0:00 / 0:00</span>
                     </div>
@@ -155,7 +155,7 @@
                     <div class="form-group"><label for="ov-margin">Margin (px)</label><input type="number" id="ov-margin" min="0" max="200" value="20"></div>
                 </div>
 
-                <div style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md)">
+                <div class="vc-row-wrap">
                     <button type="button" id="ov-apply-all" class="btn-outline btn-sm">Áp dụng cho tất cả files</button>
                     <button type="button" id="ov-clear-all" class="btn-outline btn-sm">Xóa overlay tất cả</button>
                 </div>
@@ -276,7 +276,7 @@
 </div>
 
 <!-- Step 4: Results -->
-<div class="batch-section" id="step-results" style="display:none">
+<div class="batch-section hidden" id="step-results">
     <h3 style="margin-top:0">Results</h3>
     <div id="results-list"></div>
 </div><!-- /Step 4: Results -->
@@ -288,20 +288,20 @@
 <div class="card" id="video-library">
     <div class="card-header">
         <h3 style="margin:0">Video Library</h3>
-        <div style="display:flex;gap:var(--space-sm)">
+        <div class="vc-inline-flex">
             <button type="button" class="btn-outline btn-sm" id="btn-bulk-upload" disabled>Upload Selected</button>
             <button type="button" class="btn-danger btn-sm" id="btn-bulk-delete" disabled>Delete Selected</button>
         </div>
     </div>
 
     <!-- Pagination Top -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)">
+    <div class="vc-row-between">
         <div id="pagination-info" style="font-size:var(--font-size-sm);color:var(--text-muted)">No videos</div>
         <div id="pagination-top" class="btn-group"></div>
     </div>
 
     <!-- Filters -->
-    <div style="display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-bottom:var(--space-md)">
+    <div class="vc-row-wrap">
         <input type="text" id="filter-search" placeholder="Search..." style="flex:1;min-width:200px">
         <select id="filter-status">
             <option value="">All Status</option>
@@ -350,7 +350,7 @@
 
 <!-- Edit Modal -->
 <div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000">
-    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);padding:var(--space-lg);border-radius:var(--radius-lg);width:90%;max-width:500px">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-card);padding:var(--space-lg);border-radius:var(--border-radius-lg);width:90%;max-width:500px">
         <h3 style="margin-top:0">Edit Video</h3>
         <input type="hidden" id="edit-id">
         <div class="form-group">
@@ -373,7 +373,7 @@
                 <option value="public">Public</option>
             </select>
         </div>
-        <div style="display:flex;gap:var(--space-sm);justify-content:flex-end">
+        <div class="vc-inline-flex vc-justify-end">
             <button type="button" class="btn-outline" onclick="closeEditModal()">Cancel</button>
             <button type="button" class="btn-primary" onclick="saveVideo()">Save</button>
         </div>
