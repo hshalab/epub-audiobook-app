@@ -243,7 +243,17 @@
 
     btnCreate.addEventListener('click', () => activate('create'));
     btnLibrary.addEventListener('click', () => activate('library'));
-    window.__videoSwitchToLibraryTab = () => activate('library');
+    window.__videoSwitchToLibraryTab = () => {
+        // Mark as loaded *before* activate() so its lazy-load-once guard
+        // doesn't also fire loadVideos() below and double-fetch.
+        libraryLoaded = true;
+        activate('library');
+        // Force a fresh reload even if the library tab was already visited
+        // before, since the whole point of this link is "go see the video
+        // you just made" — the lazy-load-once guard in activate() would
+        // otherwise leave a stale table.
+        if (window.__videoLibraryLoad) window.__videoLibraryLoad();
+    };
 })();
 
 (function() {
