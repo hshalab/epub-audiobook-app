@@ -232,9 +232,13 @@
     let batchFiles = [];
     let backgrounds = [];
 
-    // Per-file overlay config state
-    let overlayConfigs = {};      // { [index]: configObject }
-    let activeEditIndex = null;   // currently editing file index
+    // Overlay config: one shared default applied to every file, plus a
+    // sparse map of explicit per-file overrides. activeEditIndex is null
+    // when editing the shared default, or a file index once the user has
+    // clicked "Chỉnh" on that row.
+    let defaultOverlayConfig = getDefaultOverlayConfig();
+    let overlayConfigs = {};      // { [index]: configObject } -- overrides only
+    let activeEditIndex = null;
 
     function getDefaultOverlayConfig() {
         return {
@@ -247,17 +251,40 @@
     }
 
     function initOverlayConfigs(files) {
+        // New batch: drop per-file overrides from the previous batch, keep
+        // the shared default (it's a deliberate user setting, not tied to
+        // any one batch).
         overlayConfigs = {};
-        files.forEach(f => { overlayConfigs[f.index] = getDefaultOverlayConfig(); });
+        activeEditIndex = null;
+        updateOverrideDots();
     }
 
-    function loadOverlayConfigToForm(index) {
-        // Save current form first if editing another file
-        if (activeEditIndex !== null && activeEditIndex !== index) {
-            saveFormToOverlayConfig(activeEditIndex);
+    function hasOverride(index) {
+        return Object.prototype.hasOwnProperty.call(overlayConfigs, index);
+    }
+
+    // The config object the Studio form currently edits: a file's override
+    // once one exists for it, otherwise the shared default.
+    function currentOverlayTarget() {
+        if (activeEditIndex !== null && overlayConfigs[activeEditIndex]) {
+            return overlayConfigs[activeEditIndex];
         }
-        const cfg = overlayConfigs[index] || getDefaultOverlayConfig();
-        
+        return defaultOverlayConfig;
+    }
+
+    function updateOverrideDots() {
+        document.querySelectorAll('.btn-edit-overlay').forEach(btn => {
+            const idx = parseInt(btn.dataset.index);
+            const cell = btn.closest('td');
+            const dot = cell.querySelector('.override-dot');
+            const resetBtn = cell.querySelector('.btn-reset-overlay');
+            const has = hasOverride(idx);
+            if (dot) dot.style.display = has ? 'inline-block' : 'none';
+            if (resetBtn) resetBtn.style.display = has ? '' : 'none';
+        });
+    }
+
+    function loadOverlayConfigToForm(cfg) {
         // Basic
         document.getElementById('ov-text').value = cfg.text;
         document.getElementById('ov-position').value = cfg.position;
@@ -268,12 +295,12 @@
         document.getElementById('ov-offset-x').value = cfg.offset_x;
         document.getElementById('ov-offset-y').value = cfg.offset_y;
         document.getElementById('ov-offset-label').textContent = `${cfg.offset_x}, ${cfg.offset_y}`;
-        
+
         // Shadow
         document.getElementById('ov-shadow-enabled').checked = cfg.shadow.enabled;
         document.getElementById('ov-shadow-color').value = cfg.shadow.color;
         document.getElementById('ov-shadow-offset').value = cfg.shadow.offset;
-        
+
         // Box
         document.getElementById('ov-box-enabled').checked = cfg.box.enabled;
         document.getElementById('ov-box-color').value = cfg.box.color;
@@ -282,7 +309,7 @@
         document.getElementById('ov-box-px').value = cfg.box.padding_x;
         document.getElementById('ov-box-py').value = cfg.box.padding_y;
         document.getElementById('ov-box-radius').value = cfg.box.radius;
-        
+
         // Marquee
         document.getElementById('ov-marquee-enabled').checked = cfg.marquee.enabled;
         document.getElementById('ov-marquee-height').value = cfg.marquee.height;
@@ -292,17 +319,15 @@
         document.getElementById('ov-marquee-opacity').value = cfg.marquee.bg_opacity;
         document.getElementById('ov-marquee-opacity-label').textContent = cfg.marquee.bg_opacity + '%';
         document.getElementById('ov-marquee-speed').value = cfg.marquee.speed_px_per_sec;
-        
-        activeEditIndex = index;
-        updateStudioHeaderBadge(index);
-        // Note: scheduleRefresh is defined in studio preview IIFE, not accessible here
-        // The preview will be refreshed when user makes changes via input handlers
     }
 
-    function saveFormToOverlayConfig(index) {
-        if (index === null) return;
-        const cfg = overlayConfigs[index] || getDefaultOverlayConfig();
-        
+    // Save-on-every-change: writes the form's current values into whichever
+    // config object is passed in. Called from every overlay field's input
+    // handler (wired in the drag-preview IIFE below via the
+    // window.__studioOnOverlayFieldChanged bridge) so nothing is lost
+    // whether or not the user switches rows or clicks "Chỉnh" before
+    // generating.
+    function saveFormToOverlayConfig(cfg) {
         cfg.text = document.getElementById('ov-text').value;
         cfg.position = document.getElementById('ov-position').value;
         cfg.alignment = document.getElementById('ov-alignment').value;
@@ -311,18 +336,18 @@
         cfg.margin = parseInt(document.getElementById('ov-margin').value) || 20;
         cfg.offset_x = parseInt(document.getElementById('ov-offset-x').value) || 0;
         cfg.offset_y = parseInt(document.getElementById('ov-offset-y').value) || 0;
-        
+
         cfg.shadow.enabled = document.getElementById('ov-shadow-enabled').checked;
         cfg.shadow.color = document.getElementById('ov-shadow-color').value;
         cfg.shadow.offset = parseInt(document.getElementById('ov-shadow-offset').value) || 3;
-        
+
         cfg.box.enabled = document.getElementById('ov-box-enabled').checked;
         cfg.box.color = document.getElementById('ov-box-color').value;
         cfg.box.opacity = parseInt(document.getElementById('ov-box-opacity').value) || 60;
         cfg.box.padding_x = parseInt(document.getElementById('ov-box-px').value) || 16;
         cfg.box.padding_y = parseInt(document.getElementById('ov-box-py').value) || 8;
         cfg.box.radius = parseInt(document.getElementById('ov-box-radius').value) || 8;
-        
+
         cfg.marquee.enabled = document.getElementById('ov-marquee-enabled').checked;
         cfg.marquee.height = parseInt(document.getElementById('ov-marquee-height').value) || 60;
         cfg.marquee.font_size = parseInt(document.getElementById('ov-marquee-font-size').value) || 36;
@@ -330,81 +355,69 @@
         cfg.marquee.bg_color = document.getElementById('ov-marquee-bg-color').value;
         cfg.marquee.bg_opacity = parseInt(document.getElementById('ov-marquee-opacity').value) || 80;
         cfg.marquee.speed_px_per_sec = parseInt(document.getElementById('ov-marquee-speed').value) || 50;
-        
-        overlayConfigs[index] = cfg;
     }
 
-    function updateStudioHeaderBadge(index) {
+    function updateStudioHeaderBadge() {
         const badge = document.getElementById('overlay-active-badge');
-        const file = batchFiles.find(f => f.index === index);
-        if (badge && file) {
-            badge.textContent = 'Đang edit: ' + file.name;
-            badge.style.display = 'inline-block';
+        const backBtn = document.getElementById('ov-edit-default');
+        if (!badge) return;
+        if (activeEditIndex === null) {
+            badge.textContent = 'Đang chỉnh: Mặc định (tất cả files)';
+            if (backBtn) backBtn.style.display = 'none';
+        } else {
+            const file = batchFiles.find(f => f.index === activeEditIndex);
+            badge.textContent = file ? 'Đang chỉnh: ' + file.name : '';
+            if (backBtn) backBtn.style.display = file ? 'inline-block' : 'none';
         }
+        badge.style.display = 'inline-block';
     }
 
-    // Apply overlay to all files
+    // index === null switches to editing the shared default.
+    function switchOverlayEditTarget(index) {
+        activeEditIndex = index;
+        loadOverlayConfigToForm(currentOverlayTarget());
+        updateStudioHeaderBadge();
+        if (window.__studioRefreshPreview) window.__studioRefreshPreview();
+    }
+
+    // Bridge for the drag-preview IIFE (a separate closure further down the
+    // file) to save into whichever config is currently active, and to know
+    // which file (if any) is being edited, without reaching into this
+    // IIFE's private variables directly.
+    window.__studioOnOverlayFieldChanged = function() {
+        saveFormToOverlayConfig(currentOverlayTarget());
+    };
+    window.__studioGetActiveEditIndex = function() { return activeEditIndex; };
+
+    // "Apply to all": take whatever is on the form right now, make it the
+    // new shared default, and drop every per-file override so every file
+    // uses exactly these settings.
     document.getElementById('ov-apply-all').addEventListener('click', function() {
         if (!batchFiles.length) return;
-        
-        // Save current form to active edit index first
-        if (activeEditIndex !== null) {
-            saveFormToOverlayConfig(activeEditIndex);
-        }
-        
-        // Get current form values
-        const currentConfig = {
-            text: document.getElementById('ov-text').value,
-            position: document.getElementById('ov-position').value,
-            alignment: document.getElementById('ov-alignment').value,
-            font_size: parseInt(document.getElementById('ov-font-size').value) || 52,
-            text_color: document.getElementById('ov-text-color').value,
-            margin: parseInt(document.getElementById('ov-margin').value) || 20,
-            offset_x: parseInt(document.getElementById('ov-offset-x').value) || 0,
-            offset_y: parseInt(document.getElementById('ov-offset-y').value) || 0,
-            shadow: {
-                enabled: document.getElementById('ov-shadow-enabled').checked,
-                color: document.getElementById('ov-shadow-color').value,
-                offset: parseInt(document.getElementById('ov-shadow-offset').value) || 3,
-            },
-            box: {
-                enabled: document.getElementById('ov-box-enabled').checked,
-                color: document.getElementById('ov-box-color').value,
-                opacity: parseInt(document.getElementById('ov-box-opacity').value) || 60,
-                padding_x: parseInt(document.getElementById('ov-box-px').value) || 16,
-                padding_y: parseInt(document.getElementById('ov-box-py').value) || 8,
-                radius: parseInt(document.getElementById('ov-box-radius').value) || 8,
-            },
-            marquee: {
-                enabled: document.getElementById('ov-marquee-enabled').checked,
-                height: parseInt(document.getElementById('ov-marquee-height').value) || 60,
-                font_size: parseInt(document.getElementById('ov-marquee-font-size').value) || 36,
-                text_color: document.getElementById('ov-marquee-text-color').value,
-                bg_color: document.getElementById('ov-marquee-bg-color').value,
-                bg_opacity: parseInt(document.getElementById('ov-marquee-opacity').value) || 80,
-                speed_px_per_sec: parseInt(document.getElementById('ov-marquee-speed').value) || 50,
-            }
-        };
-        
-        // Apply to all files
-        batchFiles.forEach(f => {
-            overlayConfigs[f.index] = JSON.parse(JSON.stringify(currentConfig));
-        });
-        
-        alert(`Đã áp dụng overlay cho ${batchFiles.length} files`);
+        saveFormToOverlayConfig(currentOverlayTarget());
+        defaultOverlayConfig = JSON.parse(JSON.stringify(currentOverlayTarget()));
+        overlayConfigs = {};
+        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
+        updateOverrideDots();
+        switchOverlayEditTarget(null);
+        alert(`Đã áp dụng overlay hiện tại cho tất cả ${batchFiles.length} files`);
     });
 
-    // Clear all overlays
+    // "Clear all": reset the shared default to factory defaults and drop
+    // every per-file override.
     document.getElementById('ov-clear-all').addEventListener('click', function() {
         if (!batchFiles.length) return;
-        
-        batchFiles.forEach(f => {
-            overlayConfigs[f.index] = getDefaultOverlayConfig();
-        });
-        
-        // Reset form
-        loadOverlayConfigToForm(activeEditIndex || batchFiles[0].index);
+        defaultOverlayConfig = getDefaultOverlayConfig();
+        overlayConfigs = {};
+        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
+        updateOverrideDots();
+        switchOverlayEditTarget(null);
         alert('Đã xóa overlay tất cả files');
+    });
+
+    document.getElementById('ov-edit-default').addEventListener('click', () => {
+        document.querySelectorAll('#file-table-body tr').forEach(tr => tr.classList.remove('row-active'));
+        switchOverlayEditTarget(null);
     });
 
     // Dropzone for audio files
@@ -503,11 +516,16 @@
                 </td>
                 <td class="status-pending" data-status="${f.index}">Ready</td>
                 <td class="col-time" data-time="${f.index}">—</td>
-                <td class="col-edit"><button type="button" class="btn-edit-overlay btn-sm btn-outline" data-index="${f.index}" title="Chỉnh overlay cho file này">Chỉnh</button></td>
+                <td class="col-edit">
+                    <button type="button" class="btn-edit-overlay btn-sm btn-outline" data-index="${f.index}" title="Chỉnh overlay riêng cho file này">Chỉnh</button>
+                    <button type="button" class="btn-reset-overlay btn-sm btn-outline" data-index="${f.index}" style="display:none" title="Bỏ overlay riêng, dùng mặc định">Mặc định</button>
+                    <span class="status-dot status-dot-blue override-dot" style="display:none" title="File này có overlay tuỳ chỉnh riêng"></span>
+                </td>
             `;
             tbody.appendChild(tr);
         });
         initOverlayConfigs(files);
+        switchOverlayEditTarget(null);
         refreshBgSelects();
         refreshAllPreviews();
         updateSelectedCount();
@@ -532,9 +550,25 @@
         tbody.querySelectorAll('.btn-edit-overlay').forEach(btn => {
             btn.addEventListener('click', () => {
                 const idx = parseInt(btn.dataset.index);
+                if (!hasOverride(idx)) {
+                    overlayConfigs[idx] = JSON.parse(JSON.stringify(defaultOverlayConfig));
+                    updateOverrideDots();
+                }
                 tbody.querySelectorAll('tr').forEach(tr => tr.classList.remove('row-active'));
                 btn.closest('tr').classList.add('row-active');
-                loadOverlayConfigToForm(idx);
+                switchOverlayEditTarget(idx);
+            });
+        });
+
+        tbody.querySelectorAll('.btn-reset-overlay').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.index);
+                delete overlayConfigs[idx];
+                updateOverrideDots();
+                if (activeEditIndex === idx) {
+                    btn.closest('tr').classList.remove('row-active');
+                    switchOverlayEditTarget(null);
+                }
             });
         });
 
@@ -814,16 +848,14 @@
 
         const musicSel = document.getElementById('cfg-music');
 
-        // Build per-file overlay_configs map
-        const overlayConfigsMap = {};
-        Object.entries(overlayConfigs).forEach(([idx, cfg]) => {
-            if (cfg.text || cfg.marquee.enabled) {
-                overlayConfigsMap[idx] = cfg;
-            }
-        });
+        // Make sure whatever's on the form right now is captured, even if
+        // the user never switched rows or clicked "Chỉnh" before generating.
+        saveFormToOverlayConfig(currentOverlayTarget());
 
-        // Get global overlay text directly from form input
-        const globalOverlayText = document.getElementById('ov-text').value.trim();
+        // Per-file overrides: every file the user explicitly customized,
+        // sent as its full nested shape.
+        const overlayConfigsMap = {};
+        Object.entries(overlayConfigs).forEach(([idx, cfg]) => { overlayConfigsMap[idx] = cfg; });
 
         const config = {
             resolution: document.getElementById('cfg-resolution').value,
@@ -835,7 +867,10 @@
             max_concurrent: parseInt(document.getElementById('cfg-concurrent').value) || 3,
             music_id: musicSel.value ? parseInt(musicSel.value) : null,
             music_volume: parseInt(document.getElementById('cfg-music-volume').value),
-            overlay: globalOverlayText ? { text: globalOverlayText } : null,
+            // Full nested shape, matching overlay_configs entries — the bug
+            // fix. Only sent when there's actual text (matches backend gate
+            // at video.py:549, which skips rendering when text is empty).
+            overlay: defaultOverlayConfig.text ? defaultOverlayConfig : null,
             overlay_configs: Object.keys(overlayConfigsMap).length ? overlayConfigsMap : null
         };
 
@@ -965,12 +1000,16 @@
     let refreshQueued = false;
 
     function currentBgPath() {
-        // If actively editing a file, use its selected background
-        if (typeof activeEditIndex !== 'undefined' && activeEditIndex !== null) {
-            const sel = document.querySelector(`.bg-select[data-index="${activeEditIndex}"]`);
-            return sel ? sel.value : '';
+        // If actively editing a specific file's overlay override, preview
+        // against that file's background (via the batch-upload IIFE's
+        // bridge — activeEditIndex lives in that other closure).
+        const activeIdx = window.__studioGetActiveEditIndex ? window.__studioGetActiveEditIndex() : null;
+        if (activeIdx !== null && activeIdx !== undefined) {
+            const sel = document.querySelector(`.bg-select[data-index="${activeIdx}"]`);
+            if (sel) return sel.value;
         }
-        // Fallback to preview row select
+        // Otherwise (editing the shared default) fall back to whichever
+        // file is chosen in the "Preview với file" dropdown.
         const idx = previewRowSelect.value;
         if (idx === '') return '';
         const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
@@ -1067,11 +1106,18 @@
         'ov-box-enabled', 'ov-box-color', 'ov-box-opacity', 'ov-box-px', 'ov-box-py', 'ov-box-radius',
         'ov-marquee-enabled', 'ov-marquee-height', 'ov-marquee-font-size', 'ov-marquee-text-color', 'ov-marquee-bg-color', 'ov-marquee-opacity', 'ov-marquee-speed'
     ];
+    function saveOverlayField() {
+        if (window.__studioOnOverlayFieldChanged) window.__studioOnOverlayFieldChanged();
+    }
+
     overlayFormIds.forEach(id => {
         const el = document.getElementById(id);
-        if (el) { el.addEventListener('input', scheduleRefresh); el.addEventListener('change', scheduleRefresh); }
+        if (el) {
+            el.addEventListener('input', () => { saveOverlayField(); scheduleRefresh(); });
+            el.addEventListener('change', () => { saveOverlayField(); scheduleRefresh(); });
+        }
     });
-    
+
     // Changing anchor position/alignment resets drag offset
     ['ov-position', 'ov-alignment'].forEach(id => {
         const el = document.getElementById(id);
@@ -1079,23 +1125,23 @@
             document.getElementById('ov-offset-x').value = 0;
             document.getElementById('ov-offset-y').value = 0;
             document.getElementById('ov-offset-label').textContent = '0, 0';
+            saveOverlayField();
             scheduleRefresh();
         });
     });
-    
+
+    // Only controls which file's background shows in the live preview now
+    // — which overlay config is being edited is controlled solely by the
+    // "Chỉnh" button / "Overlay mặc định" control (batch-upload IIFE).
     previewRowSelect.addEventListener('change', () => {
-        if (activeEditIndex !== null) {
-            saveFormToOverlayConfig(activeEditIndex);
-        }
-        const newIdx = parseInt(previewRowSelect.value);
-        loadOverlayConfigToForm(newIdx);
-        // Also update studio's mix-ref if needed
+        refreshPreview();
     });
-    
+
     document.getElementById('ov-offset-reset').addEventListener('click', () => {
         document.getElementById('ov-offset-x').value = 0;
         document.getElementById('ov-offset-y').value = 0;
         document.getElementById('ov-offset-label').textContent = '0, 0';
+        saveOverlayField();
         scheduleRefresh();
     });
 
@@ -1126,6 +1172,7 @@
         offY.value = Math.round((parseInt(offY.value, 10) || 0) + drag.dy);
         drag = null;
         dragRect.classList.remove('dragging');
+        saveOverlayField();
         refreshPreview();
     });
     dragRect.addEventListener('pointercancel', () => {
