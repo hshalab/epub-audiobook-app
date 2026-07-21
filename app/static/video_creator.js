@@ -214,9 +214,38 @@
         loadVideos();
     };
 
-    // Initial load
-    loadVideos();
+    // Loaded lazily the first time the Video Library tab is activated
+    // (see the tab-switcher IIFE below), not unconditionally on page load.
+    window.__videoLibraryLoad = loadVideos;
 })();
+
+(function() {
+    const btnCreate = document.getElementById('tab-btn-create');
+    const btnLibrary = document.getElementById('tab-btn-library');
+    const panelCreate = document.getElementById('tab-panel-create');
+    const panelLibrary = document.getElementById('tab-panel-library');
+    if (!btnCreate || !btnLibrary || !panelCreate || !panelLibrary) return;
+    let libraryLoaded = false;
+
+    function activate(tab) {
+        const isCreate = tab === 'create';
+        btnCreate.classList.toggle('active', isCreate);
+        btnLibrary.classList.toggle('active', !isCreate);
+        btnCreate.setAttribute('aria-selected', String(isCreate));
+        btnLibrary.setAttribute('aria-selected', String(!isCreate));
+        panelCreate.hidden = !isCreate;
+        panelLibrary.hidden = isCreate;
+        if (!isCreate && !libraryLoaded) {
+            libraryLoaded = true;
+            if (window.__videoLibraryLoad) window.__videoLibraryLoad();
+        }
+    }
+
+    btnCreate.addEventListener('click', () => activate('create'));
+    btnLibrary.addEventListener('click', () => activate('library'));
+    window.__videoSwitchToLibraryTab = () => activate('library');
+})();
+
 (function() {
     const API = {
         uploadBatch: '/video/upload-batch',
@@ -724,13 +753,18 @@
                 // Build summary header
                 let summaryHtml = '';
                 if (batchDone) {
-                    summaryHtml = `<p><strong>Hoàn thành!</strong> ${doneCount} thành công, ${errCount} lỗi.</p>`;
+                    summaryHtml = `<p><strong>Hoàn thành!</strong> ${doneCount} thành công, ${errCount} lỗi. <a href="#" id="link-view-library">Xem trong Video Library</a></p>`;
                 } else {
                     summaryHtml = `<p>Đang xử lý: ${procCount} đang chạy, ${doneCount} xong, ${errCount} lỗi.</p>`;
                 }
-                
+
                 resultsList.innerHTML = summaryHtml;
-                
+                const libLink = document.getElementById('link-view-library');
+                if (libLink) libLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (window.__videoSwitchToLibraryTab) window.__videoSwitchToLibraryTab();
+                });
+
                 selectedIndices.forEach(idx => {
                     const job = jobs[String(idx)];
                     const result = job?.result;

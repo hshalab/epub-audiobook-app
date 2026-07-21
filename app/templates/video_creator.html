@@ -2,7 +2,14 @@
 {% block title %}Video Creator{% endblock %}
 {% block content %}
 <h2>Video Creator</h2>
-<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
+<p class="vc-muted-intro">Tạo video từ file âm thanh + hình ảnh với cài đặt ffmpeg tuỳ chỉnh.</p>
+
+<div class="view-toggle" role="tablist" aria-label="Video Creator sections" style="margin-bottom:var(--space-lg)">
+    <button type="button" id="tab-btn-create" class="active" role="tab" aria-selected="true" aria-controls="tab-panel-create">Create Video</button>
+    <button type="button" id="tab-btn-library" role="tab" aria-selected="false" aria-controls="tab-panel-library">Video Library</button>
+</div>
+
+<div id="tab-panel-create" role="tabpanel" aria-labelledby="tab-btn-create">
 
 {% if error %}
 <div class="error-block"><p style="margin:0"><strong>Error:</strong> {{ error }}</p></div>
@@ -20,101 +27,6 @@
     </div>
 </div>
 {% endif %}
-
-<!-- Video Library -->
-<div class="card" id="video-library">
-    <div class="card-header">
-        <h3 style="margin:0">Video Library</h3>
-        <div style="display:flex;gap:var(--space-sm)">
-            <button type="button" class="btn-outline btn-sm" id="btn-bulk-upload" disabled>Upload Selected</button>
-            <button type="button" class="btn-danger btn-sm" id="btn-bulk-delete" disabled>Delete Selected</button>
-        </div>
-    </div>
-
-    <!-- Pagination Top -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)">
-        <div id="pagination-info" style="font-size:var(--font-size-sm);color:var(--text-muted)">No videos</div>
-        <div id="pagination-top" class="btn-group"></div>
-    </div>
-
-    <!-- Filters -->
-    <div style="display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-bottom:var(--space-md)">
-        <input type="text" id="filter-search" placeholder="Search..." style="flex:1;min-width:200px">
-        <select id="filter-status">
-            <option value="">All Status</option>
-            <option value="local_only">Local</option>
-            <option value="queued">Queued</option>
-            <option value="uploading">Uploading</option>
-            <option value="uploaded">Uploaded</option>
-            <option value="failed">Failed</option>
-        </select>
-        <select id="filter-sort">
-            <option value="created_at">Newest</option>
-            <option value="created_at:asc">Oldest</option>
-            <option value="filename">Filename A-Z</option>
-            <option value="filename:desc">Filename Z-A</option>
-            <option value="file_size_bytes">Size ↑</option>
-            <option value="file_size_bytes:desc">Size ↓</option>
-        </select>
-        <select id="filter-per-page">
-            <option value="20">20 / page</option>
-            <option value="50">50 / page</option>
-            <option value="100">100 / page</option>
-        </select>
-    </div>
-
-    <!-- Video Table -->
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th><input type="checkbox" id="select-all-videos"></th>
-                    <th>#</th>
-                    <th>Filename</th>
-                    <th>Title</th>
-                    <th>Status</th>
-                    <th>Size</th>
-                    <th>Date</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="video-table-body">
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- Edit Modal -->
-<div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000">
-    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);padding:var(--space-lg);border-radius:var(--radius-lg);width:90%;max-width:500px">
-        <h3 style="margin-top:0">Edit Video</h3>
-        <input type="hidden" id="edit-id">
-        <div class="form-group">
-            <label for="edit-title">Title</label>
-            <input type="text" id="edit-title" style="width:100%">
-        </div>
-        <div class="form-group">
-            <label for="edit-description">Description</label>
-            <textarea id="edit-description" rows="3" style="width:100%"></textarea>
-        </div>
-        <div class="form-group">
-            <label for="edit-tags">Tags (comma-separated)</label>
-            <input type="text" id="edit-tags" style="width:100%">
-        </div>
-        <div class="form-group">
-            <label for="edit-privacy">Privacy</label>
-            <select id="edit-privacy" style="width:100%">
-                <option value="private">Private</option>
-                <option value="unlisted">Unlisted</option>
-                <option value="public">Public</option>
-            </select>
-        </div>
-        <div style="display:flex;gap:var(--space-sm);justify-content:flex-end">
-            <button type="button" class="btn-outline" onclick="closeEditModal()">Cancel</button>
-            <button type="button" class="btn-primary" onclick="saveVideo()">Save</button>
-        </div>
-    </div>
-</div>
 
 <!-- Step 1: Upload -->
 <div class="batch-section" id="step-upload">
@@ -367,6 +279,105 @@
 <div class="batch-section" id="step-results" style="display:none">
     <h3 style="margin-top:0">Results</h3>
     <div id="results-list"></div>
+</div><!-- /Step 4: Results -->
+
+</div><!-- /tab-panel-create -->
+
+<div id="tab-panel-library" role="tabpanel" aria-labelledby="tab-btn-library" hidden>
+<!-- Video Library -->
+<div class="card" id="video-library">
+    <div class="card-header">
+        <h3 style="margin:0">Video Library</h3>
+        <div style="display:flex;gap:var(--space-sm)">
+            <button type="button" class="btn-outline btn-sm" id="btn-bulk-upload" disabled>Upload Selected</button>
+            <button type="button" class="btn-danger btn-sm" id="btn-bulk-delete" disabled>Delete Selected</button>
+        </div>
+    </div>
+
+    <!-- Pagination Top -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)">
+        <div id="pagination-info" style="font-size:var(--font-size-sm);color:var(--text-muted)">No videos</div>
+        <div id="pagination-top" class="btn-group"></div>
+    </div>
+
+    <!-- Filters -->
+    <div style="display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-bottom:var(--space-md)">
+        <input type="text" id="filter-search" placeholder="Search..." style="flex:1;min-width:200px">
+        <select id="filter-status">
+            <option value="">All Status</option>
+            <option value="local_only">Local</option>
+            <option value="queued">Queued</option>
+            <option value="uploading">Uploading</option>
+            <option value="uploaded">Uploaded</option>
+            <option value="failed">Failed</option>
+        </select>
+        <select id="filter-sort">
+            <option value="created_at">Newest</option>
+            <option value="created_at:asc">Oldest</option>
+            <option value="filename">Filename A-Z</option>
+            <option value="filename:desc">Filename Z-A</option>
+            <option value="file_size_bytes">Size ↑</option>
+            <option value="file_size_bytes:desc">Size ↓</option>
+        </select>
+        <select id="filter-per-page">
+            <option value="20">20 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+        </select>
+    </div>
+
+    <!-- Video Table -->
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th><input type="checkbox" id="select-all-videos"></th>
+                    <th>#</th>
+                    <th>Filename</th>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Size</th>
+                    <th>Date</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="video-table-body">
+            </tbody>
+        </table>
+    </div>
+</div>
+</div><!-- /tab-panel-library -->
+
+<!-- Edit Modal -->
+<div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);padding:var(--space-lg);border-radius:var(--radius-lg);width:90%;max-width:500px">
+        <h3 style="margin-top:0">Edit Video</h3>
+        <input type="hidden" id="edit-id">
+        <div class="form-group">
+            <label for="edit-title">Title</label>
+            <input type="text" id="edit-title" style="width:100%">
+        </div>
+        <div class="form-group">
+            <label for="edit-description">Description</label>
+            <textarea id="edit-description" rows="3" style="width:100%"></textarea>
+        </div>
+        <div class="form-group">
+            <label for="edit-tags">Tags (comma-separated)</label>
+            <input type="text" id="edit-tags" style="width:100%">
+        </div>
+        <div class="form-group">
+            <label for="edit-privacy">Privacy</label>
+            <select id="edit-privacy" style="width:100%">
+                <option value="private">Private</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:var(--space-sm);justify-content:flex-end">
+            <button type="button" class="btn-outline" onclick="closeEditModal()">Cancel</button>
+            <button type="button" class="btn-primary" onclick="saveVideo()">Save</button>
+        </div>
+    </div>
 </div>
 
 
