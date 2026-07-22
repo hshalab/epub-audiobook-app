@@ -698,6 +698,8 @@ def update_normalization(
     numbers: str = Form(default=""),
     junk: str = Form(default=""),
     spellcheck: str = Form(default=""),
+    dictionary: str = Form(default=""),
+    transliteration: str = Form(default=""),
 ):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
@@ -705,9 +707,11 @@ def update_normalization(
         repository.update_book_normalization(
             conn,
             book_id,
-            numbers=numbers.lower() == "on" if numbers else None,
-            junk=junk.lower() == "on" if junk else None,
-            spellcheck=spellcheck.lower() == "on" if spellcheck else None,
+            numbers=numbers.lower() == "on",
+            junk=junk.lower() == "on",
+            spellcheck=spellcheck.lower() == "on",
+            dictionary=dictionary.lower() == "on",
+            transliteration=transliteration.lower() == "on",
         )
         repository.reset_done_patches_for_book(conn, book_id)
     if request.headers.get("X-Requested-With") == "autosave":
@@ -732,6 +736,8 @@ def preview_normalization(
             numbers=bool(book.normalize_numbers_enabled),
             junk=bool(book.normalize_junk_enabled),
             spellcheck=bool(book.normalize_spellcheck_enabled),
+            dictionary=bool(book.normalize_dictionary_enabled),
+            transliteration=bool(book.normalize_transliteration_enabled),
         )
         normalized = normalize_text(text, opts)
     return PlainTextResponse(normalized)

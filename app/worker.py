@@ -265,6 +265,8 @@ class PatchWorker:
                 numbers=bool(book.normalize_numbers_enabled),
                 junk=bool(book.normalize_junk_enabled),
                 spellcheck=bool(book.normalize_spellcheck_enabled),
+                dictionary=bool(book.normalize_dictionary_enabled),
+                transliteration=bool(book.normalize_transliteration_enabled),
             )
             raw = normalize_text(raw, opts)
         patch_text = repository.apply_replace_rules(raw, rules)

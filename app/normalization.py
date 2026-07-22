@@ -1,13 +1,13 @@
-"""Text normalization for Vietnamese TTS.
+"""Chuẩn hóa văn bản cho TTS tiếng Việt.
 
-Applied dynamically before TTS chunking (original chapter text stays intact).
-Order of operations:
-  1. Remove junk tokens (e.g. EPUB formatting artifacts like OO@@).
-  2. Remove dots inside Vietnamese words (e.g. ch.ế.t -> chết).
-  3. Convert numbers/currency/dates/times/percentages into spoken Vietnamese.
-  4. Expand file extensions (.wav, .mp3 ...) into spoken form.
-  5. Ensure each line/sentence ends with punctuation.
-  6. User-defined replace rules run afterwards so users can override results.
+Áp dụng động trước khi chia chunk TTS (giữ nguyên văn bản gốc).
+Thứ tự xử lý:
+  1. Xóa token rác (ví dụ OO@@ từ EPUB).
+  2. Xóa dấu chấm trong từ tiếng Việt (ví dụ ch.ế.t → chết).
+  3. Chuyển số/tiền tệ/ngày tháng/giờ/phần trăm thành chữ.
+  4. Mở rộng đuôi tập tin (.wav, .mp3 ...) thành dạng nói.
+  5. Đảm bảo mỗi dòng kết thúc bằng dấu câu.
+  6. Quy tắc thay thế do người dùng định nghĩa chạy sau để ghi đè kết quả.
 """
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ import re
 from dataclasses import dataclass
 
 from num2words import num2words
+from vietnormalizer import VietnameseNormalizer, VietnameseTextProcessor
+
+_VIETNAMESE_PROCESSOR = VietnameseTextProcessor()
+_VIETNAMESE_NORMALIZER = VietnameseNormalizer()
 
 _VIETNAMESE_LOWER = (
     "àáảãạăắằẳẵặâấầẩẫậđéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ"
@@ -130,6 +134,8 @@ class NormalizationOptions:
     spellcheck: bool = True
     file_extensions: bool = True
     punctuation: bool = True
+    dictionary: bool = False
+    transliteration: bool = False
     junk_extra_tokens: list[str] | None = None
 
 
@@ -271,7 +277,7 @@ def _replace_file_ext_standalone(m: re.Match) -> str:
 
 
 def normalize_file_extensions(text: str) -> str:
-    """Expand file extensions into spoken form (.wav -> 'chấm wav', .mp3 -> 'chấm m p ba')."""
+    """Mở rộng đuôi tập tin thành dạng nói (.wav → 'chấm wav', .mp3 → 'chấm m p ba')."""
     text = _FILE_EXT_WITH_FILENAME_RE.sub(_replace_file_ext_spaced, text)
     text = _FILE_EXT_STANDALONE_RE.sub(_replace_file_ext_standalone, text)
     return text
@@ -281,7 +287,7 @@ _SENTENCE_PUNCTUATION = frozenset(".!?…:;,)\]\"'»")
 
 
 def ensure_sentence_punctuation(text: str) -> str:
-    """Add a period to each line that does not already end with sentence punctuation."""
+    """Thêm dấu chấm vào mỗi dòng chưa kết thúc bằng dấu câu."""
     lines = text.split("\n")
     result: list[str] = []
     for line in lines:
@@ -310,12 +316,12 @@ def _remove_dots_in_word(m: re.Match) -> str:
 
 
 def remove_cjk(text: str) -> str:
-    """Remove CJK Unified Ideographs from text."""
+    """Xóa ký tự CJK (chữ Hán, Nhật, Hàn) khỏi văn bản."""
     return _CJK_RE.sub("", text)
 
 
 def clean_junk_tokens(text: str, tokens: list[str] | None = None) -> str:
-    """Remove known junk/formatting tokens from text."""
+    """Xóa token rác/định dạng khỏi văn bản."""
     tokens = tokens or DEFAULT_JUNK_TOKENS
     if not tokens:
         return text
@@ -328,7 +334,7 @@ def clean_junk_tokens(text: str, tokens: list[str] | None = None) -> str:
 
 
 def remove_dots_in_vietnamese_words(text: str) -> str:
-    """Remove dots inserted inside Vietnamese words (e.g. ch.ế.t -> chết)."""
+    """Xóa dấu chấm chèn trong từ tiếng Việt (ví dụ ch.ế.t → chết)."""
     pattern = re.compile(
         rf"(?<!\w)"
         rf"[{_VIETNAMESE_LETTERS}]*"
@@ -338,21 +344,37 @@ def remove_dots_in_vietnamese_words(text: str) -> str:
     return pattern.sub(_remove_dots_in_word, text)
 
 
+_THU_ORDINALS = {"1": "nhất", "2": "hai", "3": "ba", "4": "tư", "5": "năm",
+                 "6": "sáu", "7": "bảy", "8": "tám", "9": "chín", "10": "mười"}
+_THU_ORDINAL_RE = re.compile(r"(?<=\bthứ)\s*(\d+)")
+
+
+def _replace_thu_ordinal(m: re.Match) -> str:
+    num = m.group(1)
+    return f" {_THU_ORDINALS.get(num, num)}"
+
+
 def normalize_numbers(text: str) -> str:
-    """Convert numbers, currency, dates, times and percentages to spoken Vietnamese."""
+    """Chuyển số, ngày, giờ, tiền tệ và đơn vị thành chữ cho TTS tiếng Việt."""
+    processor = _VIETNAMESE_PROCESSOR
     text = _CURRENCY_RE.sub(_replace_currency, text)
-    text = _DATE_RE.sub(_replace_date, text)
-    text = _TIME_RE.sub(_replace_time, text)
-    text = _PERCENT_RE.sub(_replace_percent, text)
-    text = _DECIMAL_RE.sub(_replace_decimal, text)
-    text = _DOT_INTEGER_RE.sub(_replace_dot_integer, text)
-    text = _DOT_DECIMAL_RE.sub(_replace_decimal, text)
-    text = _INTEGER_RE.sub(_replace_integer, text)
-    return text
+    text = processor.convert_address_number(text)
+    text = processor.convert_year_range(text)
+    text = processor.convert_date(text)
+    text = processor.convert_time(text)
+    text = _THU_ORDINAL_RE.sub(_replace_thu_ordinal, text)
+    text = processor.remove_thousand_separators(text)
+    text = processor.convert_currency(text)
+    text = processor.convert_percentage(text)
+    text = processor.convert_phone_number(text)
+    text = processor.convert_decimal(text)
+    text = processor.convert_measurement_units(text)
+    text = processor.convert_roman_numerals(text)
+    return processor.convert_standalone_numbers(text)
 
 
 def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
-    """Run the full normalization pipeline according to opts."""
+    """Chạy pipeline chuẩn hóa đầy đủ theo tùy chọn."""
     opts = opts or NormalizationOptions()
     if opts.junk:
         text = clean_junk_tokens(text, opts.junk_extra_tokens)
@@ -363,6 +385,12 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
         text = normalize_numbers(text)
     if opts.file_extensions:
         text = normalize_file_extensions(text)
+    if opts.dictionary or opts.transliteration:
+        text = _VIETNAMESE_NORMALIZER.normalize(
+            text,
+            enable_preprocessing=False,
+            enable_transliteration=opts.transliteration,
+        )
     if opts.punctuation:
         text = ensure_sentence_punctuation(text)
     return text

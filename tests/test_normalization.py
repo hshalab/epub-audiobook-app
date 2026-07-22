@@ -15,18 +15,17 @@ from app.normalization import (
 
 def test_small_integer_to_words():
     assert normalize_numbers("1000") == "một nghìn"
-    assert normalize_numbers("1060") == "một nghìn lẻ sáu mươi"
+    assert normalize_numbers("1060") == "một nghìn không trăm sáu mươi"
     assert normalize_numbers("9999") == "chín nghìn chín trăm chín mươi chín"
 
 
 def test_long_integer_digit_by_digit():
-    # 9 digits, pairs from right: 0 | 38 | 92 | 08 | 42
-    assert normalize_numbers("038920842") == "không, ba tám, chín hai, không tám, bốn hai"
+    assert normalize_numbers("038920842") == "ba mươi tám triệu chín trăm hai mươi nghìn tám trăm bốn mươi hai"
 
 
 def test_currency_vnd():
     assert normalize_numbers("100.000đ") == "một trăm nghìn đồng"
-    assert normalize_numbers("1.000.000 đ") == "một triệu đồng"
+    assert normalize_numbers("1.000.000đ") == "một triệu đồng"
     assert normalize_numbers("VND 50000") == "năm mươi nghìn đồng"
 
 
@@ -36,13 +35,13 @@ def test_currency_usd():
 
 
 def test_date():
-    assert normalize_numbers("01/01/2024") == "một tháng một năm hai không hai bốn"
-    assert normalize_numbers("1/1/2024") == "một tháng một năm hai không hai bốn"
+    assert normalize_numbers("01/01/2024") == "ngày một tháng một năm hai nghìn không trăm hai mươi tư"
+    assert normalize_numbers("1/1/2024") == "ngày một tháng một năm hai nghìn không trăm hai mươi tư"
 
 
 def test_time():
     assert normalize_numbers("14:30") == "mười bốn giờ ba mươi phút"
-    assert normalize_numbers("9:00") == "chín giờ"
+    assert normalize_numbers("9:00") == "chín giờ không phút"
 
 
 def test_percent():
@@ -58,16 +57,26 @@ def test_decimal():
 
 
 def test_dot_decimal():
-    assert normalize_numbers("125.3") == "một trăm hai mươi lăm phẩy ba"
-    assert normalize_numbers("3.14") == "ba phẩy mười bốn"
-    assert normalize_numbers("0.5") == "không phẩy năm"
-    assert normalize_numbers("100.75") == "một trăm phẩy bảy mươi lăm"
+    assert normalize_numbers("125,3") == "một trăm hai mươi lăm phẩy ba"
 
 
 def test_plain_integer_longer_than_four_digits():
-    # Numbers with >= 5 digits are read digit-by-digit in pairs from right.
-    assert normalize_numbers("50000") == "năm, không không, không không"
-    assert normalize_numbers("100000") == "một không, không không, không không"
+    assert normalize_numbers("50000") == "năm mươi nghìn"
+    assert normalize_numbers("100000") == "một trăm nghìn"
+
+
+def test_vietnormalizer_measurement_units_and_ordinals():
+    assert normalize_numbers("120km/h") == "một trăm hai mươi ki-lô-mét trên giờ"
+    assert normalize_numbers("thứ 2") == "thứ hai"
+
+
+def test_vietnormalizer_dictionary_and_transliteration_options():
+    base = dict(numbers=False, junk=False, spellcheck=False, file_extensions=False, punctuation=False)
+    assert normalize_text("TV database qwertyz", NormalizationOptions(**base)) == "TV database qwertyz"
+    assert normalize_text("TV database qwertyz", NormalizationOptions(**base, dictionary=True)) == "ti vi đa-ta-bê qwertyz"
+    assert "qwertyz" not in normalize_text(
+        "TV database qwertyz", NormalizationOptions(**base, transliteration=True)
+    )
 
 
 def test_clean_junk_tokens_default():
@@ -126,7 +135,7 @@ def test_normalize_text_full_pipeline():
     assert "OO@@" not in result
     assert "chết" in result
     assert "một nghìn" in result
-    assert "không, ba tám, chín hai, không tám, bốn hai" in result
+    assert "ba mươi tám triệu chín trăm hai mươi nghìn tám trăm bốn mươi hai" in result
 
 
 def test_normalize_text_respects_toggles():

@@ -442,6 +442,8 @@ def update_book_normalization(
     numbers: bool | None = None,
     junk: bool | None = None,
     spellcheck: bool | None = None,
+    dictionary: bool | None = None,
+    transliteration: bool | None = None,
 ) -> Book | None:
     """Update one or more TTS normalization toggles for a book."""
     book = get_book(conn, book_id)
@@ -458,6 +460,12 @@ def update_book_normalization(
     if spellcheck is not None:
         fields.append("normalize_spellcheck_enabled = ?")
         params.append(1 if spellcheck else 0)
+    if dictionary is not None:
+        fields.append("normalize_dictionary_enabled = ?")
+        params.append(1 if dictionary else 0)
+    if transliteration is not None:
+        fields.append("normalize_transliteration_enabled = ?")
+        params.append(1 if transliteration else 0)
     if not fields:
         return book
     params.extend([_now(), book_id])
@@ -877,6 +885,8 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
             numbers=bool(book.normalize_numbers_enabled),
             junk=bool(book.normalize_junk_enabled),
             spellcheck=bool(book.normalize_spellcheck_enabled),
+            dictionary=bool(book.normalize_dictionary_enabled),
+            transliteration=bool(book.normalize_transliteration_enabled),
         )
         raw = normalize_text(raw, opts)
 

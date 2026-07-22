@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS book (
     normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1,
     normalize_junk_enabled INTEGER NOT NULL DEFAULT 1,
     normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1,
+    normalize_dictionary_enabled INTEGER NOT NULL DEFAULT 0,
+    normalize_transliteration_enabled INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -271,6 +273,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_junk_enabled INTEGER NOT NULL DEFAULT 1")
     if "normalize_spellcheck_enabled" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_spellcheck_enabled INTEGER NOT NULL DEFAULT 1")
+    if "normalize_dictionary_enabled" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN normalize_dictionary_enabled INTEGER NOT NULL DEFAULT 0")
+    if "normalize_transliteration_enabled" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN normalize_transliteration_enabled INTEGER NOT NULL DEFAULT 0")
     if "music_id" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN music_id INTEGER REFERENCES music(id)")
     if "music_volume" not in existing:

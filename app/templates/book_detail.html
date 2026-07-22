@@ -27,36 +27,44 @@
     <a href="#studio-card">Studio</a>
     <a href="#build-card">Auto-build</a>
     {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
-    <button type="button" data-open-dialog="normalization-modal">TTS settings</button>
+    <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
     <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
 
 <dialog id="normalization-modal" class="book-modal">
     <div class="card-header">
-        <h3 style="margin:0">TTS Normalization</h3>
+        <h3 style="margin:0">Chuẩn hóa TTS</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
-        Configure how text is preprocessed before speech synthesis.
+        Cấu hình cách văn bản được tiền xử lý trước khi tổng hợp giọng nói.
     </p>
     <form data-autosave data-guard action="/books/{{ book.id }}/normalization" method="post">
         <div style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
             <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
                 <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
-                Convert numbers, currency, dates, times to Vietnamese words
+                Chuyển số, tiền tệ, ngày tháng, giờ thành chữ tiếng Việt
             </label>
             <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
                 <input type="checkbox" name="junk" {% if book.normalize_junk_enabled %}checked{% endif %}>
-                Remove junk/formatting tokens (e.g. OO@@)
+                Xóa token rác/định dạng (ví dụ OO@@)
             </label>
             <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
                 <input type="checkbox" name="spellcheck" {% if book.normalize_spellcheck_enabled %}checked{% endif %}>
-                Fix dotted Vietnamese words (e.g. ch.ế.t → chết)
+                Sửa từ tiếng Việt bị chèn dấu chấm (vd: ch.ế.t → chết)
+            </label>
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" name="dictionary" {% if book.normalize_dictionary_enabled %}checked{% endif %}>
+                Tra từ viết tắt và từ ngoại ngữ qua từ điển vietnormalizer
+            </label>
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" name="transliteration" {% if book.normalize_transliteration_enabled %}checked{% endif %}>
+                Phiên âm từ ngoại ngữ không có trong từ điển (kèm tra từ điển)
             </label>
         </div>
         <div class="btn-group">
-            <button type="submit" class="btn-primary btn-sm">Save settings</button>
-            <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Preview chapter 0</a>
+            <button type="submit" class="btn-primary btn-sm">Lưu cài đặt</button>
+            <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Xem thử chương 0</a>
         </div>
     </form>
 </dialog>
