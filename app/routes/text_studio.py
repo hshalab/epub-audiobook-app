@@ -297,7 +297,10 @@ async def preview_paragraph(request: Request, book_id: int, patch_id: int):
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
 
-        wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+        try:
+            wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
         if with_effects:
             wav_bytes = _mix_effects(wav_bytes, text, conn)
@@ -325,7 +328,10 @@ async def preview_patch(request: Request, book_id: int, patch_id: int):
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
 
-        wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+        try:
+            wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
         if with_effects:
             wav_bytes = _mix_effects(wav_bytes, text, conn)
