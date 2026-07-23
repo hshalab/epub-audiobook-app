@@ -405,13 +405,14 @@ class PatchWorker:
                     with self.db_lock:
                         book = repository.get_book(self.conn, job.book_id)
                     if book:
-                        tags = [t.strip() for t in settings.youtube_default_tags.split(",") if t.strip()]
+                        yt_info = repository.build_youtube_description(self.conn, job.book_id)
+                        tags = yt_info["tags"]
                         with self.db_lock:
                             upload_id = youtube.enqueue_upload(
                                 self.conn,
                                 video_path=output_path,
                                 title=book.title,
-                                description=f"{book.title} - EPUB Audiobook",
+                                description=yt_info["description"],
                                 tags=tags,
                                 privacy_status=settings.youtube_default_privacy,
                             )
@@ -419,7 +420,7 @@ class PatchWorker:
                                 self.conn,
                                 video_path=output_path,
                                 title=book.title,
-                                description=f"{book.title} - EPUB Audiobook",
+                                description=yt_info["description"],
                                 tags=tags,
                                 privacy_status=settings.youtube_default_privacy,
                             )
