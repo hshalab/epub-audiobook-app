@@ -109,6 +109,7 @@
         const hasSelected = selectedIds.size > 0;
         document.getElementById('btn-bulk-upload').disabled = !hasSelected;
         document.getElementById('btn-bulk-delete').disabled = !hasSelected;
+        document.getElementById('btn-copy-video-desc').disabled = selectedIds.size !== 1;
     }
 
     function escHtml(s) {
@@ -213,6 +214,25 @@
         await fetch(`${API}/${id}`, {method: 'DELETE'});
         loadVideos();
     };
+
+    // Copy description
+    document.getElementById('btn-copy-video-desc')?.addEventListener('click', async function() {
+        if (selectedIds.size !== 1) {
+            showToast('Select exactly one video to copy its description', 'error');
+            return;
+        }
+        const id = [...selectedIds][0];
+        try {
+            const res = await fetch(`/video/api/videos/${id}`);
+            if (!res.ok) throw new Error('Failed to fetch video');
+            const video = await res.json();
+            const desc = video.description || `${video.title || video.filename} - EPUB Audiobook`;
+            await navigator.clipboard.writeText(desc);
+            showToast('Description copied!', 'success');
+        } catch (e) {
+            showToast(e.message || 'Copy failed', 'error');
+        }
+    });
 
     // Loaded lazily the first time the Video Library tab is activated
     // (see the tab-switcher IIFE below), not unconditionally on page load.
