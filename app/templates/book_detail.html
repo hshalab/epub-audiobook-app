@@ -436,6 +436,10 @@
                     title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
                  Export vào Drive Desktop
             </button>
+            <button type="button" class="btn-outline btn-sm" id="copy-yt-desc"
+                    title="Copy YouTube description (music license + chapter list) to clipboard">
+                Copy Description
+            </button>
             {% endif %}
         </div>
     </div>
@@ -980,5 +984,20 @@
 
     refreshPreview();
 })();
+
+document.getElementById('copy-yt-desc')?.addEventListener('click', async function () {
+    const btn = this;
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/youtube-description`);
+        if (!res.ok) throw new Error('Failed to fetch description');
+        const data = await res.json();
+        await navigator.clipboard.writeText(data.description);
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 2000);
+    } catch (e) {
+        showToast(e.message || 'Copy failed', 'error');
+    }
+});
 </script>
 {% endblock %}
