@@ -24,3 +24,4 @@ data/music
 # Isolated worktrees for agent-driven development
 .worktrees/
 build
+data/piper_voices

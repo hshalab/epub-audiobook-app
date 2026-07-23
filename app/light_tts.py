@@ -101,7 +101,7 @@ def _piper_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     voice_model = PiperVoice.load(_resolve_piper_model(voice))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav_file:
-        voice_model.synthesize(text, wav_file)
+        voice_model.synthesize_wav(text, wav_file)
     buf.seek(0)
     import soundfile as sf
     data, sr = sf.read(buf)
