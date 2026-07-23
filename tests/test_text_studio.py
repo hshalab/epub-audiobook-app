@@ -231,3 +231,52 @@ class TestTextStudioRoutes:
         repository.save_patch_clean_text(conn, patch.id, "Edited")
         resp = client.post(f"/books/{book.id}/text-studio/patches/{patch.id}/reset")
         assert resp.status_code == 200
+
+    def test_list_backends(self, client, conn, book_and_patch):
+        book, patch = book_and_patch
+        app = client.app
+        app.state.conn = conn
+        import threading
+        app.state.db_lock = threading.Lock()
+        resp = client.get("/text-studio/light-tts/backends")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "backends" in data
+        assert len(data["backends"]) > 0
+        assert all("id" in b and "label" in b and "available" in b for b in data["backends"])
+
+    def test_preview_paragraph_empty_text(self, client, conn, book_and_patch):
+        book, patch = book_and_patch
+        app = client.app
+        app.state.conn = conn
+        import threading
+        app.state.db_lock = threading.Lock()
+        resp = client.post(
+            f"/books/{book.id}/text-studio/patches/{patch.id}/preview-paragraph",
+            json={"text": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_preview_patch_not_found(self, client, conn, book_and_patch):
+        book, patch = book_and_patch
+        app = client.app
+        app.state.conn = conn
+        import threading
+        app.state.db_lock = threading.Lock()
+        resp = client.post(
+            f"/books/{book.id}/text-studio/patches/99999/preview-patch",
+            json={},
+        )
+        assert resp.status_code == 404
+
+    def test_preview_unavailable(self, client, conn, book_and_patch):
+        book, patch = book_and_patch
+        app = client.app
+        app.state.conn = conn
+        import threading
+        app.state.db_lock = threading.Lock()
+        resp = client.post(
+            f"/books/{book.id}/text-studio/patches/{patch.id}/preview-paragraph",
+            json={"text": "Hello world", "backend": "nonexistent-backend"},
+        )
+        assert resp.status_code == 503

@@ -1,22 +1,98 @@
 """Text Studio routes: edit patch text, search/replace, spell check, effect markers."""
 from __future__ import annotations
 
+import io
 import logging
 import re
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
 
 from app import repository, text_analysis
 from app.config import settings
 from app.deps import locked_conn
+from app.light_tts import LightTTSEngine
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+_light_tts_engine: LightTTSEngine | None = None
+
+
+def _get_light_engine() -> LightTTSEngine:
+    global _light_tts_engine
+    if _light_tts_engine is None:
+        _light_tts_engine = LightTTSEngine(
+            backend=settings.light_tts_backend,
+            voice=settings.light_tts_voice,
+        )
+    return _light_tts_engine
+
+
+def _mix_effects(wav_bytes: bytes, text: str, conn) -> bytes:
+    markers_found: list[tuple[int, str]] = []
+    for pattern in text_analysis._EFFECT_PATTERNS:
+        for m in pattern.finditer(text):
+            markers_found.append((m.start(), m.group(1 if m.lastindex else 0)))
+    if not markers_found:
+        return wav_bytes
+
+    effects = repository.list_sound_effects(conn)
+    effect_map: dict[str, dict] = {}
+    for e in effects:
+        marker_lower = e["marker"].strip().lower()
+        if marker_lower not in effect_map:
+            effect_map[marker_lower] = e
+    if not effect_map:
+        return wav_bytes
+
+    try:
+        tts_data, tts_sr = sf.read(io.BytesIO(wav_bytes))
+    except Exception:
+        return wav_bytes
+    if tts_data.ndim > 1:
+        tts_data = tts_data.mean(axis=1)
+    mixed = tts_data.astype(np.float64)
+    text_len = len(text)
+
+    for pos, raw_marker in markers_found:
+        key = raw_marker.strip().lower()
+        if key not in effect_map:
+            continue
+        effect_info = effect_map[key]
+        effect_path = effect_info.get("file_path", "")
+        if not effect_path or not Path(effect_path).exists():
+            continue
+        try:
+            eff_data, eff_sr = sf.read(effect_path)
+        except Exception:
+            continue
+        if eff_sr != tts_sr:
+            continue
+        if eff_data.ndim > 1:
+            eff_data = eff_data.mean(axis=1)
+        ratio = pos / text_len if text_len > 0 else 0
+        start_sample = int(ratio * len(mixed))
+        end_sample = min(start_sample + len(eff_data), len(mixed))
+        eff_len = end_sample - start_sample
+        if eff_len <= 0:
+            continue
+        mixed[start_sample:end_sample] += eff_data[:eff_len]
+
+    peak = np.max(np.abs(mixed))
+    if peak > 1.0:
+        mixed = mixed / peak
+
+    out_buf = io.BytesIO()
+    sf.write(out_buf, mixed, tts_sr, format="WAV")
+    return out_buf.getvalue()
 
 
 @router.get("/books/{book_id}/text-studio", response_class=HTMLResponse)
@@ -182,3 +258,76 @@ async def normalize_preview(request: Request, book_id: int):
     result = normalize_text(text, opts)
     result = repository.apply_replace_rules(result, rules)
     return JSONResponse({"text": result})
+
+
+@router.get("/text-studio/light-tts/backends")
+def list_backends(request: Request):
+    from app.light_tts import _BACKENDS, _check_backend
+    result = []
+    for name, info in _BACKENDS.items():
+        available = True
+        try:
+            _check_backend(name)
+        except RuntimeError:
+            available = False
+        result.append({"id": name, "label": info["description"], "available": available})
+    return JSONResponse({"backends": result})
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-paragraph")
+async def preview_paragraph(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    text = body.get("text", "").strip()
+    with_effects = body.get("with_effects", False)
+    backend = body.get("backend")
+
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+
+        try:
+            if backend:
+                engine = LightTTSEngine(backend=backend)
+            else:
+                engine = _get_light_engine()
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+
+        if with_effects:
+            wav_bytes = _mix_effects(wav_bytes, text, conn)
+
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-patch")
+async def preview_patch(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    with_effects = body.get("with_effects", False)
+    backend = body.get("backend")
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        text = repository.get_effective_patch_text(conn, patch)
+
+        try:
+            if backend:
+                engine = LightTTSEngine(backend=backend)
+            else:
+                engine = _get_light_engine()
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+
+        if with_effects:
+            wav_bytes = _mix_effects(wav_bytes, text, conn)
+
+    return Response(content=wav_bytes, media_type="audio/wav")
