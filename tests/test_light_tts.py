@@ -94,3 +94,28 @@ class TestListVoices:
             "label": "vi-VN-HoaiMyNeural",
             "language": "",
         }]
+
+
+class TestPiperResolve:
+    def test_returns_id_when_no_dir(self, monkeypatch):
+        import app.light_tts as lt
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "piper_voices_dir", "")
+        assert lt._resolve_piper_model("vi_VN-vais1000-medium") == "vi_VN-vais1000-medium"
+
+    def test_resolves_to_onnx_path(self, monkeypatch, tmp_path):
+        import app.light_tts as lt
+        from app.config import settings
+
+        model = tmp_path / "vi_VN-vais1000-medium.onnx"
+        model.write_bytes(b"fake")
+        monkeypatch.setattr(settings, "piper_voices_dir", str(tmp_path))
+        assert lt._resolve_piper_model("vi_VN-vais1000-medium") == str(model)
+
+    def test_returns_id_when_file_missing(self, monkeypatch, tmp_path):
+        import app.light_tts as lt
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "piper_voices_dir", str(tmp_path))
+        assert lt._resolve_piper_model("vi_VN-missing") == "vi_VN-missing"

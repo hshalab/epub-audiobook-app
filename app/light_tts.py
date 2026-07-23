@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import io
+from pathlib import Path
 from typing import Any
+
+from app.config import settings
 
 _BACKENDS: dict[str, dict[str, Any]] = {
     "edge-tts": {
@@ -79,12 +82,23 @@ def _gtts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     return _mp3_to_wav_bytes(mp3_bytes)
 
 
+def _resolve_piper_model(voice: str) -> str:
+    """Map a piper voice id to a model file under settings.piper_voices_dir,
+    falling back to the id as-is when unset or the file is absent."""
+    base = settings.piper_voices_dir
+    if base:
+        candidate = Path(base) / f"{voice}.onnx"
+        if candidate.exists():
+            return str(candidate)
+    return voice
+
+
 def _piper_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     """Synthesize text via piper-tts, return (wav_bytes, sample_rate)."""
     from piper import PiperVoice
     import wave
 
-    voice_model = PiperVoice.load(voice)
+    voice_model = PiperVoice.load(_resolve_piper_model(voice))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav_file:
         voice_model.synthesize(text, wav_file)
