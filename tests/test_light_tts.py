@@ -23,6 +23,11 @@ class TestLightTTSEngine:
         assert "kokoro" not in _BACKEND_SYNTH
         assert set(_BACKENDS) == {"edge-tts", "gtts", "piper"}
 
+    def test_piper_voices_dir_setting_default(self):
+        from app.config import settings
+
+        assert settings.piper_voices_dir == ""
+
     def test_synthesize_unavailable_backend(self):
         from app.light_tts import _check_backend
 

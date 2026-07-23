@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Lightweight TTS preview
     light_tts_backend: str = "edge-tts"
     light_tts_voice: str = "vi-VN-HoaiMyNeural"
+    # Directory holding piper *.onnx models. A piper voice id is resolved to
+    # "<piper_voices_dir>/<id>.onnx" at synth time. Empty => use the id as-is.
+    piper_voices_dir: str = ""
 
 
 settings = Settings()
