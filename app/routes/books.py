@@ -907,6 +907,16 @@ async def patch_builder_submit(request: Request, book_id: int):
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
+@router.get("/books/{book_id}/youtube-description")
+def get_youtube_description(request: Request, book_id: int):
+    """Return the enriched YouTube description + tags for the Copy button."""
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        result = repository.build_youtube_description(conn, book_id)
+    return JSONResponse(result)
+
+
 def _list_backgrounds() -> list[dict]:
     """Shared helper: list background images (default + user-uploaded)."""
     from app.routes.video import _BACKGROUNDS_DIR, ALLOWED_IMAGE_EXTENSIONS
