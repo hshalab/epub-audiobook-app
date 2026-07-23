@@ -426,3 +426,43 @@ async def light_tts_generate(request: Request, book_id: int, patch_id: int):
         raise HTTPException(status_code=500, detail=str(exc))
 
     return JSONResponse({"status": "done", "patch_id": patch_id, "audio_path": audio_path})
+
+
+@router.post("/books/{book_id}/light-tts-generate-all")
+async def light_tts_generate_all(request: Request, book_id: int):
+    body = await request.json()
+    backend = body.get("backend") or settings.light_tts_backend
+    voice = body.get("voice") or settings.light_tts_voice
+    with_effects = bool(body.get("with_effects", False))
+    patch_ids: list[int] | None = body.get("patch_ids")
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        all_patches = repository.list_patches(conn, book_id)
+
+    if patch_ids is not None:
+        targets = [p for p in all_patches if p.id in set(patch_ids)]
+    else:
+        targets = [p for p in all_patches if p.status in ("pending", "failed")]
+
+    db_lock = request.app.state.db_lock
+    conn_ref = request.app.state.conn
+
+    results = []
+    for patch in targets:
+        if patch.status == "processing":
+            results.append({"patch_id": patch.id, "status": "skipped", "detail": "currently processing"})
+            continue
+        try:
+            await asyncio.to_thread(
+                _light_synthesize_patch,
+                patch.id, book_id, backend, voice, with_effects, conn_ref, db_lock,
+            )
+            results.append({"patch_id": patch.id, "status": "done"})
+        except Exception as exc:
+            logger.exception("light_tts_generate_all failed for patch %s", patch.id)
+            results.append({"patch_id": patch.id, "status": "error", "detail": str(exc)})
+
+    return JSONResponse({"results": results})
