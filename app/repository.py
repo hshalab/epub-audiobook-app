@@ -1767,3 +1767,44 @@ def update_sound_effect(conn: sqlite3.Connection, effect_id: int, marker: str, d
 def delete_sound_effect(conn: sqlite3.Connection, effect_id: int) -> None:
     conn.execute("DELETE FROM sound_effect WHERE id = ?", (effect_id,))
     conn.commit()
+
+
+def build_youtube_description(
+    conn: sqlite3.Connection, book_id: int
+) -> dict:
+    book = get_book(conn, book_id)
+    if book is None:
+        return {"description": "", "tags": []}
+
+    parts: list[str] = [f"{book.title} - EPUB Audiobook"]
+
+    music = None
+    if book.music_id is not None:
+        music = get_music(conn, book.music_id)
+    if music and (music.description or music.license):
+        parts.append("")
+        parts.append(f"🎵 Background Music: {music.name}")
+        if music.description:
+            parts.append(music.description)
+        if music.license:
+            parts.append(f"License: {music.license}")
+
+    patches = list_patches(conn, book_id)
+    if patches:
+        parts.append("")
+        parts.append("📚 Chapters:")
+        for p in patches:
+            label = p.name or f"Patch {p.patch_index}"
+            parts.append(f"Chương {p.chapter_start}-{p.chapter_end}: {label}")
+
+    desc = "\n".join(parts)
+
+    if len(desc) > 5000:
+        cut = desc.rfind("\n", 0, 5000)
+        desc = desc[:cut] if cut > 0 else desc[:5000]
+
+    words = set(book.title.lower().split())
+    defaults = {"audiobook", "epub", "text-to-speech", "vietnamese"}
+    tags = list(words | defaults)
+
+    return {"description": desc, "tags": tags}
