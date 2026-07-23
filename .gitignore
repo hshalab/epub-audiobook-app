@@ -23,3 +23,4 @@ data/music
 .superpowers/plans/
 # Isolated worktrees for agent-driven development
 .worktrees/
+build
