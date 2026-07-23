@@ -77,14 +77,7 @@ class TestEffectsRoutes:
 
     def test_global_effects_visible_in_book(self, client):
         _upload_effect(client, marker="[global]")
-        from app.epub_parser import ParsedChapter
-        with client.app.state.conn as conn:
-            ch = ParsedChapter(title="Ch1", text="Hello world")
-            book = repository.create_book(
-                conn, title="Test", original_filename="t.epub",
-                epub_path="/tmp/t.epub", patch_size=2,
-                chapters=[ch], background_image_path=None,
-            )
-        resp = client.get(f"/books/{book.id}/text-studio")
+        resp = client.get("/effects/list")
         assert resp.status_code == 200
-        assert "[global]" in resp.text
+        markers = [e["marker"] for e in resp.json()["effects"]]
+        assert "[global]" in markers

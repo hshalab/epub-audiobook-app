@@ -206,14 +206,11 @@ CREATE INDEX IF NOT EXISTS idx_patch_warning_patch ON patch_warning(patch_id, ki
 
 CREATE TABLE IF NOT EXISTS sound_effect (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    book_id         INTEGER REFERENCES book(id) ON DELETE CASCADE,
     marker          TEXT NOT NULL,
     file_path       TEXT NOT NULL,
     description     TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_sound_effect_book ON sound_effect(book_id);
 
 CREATE TABLE IF NOT EXISTS patch_export (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,

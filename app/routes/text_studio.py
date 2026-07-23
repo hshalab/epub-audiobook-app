@@ -1,13 +1,11 @@
 """Text Studio routes: edit patch text, search/replace, spell check, effect markers."""
 from __future__ import annotations
 
-import json
 import logging
 import re
-import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -32,7 +30,6 @@ def text_studio_page(request: Request, book_id: int, patch_id: int | None = None
             patch_id = patches[0].id
         patch = repository.get_patch(conn, patch_id) if patch_id else None
         warnings = repository.list_patch_warnings(conn, patch_id) if patch_id else []
-        effects = repository.list_sound_effects(conn, book_id)
         clean_text = None
         if patch:
             clean_text = repository.get_effective_patch_text(conn, patch)
@@ -40,7 +37,7 @@ def text_studio_page(request: Request, book_id: int, patch_id: int | None = None
         request, "text_studio.html",
         {
             "book": book, "patches": patches, "patch": patch,
-            "clean_text": clean_text, "warnings": warnings, "effects": effects,
+            "clean_text": clean_text, "warnings": warnings,
         },
     )
 
@@ -137,58 +134,6 @@ def reset_patch_text(request: Request, book_id: int, patch_id: int):
         text = repository.build_patch_text(conn, patch)
     return JSONResponse({"text": text})
 
-
-@router.get("/books/{book_id}/text-studio/effects")
-def list_effects(request: Request, book_id: int):
-    with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
-            raise HTTPException(status_code=404, detail="book not found")
-        effects = repository.list_sound_effects(conn, book_id)
-    return JSONResponse({"effects": effects})
-
-
-@router.post("/books/{book_id}/text-studio/effects")
-async def create_effect(
-    request: Request, book_id: int,
-    marker: str = Form(...),
-    file: UploadFile = File(...),
-    description: str = Form(default=""),
-):
-    with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
-            raise HTTPException(status_code=404, detail="book not found")
-    fx_dir = Path(settings.data_root) / "books" / str(book_id) / "effects"
-    fx_dir.mkdir(parents=True, exist_ok=True)
-    ext = Path(file.filename or "").suffix or ".wav"
-    dest = fx_dir / f"{marker.strip('[]').replace(' ', '_')}{ext}"
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    with locked_conn(request) as conn:
-        eid = repository.create_sound_effect(conn, book_id, marker, str(dest), description)
-    return JSONResponse({"ok": True, "id": eid})
-
-
-@router.post("/books/{book_id}/text-studio/effects/{effect_id}/delete")
-def delete_effect(request: Request, book_id: int, effect_id: int):
-    with locked_conn(request) as conn:
-        repository.delete_sound_effect(conn, effect_id)
-    return JSONResponse({"ok": True})
-
-
-_MIME_MAP = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".mp4": "video/mp4"}
-
-
-@router.get("/books/{book_id}/text-studio/effects/{effect_id}/audio")
-def serve_effect_audio(request: Request, book_id: int, effect_id: int):
-    with locked_conn(request) as conn:
-        effects = repository.list_sound_effects(conn, book_id)
-    effect = next((e for e in effects if e["id"] == effect_id), None)
-    if effect is None:
-        raise HTTPException(status_code=404, detail="effect not found")
-    p = Path(effect["file_path"]).resolve()
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="file not found")
-    return FileResponse(str(p), media_type=_MIME_MAP.get(p.suffix.lower(), "application/octet-stream"))
 
 
 @router.get("/books/{book_id}/text-studio/patches/{patch_id}/audio")

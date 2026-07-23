@@ -1737,15 +1737,7 @@ def update_patch_warning_status(conn: sqlite3.Connection, warning_id: int, accep
 
 
 def list_sound_effects(conn: sqlite3.Connection, book_id: int | None = None) -> list[dict]:
-    """List effects: global (book_id IS NULL) + book-specific, or just global if book_id is None."""
-    if book_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM sound_effect WHERE book_id IS NULL OR book_id = ? ORDER BY marker", (book_id,)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM sound_effect WHERE book_id IS NULL ORDER BY marker"
-        ).fetchall()
+    rows = conn.execute("SELECT * FROM sound_effect ORDER BY marker").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1757,8 +1749,8 @@ def get_sound_effect(conn: sqlite3.Connection, effect_id: int) -> dict | None:
 def create_sound_effect(conn: sqlite3.Connection, book_id: int | None, marker: str, file_path: str, description: str = "") -> int:
     now = _now()
     cur = conn.execute(
-        "INSERT INTO sound_effect (book_id, marker, file_path, description, created_at) VALUES (?, ?, ?, ?, ?)",
-        (book_id, marker, file_path, description, now),
+        "INSERT INTO sound_effect (marker, file_path, description, created_at) VALUES (?, ?, ?, ?)",
+        (marker, file_path, description, now),
     )
     conn.commit()
     return cur.lastrowid
