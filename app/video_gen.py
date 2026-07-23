@@ -16,6 +16,18 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str, dict], None]
 
+# Background files with these extensions are treated as looping video
+# backgrounds instead of still images. Single source of truth shared with the
+# upload/preview routes.
+VIDEO_BACKGROUND_EXTENSIONS = {".mp4", ".webm", ".mov"}
+
+
+def is_video_background(path: str | Path | None) -> bool:
+    """True if the background path points to a loopable video (by extension)."""
+    if not path:
+        return False
+    return Path(path).suffix.lower() in VIDEO_BACKGROUND_EXTENSIONS
+
 
 def _emit(on_progress: ProgressCallback | None, event: str, **fields) -> None:
     if on_progress is not None:
@@ -80,6 +92,11 @@ def generate_segment(
 ) -> None:
     """Generate a single video segment from image + audio.
 
+    image_path may be a still image OR a looping video background (see
+    VIDEO_BACKGROUND_EXTENSIONS). For a video background the clip is stream-looped
+    for the audio duration; image_type (Ken Burns) and marquee are ignored and the
+    video's own audio track is dropped (only narration + optional music are kept).
+
     image_type: 'none' (static), 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'
     music_path: optional background music file (looped, mixed at music_volume ratio)
     marquee_path: optional ticker strip PNG (3× wide of video, scrolls horizontally)
@@ -96,22 +113,32 @@ def generate_segment(
 
     video_codec = "h264_nvenc" if use_nvenc else "libx264"
     width, height = resolution
+    is_video_bg = is_video_background(image_path)
 
     _emit(on_progress, "segment.start", path=out_path, image_type=image_type,
           resolution=f"{width}x{height}", fps=fps, codec=video_codec,
-          has_marquee=bool(marquee_path))
+          has_marquee=bool(marquee_path), video_background=is_video_bg)
 
     if use_nvenc:
         quality_args = ["-cq", str(crf)]
         tune_args = []
     else:
         quality_args = ["-crf", str(crf)]
-        tune_args = ["-tune", "stillimage"]
+        # '-tune stillimage' only helps genuine still frames; a video background
+        # has real motion, so skip it there.
+        tune_args = [] if is_video_bg else ["-tune", "stillimage"]
 
-    inputs = [
-        "-loop", "1", "-i", image_path,
-        "-i", audio_path,
-    ]
+    if is_video_bg:
+        # Loop the clip indefinitely; '-shortest' cuts it at the audio duration.
+        inputs = [
+            "-stream_loop", "-1", "-i", image_path,
+            "-i", audio_path,
+        ]
+    else:
+        inputs = [
+            "-loop", "1", "-i", image_path,
+            "-i", audio_path,
+        ]
     next_idx = 2
     music_idx: int | None = None
     marquee_idx: int | None = None
@@ -119,13 +146,14 @@ def generate_segment(
         inputs.extend(["-stream_loop", "-1", "-i", music_path])
         music_idx = next_idx
         next_idx += 1
-    has_marquee = bool(marquee_path and marquee_meta)
+    # A video background is a plain looping backdrop: no marquee ticker over it.
+    has_marquee = bool(marquee_path and marquee_meta) and not is_video_bg
     if has_marquee:
         inputs.extend(["-loop", "1", "-i", marquee_path])
         marquee_idx = next_idx
         next_idx += 1
 
-    if image_type == "none":
+    if image_type == "none" or is_video_bg:
         base_vf = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
@@ -197,10 +225,15 @@ def generate_segment(
             out_path,
         ]
     else:
+        # A video background carries its own audio; map streams explicitly so the
+        # narration (input 1) is kept and the background's audio is dropped. Still
+        # images have no audio, so default stream selection is fine there.
+        map_args = ["-map", "0:v", "-map", "1:a"] if is_video_bg else []
         cmd = [
             get_ffmpeg_path(), "-y",
             *inputs,
             "-vf", base_vf,
+            *map_args,
             "-c:v", video_codec,
             *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
@@ -331,31 +364,39 @@ def generate_full_video(
                       patch_index=patch.patch_index, reason="no_audio")
                 continue
 
-            overlay = image_overlay.ensure_patch_overlay(book, patch, font_path)
-            image = overlay or resolve_patch_image(patch, book, default_image)
-            if not image:
+            raw_bg = resolve_patch_image(patch, book, default_image)
+            if not raw_bg:
                 _emit(on_progress, "video.segment_skipped",
                       patch_index=patch.patch_index, reason="no_image")
                 continue
 
-            anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
             seg_path = str(tmp_dir / f"seg_{i:04d}.mp4")
 
             def _seg_progress(event: str, fields: dict, _p=patch) -> None:
                 _emit(on_progress, event, patch_index=_p.patch_index,
                       patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
-            # Resolve marquee band + meta if they exist for this patch.
-            marquee_p = str(image_overlay.get_marquee_path(book.id, patch.id))
-            marquee_m_p = image_overlay.get_marquee_meta_path(book.id, patch.id)
             seg_marquee_path: str | None = None
             seg_marquee_meta: dict | None = None
-            if Path(marquee_p).exists() and marquee_m_p.exists():
-                try:
-                    seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
-                    seg_marquee_path = marquee_p
-                except Exception as exc:
-                    logger.warning("video_gen: invalid marquee meta for patch %s: %s", patch.id, exc)
+            if is_video_background(raw_bg):
+                # Video background: plain looping backdrop, no text overlay,
+                # no Ken Burns animation, no marquee ticker.
+                image = raw_bg
+                anim = "none"
+            else:
+                overlay = image_overlay.ensure_patch_overlay(book, patch, font_path)
+                image = overlay or raw_bg
+                anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
+
+                # Resolve marquee band + meta if they exist for this patch.
+                marquee_p = str(image_overlay.get_marquee_path(book.id, patch.id))
+                marquee_m_p = image_overlay.get_marquee_meta_path(book.id, patch.id)
+                if Path(marquee_p).exists() and marquee_m_p.exists():
+                    try:
+                        seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
+                        seg_marquee_path = marquee_p
+                    except Exception as exc:
+                        logger.warning("video_gen: invalid marquee meta for patch %s: %s", patch.id, exc)
 
             generate_segment(
                 image, patch.audio_path, seg_path,

@@ -72,6 +72,13 @@ _BACKGROUNDS_DIR = Path(settings.data_root) / "backgrounds"
 
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg"}
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+# Backgrounds may be a still image or a looping video clip.
+ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKGROUND_EXTENSIONS
+_BACKGROUND_MIME_MAP = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm",
+    ".mov": "video/quicktime",
+}
 
 VALID_RESOLUTIONS = {"1920x1080", "1280x720", "854x480"}
 VALID_FPS = {24, 30, 60}
@@ -283,12 +290,12 @@ async def generate_video(
     image_path = None
     if image is not None and image.filename:
         img_ext = Path(image.filename).suffix.lower()
-        if img_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        if img_ext not in ALLOWED_BACKGROUND_EXTENSIONS:
             audio_path.unlink(missing_ok=True)
             return templates.TemplateResponse(request, "video_creator.html", {
                 "request": request,
                 "video_url": None,
-                "error": f"Unsupported image format: {img_ext}",
+                "error": f"Unsupported background format: {img_ext}",
                 "recent_videos": _get_recent_videos(),
             })
         image_path = _TMP_DIR / f"{job_id}_image{img_ext}"
@@ -689,11 +696,13 @@ def list_backgrounds():
 
     default = settings.default_background_image
     if Path(default).exists():
-        items.append({"name": "__default__", "path": default, "is_default": True})
+        items.append({"name": "__default__", "path": default, "is_default": True,
+                      "is_video": video_gen.is_video_background(default)})
 
     for f in sorted(_BACKGROUNDS_DIR.iterdir()):
-        if f.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
-            items.append({"name": f.name, "path": str(f), "is_default": False})
+        if f.suffix.lower() in ALLOWED_BACKGROUND_EXTENSIONS:
+            items.append({"name": f.name, "path": str(f), "is_default": False,
+                          "is_video": video_gen.is_video_background(f)})
 
     return JSONResponse({"backgrounds": items})
 
@@ -732,21 +741,16 @@ def preview_background(path: str = ""):
     if p_resolved is None:
         raise HTTPException(status_code=404, detail="background not found")
 
-    media = "image/jpeg"
-    ext = p_resolved.suffix.lower()
-    if ext == ".png":
-        media = "image/png"
-    elif ext == ".webp":
-        media = "image/webp"
+    media = _BACKGROUND_MIME_MAP.get(p_resolved.suffix.lower(), "image/jpeg")
     return FileResponse(str(p_resolved), media_type=media)
 
 
 @router.post("/video/upload-background")
 async def upload_background(file: UploadFile = File(...)):
-    """Upload a new background image to the backgrounds directory."""
+    """Upload a new background (image or looping video) to the backgrounds directory."""
     ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported image format: {ext}")
+    if ext not in ALLOWED_BACKGROUND_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported background format: {ext}")
 
     _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename).name}"

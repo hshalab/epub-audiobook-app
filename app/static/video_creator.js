@@ -377,12 +377,14 @@
                         <select class="bg-select" data-index="${f.index}">
                             <option value="">-- Default --</option>
                         </select>
-                        <input type="file" class="bg-upload-inline" data-index="${f.index}" accept=".jpg,.jpeg,.png,.webp">
+                        <input type="file" class="bg-upload-inline" data-index="${f.index}" accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov">
                     </div>
                 </td>
                 <td class="col-preview">
                     <img class="bg-preview-img empty" data-index="${f.index}"
                          alt="background preview" loading="lazy">
+                    <video class="bg-preview-video empty" data-index="${f.index}"
+                           muted loop playsinline preload="metadata" style="display:none"></video>
                     <div class="bg-preview-name" data-index="${f.index}">Default</div>
                 </td>
                 <td class="status-pending" data-status="${f.index}">Ready</td>
@@ -423,7 +425,7 @@
                 try {
                     const res = await fetch(API.uploadBg, { method: 'POST', body: fd });
                     const data = await res.json();
-                    backgrounds.push({ name: data.name, path: data.path, is_default: false });
+                    backgrounds.push({ name: data.name, path: data.path, is_default: false, is_video: isVideoPath(data.path) });
                     refreshBgSelects();
                     const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
                     sel.value = data.path;
@@ -456,19 +458,46 @@
         return API.previewBg + '?path=' + encodeURIComponent(p);
     }
 
+    const VIDEO_BG_EXT = ['.mp4', '.webm', '.mov'];
+    function isVideoPath(p) {
+        if (!p) return false;
+        const found = backgrounds.find(b => b.path === p);
+        if (found && typeof found.is_video === 'boolean') return found.is_video;
+        const lower = p.toLowerCase();
+        return VIDEO_BG_EXT.some(ext => lower.endsWith(ext));
+    }
+
     function updatePreview(idx) {
         const sel = document.querySelector(`.bg-select[data-index="${idx}"]`);
         const img = document.querySelector(`.bg-preview-img[data-index="${idx}"]`);
+        const video = document.querySelector(`.bg-preview-video[data-index="${idx}"]`);
         const name = document.querySelector(`.bg-preview-name[data-index="${idx}"]`);
         if (!sel || !img || !name) return;
         const p = sel.value || defaultBackgroundPath();
         const url = previewUrlFor(p);
-        if (url) {
-            img.src = url;
-            img.classList.remove('empty');
-        } else {
+        const showVideo = url && isVideoPath(p) && video;
+        if (showVideo) {
+            video.src = url;
+            video.style.display = '';
+            video.classList.remove('empty');
+            video.play().catch(() => {});
             img.removeAttribute('src');
+            img.style.display = 'none';
             img.classList.add('empty');
+        } else {
+            if (video) {
+                video.removeAttribute('src');
+                video.style.display = 'none';
+                video.classList.add('empty');
+            }
+            img.style.display = '';
+            if (url) {
+                img.src = url;
+                img.classList.remove('empty');
+            } else {
+                img.removeAttribute('src');
+                img.classList.add('empty');
+            }
         }
         img.alt = 'Background: ' + bgNameForPath(p);
         name.textContent = bgNameForPath(p);
@@ -667,7 +696,7 @@
         try {
             const res = await fetch(API.uploadBg, { method: 'POST', body: fd });
             const data = await res.json();
-            backgrounds.push({ name: data.name, path: data.path, is_default: false });
+            backgrounds.push({ name: data.name, path: data.path, is_default: false, is_video: isVideoPath(data.path) });
             refreshBgSelects();
             input.value = '';
         } catch(e) {

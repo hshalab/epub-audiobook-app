@@ -61,13 +61,17 @@
                     <td>
                         <div class="patch-row">
                             {% if p.image_path %}
+                                {% if p.image_path.lower().endswith(('.mp4', '.webm', '.mov')) %}
+                                <video src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" muted loop playsinline preload="metadata" title="video background (loop)"></video>
+                                {% else %}
                                 <img src="/books/{{ book.id }}/patches/{{ p.id }}/image" class="patch-thumb" alt="patch {{ p.name or p.patch_index }} image">
+                                {% endif %}
                             {% else %}
                                 <div class="patch-thumb-placeholder">default</div>
                             {% endif %}
                             <div>
                                 <form method="post" action="/books/{{ book.id }}/patches/{{ p.id }}/image" enctype="multipart/form-data" class="patch-img-form">
-                                    <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp" onchange="previewPatchImage(this, '{{ p.id }}')">
+                                    <input type="file" name="image" accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov" onchange="previewPatchImage(this, '{{ p.id }}')">
                                     <button type="submit" class="btn-outline btn-sm">Upload</button>
                                 </form>
                                 <div id="patch-img-preview-{{ p.id }}" class="patch-img-preview-wrap" style="display:none;margin-top:4px">
@@ -160,6 +164,8 @@ function addRange() {
 function previewPatchImage(input, patchId) {
     const wrap = document.getElementById('patch-img-preview-' + patchId);
     if (!wrap || !input.files.length) return;
+    // Video backgrounds can't preview in an <img>; the thumbnail shows after upload.
+    if ((input.files[0].type || '').startsWith('video')) { wrap.style.display = 'none'; return; }
     const reader = new FileReader();
     reader.onload = e => {
         wrap.querySelector('img').src = e.target.result;

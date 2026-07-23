@@ -23,6 +23,8 @@ templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4"}
+# A patch background may be a still image or a looping video clip.
+ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKGROUND_EXTENSIONS
 
 
 def _build_or_400(build, *args, **kwargs):
@@ -60,8 +62,8 @@ async def upload_patch_image(
     image: UploadFile = File(...),
 ):
     ext = Path(image.filename or "").suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported image format: {ext}")
+    if ext not in ALLOWED_BACKGROUND_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported background format: {ext}")
 
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)

@@ -11,13 +11,15 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app import repository
+from app import repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
 from app.normalization import NormalizationOptions, normalize_text
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+# Book backgrounds may be a still image or a looping video clip.
+ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKGROUND_EXTENSIONS
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -444,7 +446,7 @@ async def upload_background_image(
     image: UploadFile = File(...),
 ):
     ext = Path(image.filename or "").suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+    if ext not in ALLOWED_BACKGROUND_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Định dạng không hỗ trợ: {ext}")
 
     from app import image_overlay
@@ -474,12 +476,15 @@ async def upload_background_image(
 
         patches = repository.list_patches(conn, book_id)
 
-    font_path = settings.default_font_path or None
-    for patch in patches:
-        try:
-            image_overlay.ensure_patch_overlay(book, patch, font_path)
-        except Exception:
-            pass
+    # A video background is a plain looping backdrop with no baked-in text, so
+    # there are no per-patch overlays to pre-render.
+    if not video_gen.is_video_background(dest):
+        font_path = settings.default_font_path or None
+        for patch in patches:
+            try:
+                image_overlay.ensure_patch_overlay(book, patch, font_path)
+            except Exception:
+                pass
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -918,14 +923,16 @@ def get_youtube_description(request: Request, book_id: int):
 
 
 def _list_backgrounds() -> list[dict]:
-    """Shared helper: list background images (default + user-uploaded)."""
-    from app.routes.video import _BACKGROUNDS_DIR, ALLOWED_IMAGE_EXTENSIONS
+    """Shared helper: list backgrounds (default + user-uploaded images/videos)."""
+    from app.routes.video import _BACKGROUNDS_DIR, ALLOWED_BACKGROUND_EXTENSIONS
     items: list[dict] = []
     default = settings.default_background_image
     if Path(default).exists():
-        items.append({"name": "__default__", "path": default, "is_default": True})
+        items.append({"name": "__default__", "path": default, "is_default": True,
+                      "is_video": video_gen.is_video_background(default)})
     _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
     for f in sorted(_BACKGROUNDS_DIR.iterdir()):
-        if f.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
-            items.append({"name": f.name, "path": str(f), "is_default": False})
+        if f.suffix.lower() in ALLOWED_BACKGROUND_EXTENSIONS:
+            items.append({"name": f.name, "path": str(f), "is_default": False,
+                          "is_video": video_gen.is_video_background(f)})
     return items

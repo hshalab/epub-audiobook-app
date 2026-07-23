@@ -121,12 +121,14 @@
             <div>
                 <div id="preview-stage" style="position:relative;line-height:0;border:1px solid var(--border-color);border-radius:var(--border-radius);overflow:hidden">
                     <img id="overlay-preview" alt="Preview" style="width:100%;display:block">
+                    <video id="overlay-preview-video" muted loop playsinline preload="metadata" style="width:100%;display:none"></video>
                     <div id="drag-rect" title="Kéo để chỉnh vị trí chữ"></div>
                 </div>
                 <div style="display:flex;justify-content:flex-end;margin-top:var(--space-sm)">
                     <a id="preview-download" class="btn-outline btn-sm" href="#" download="background-preview.png" style="display:none">Tải background preview</a>
                 </div>
                 <p id="preview-empty" style="display:none;margin:var(--space-sm) 0 0 0;color:var(--text-muted)">Chưa có ảnh nền để preview.</p>
+                <p id="preview-video-note" style="display:none;margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">Background video sẽ được loop suốt thời lượng audio. Chữ overlay và hiệu ứng Ken Burns bị bỏ qua với background video.</p>
                 <p style="margin:var(--space-sm) 0 0 0;color:var(--text-muted);font-size:var(--font-size-xs)">
                     Kéo khung chữ trên ảnh để chỉnh vị trí. Mọi thay đổi ở cột phải cập nhật preview ngay —
                     bấm <strong>Lưu tất cả</strong> để áp dụng.
@@ -175,18 +177,18 @@
 
         <div style="display:flex;flex-direction:column;gap:var(--space-md)">
             <form id="bg-form" method="post" action="/books/{{ book.id }}/background-image-select" class="studio-section">
-                <h4>Ảnh nền</h4>
+                <h4>Ảnh / video nền</h4>
                 <div class="form-group" style="margin:0">
-                    <label for="bg-select">Chọn ảnh nền</label>
+                    <label for="bg-select">Chọn background</label>
                     <select name="background_path" id="bg-select">
                         <option value="">— Ảnh mặc định —</option>
                         {% for bg in backgrounds %}
-                        <option value="{{ bg.path }}" {% if book.background_image_path == bg.path %}selected{% endif %}>{{ bg.name }}</option>
+                        <option value="{{ bg.path }}" data-video="{{ '1' if bg.is_video else '' }}" {% if book.background_image_path == bg.path %}selected{% endif %}>{{ bg.name }}{% if bg.is_video %} 🎬{% endif %}</option>
                         {% endfor %}
                     </select>
                 </div>
                 <p style="margin:var(--space-sm) 0 0 0;font-size:var(--font-size-xs);color:var(--text-muted)">
-                    <a href="/video" target="_blank">Upload ảnh mới</a> — text tên sách + tên patch được vẽ tự động khi render.
+                    <a href="/video" target="_blank">Upload ảnh / video mới</a> — với ảnh, text tên sách + tên patch được vẽ tự động khi render; với video, background chỉ loop (không có text).
                 </p>
             </form>
 
@@ -724,6 +726,8 @@
 (function() {
     const BOOK_ID = {{ book.id }};
     const previewImg = document.getElementById('overlay-preview');
+    const previewVideo = document.getElementById('overlay-preview-video');
+    const previewVideoNote = document.getElementById('preview-video-note');
     const previewDownload = document.getElementById('preview-download');
     const dragRect = document.getElementById('drag-rect');
     const emptyMsg = document.getElementById('preview-empty');
@@ -758,7 +762,42 @@
         dragRect.style.transform = '';
     }
 
+    function selectedBgIsVideo() {
+        if (!bgSelect) return false;
+        const opt = bgSelect.options[bgSelect.selectedIndex];
+        if (opt && opt.dataset.video) return true;
+        const p = (bgSelect.value || '').toLowerCase();
+        return ['.mp4', '.webm', '.mov'].some(ext => p.endsWith(ext));
+    }
+
+    function showVideoBackgroundPreview() {
+        // A video background is a plain looping backdrop: no overlay render, no
+        // drag-to-position. Show the clip and a short note instead.
+        if (!previewVideo) return;
+        previewVideo.src = '/video/backgrounds/preview?path=' + encodeURIComponent(bgSelect.value);
+        previewVideo.style.display = 'block';
+        previewVideo.play().catch(() => {});
+        previewImg.style.display = 'none';
+        previewImg.removeAttribute('src');
+        dragRect.style.display = 'none';
+        emptyMsg.style.display = 'none';
+        if (previewVideoNote) previewVideoNote.style.display = 'block';
+        if (previewDownload) previewDownload.style.display = 'none';
+    }
+
+    function hideVideoBackgroundPreview() {
+        if (previewVideo) {
+            previewVideo.pause();
+            previewVideo.removeAttribute('src');
+            previewVideo.style.display = 'none';
+        }
+        if (previewVideoNote) previewVideoNote.style.display = 'none';
+        previewImg.style.display = 'block';
+    }
+
     async function refreshPreview() {
+        if (selectedBgIsVideo()) { showVideoBackgroundPreview(); return; }
+        hideVideoBackgroundPreview();
         if (refreshing) { refreshQueued = true; return; }
         refreshing = true;
         try {
