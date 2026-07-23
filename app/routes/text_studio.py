@@ -1,6 +1,7 @@
 """Text Studio routes: edit patch text, search/replace, spell check, effect markers."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import re
@@ -298,7 +299,7 @@ async def preview_paragraph(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=503, detail=str(e))
 
         try:
-            wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
@@ -329,7 +330,7 @@ async def preview_patch(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=503, detail=str(e))
 
         try:
-            wav_bytes, _ = engine.synthesize_to_wav_bytes(text)
+            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
