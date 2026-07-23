@@ -63,13 +63,13 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
 .ts-fx-btns{display:flex;gap:4px;flex-shrink:0}
 .ts-warnings.panel-hidden{display:none}
 .ts-warnings-header-btns{display:flex;align-items:center;gap:4px}
-.ts-para-preview{position:absolute;left:-28px;top:2px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:3px;opacity:0;transition:opacity .15s;line-height:1}
+.ts-para-preview{position:absolute;left:0;top:2px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:3px;opacity:.4;transition:opacity .15s,color .15s;line-height:1}
 .ts-para-preview:hover{color:var(--color-primary,#3b82f6);background:var(--border-color)}
 .ts-para-preview.loading{opacity:1;animation:ts-pulse .8s infinite}
 @keyframes ts-pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .ts-inline-audio{margin:var(--space-xs) 0 var(--space-xs) 24px;display:block}
 .ts-tts-select{padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm)}
-.ts-editor-area .ts-para{position:relative}
+.ts-editor-area .ts-para{position:relative;padding-left:26px}
 .ts-editor-area .ts-para:hover .ts-para-preview{opacity:1}
 .mobile-nav{display:none}
 @media(max-width:960px){
@@ -100,6 +100,12 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
     <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
         <label style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">TTS Backend:</label>
         <select id="ttsBackendSelect" class="ts-tts-select" style="flex:1">
+            <option value="">Đang tải...</option>
+        </select>
+    </div>
+    <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
+        <label style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">Giọng đọc:</label>
+        <select id="ttsVoiceSelect" class="ts-tts-select" style="flex:1">
             <option value="">Đang tải...</option>
         </select>
     </div>
@@ -687,10 +693,11 @@ async function previewParagraph(paraEl) {
     removeInlineAudio();
     try {
         const backend = document.getElementById('ttsBackendSelect').value;
+        const voice = document.getElementById('ttsVoiceSelect').value;
         const withFx = document.getElementById('fxToggle').checked;
         const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-paragraph`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ text, with_effects: withFx, backend: backend || undefined })
+            body: JSON.stringify({ text, with_effects: withFx, backend: backend || undefined, voice: voice || undefined })
         });
         if (!res.ok) { alert('Lỗi preview'); return; }
         const blob = await res.blob();
@@ -708,10 +715,11 @@ async function previewPatch() {
     btn.textContent = 'Đang tạo...';
     try {
         const backend = document.getElementById('ttsBackendSelect').value;
+        const voice = document.getElementById('ttsVoiceSelect').value;
         const withFx = document.getElementById('fxToggle').checked;
         const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-patch`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ with_effects: withFx, backend: backend || undefined })
+            body: JSON.stringify({ with_effects: withFx, backend: backend || undefined, voice: voice || undefined })
         });
         if (!res.ok) { alert('Lỗi preview'); return; }
         const blob = await res.blob();
@@ -726,6 +734,23 @@ async function previewPatch() {
     }
 }
 
+async function loadVoicesForBackend(backend) {
+    const sel = document.getElementById('ttsVoiceSelect');
+    if (!backend) { sel.innerHTML = ''; return; }
+    sel.innerHTML = '<option value="">Đang tải...</option>';
+    try {
+        const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(backend)}`);
+        if (!res.ok) { sel.innerHTML = ''; return; }
+        const data = await res.json();
+        const saved = localStorage.getItem('tts-voice:' + backend);
+        sel.innerHTML = (data.voices || []).map(v =>
+            `<option value="${esc(v.id)}" ${v.id === saved ? 'selected' : ''}>${esc(v.label)}</option>`
+        ).join('');
+        if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+    } catch(e) { sel.innerHTML = ''; }
+    sel.onchange = () => localStorage.setItem('tts-voice:' + backend, sel.value);
+}
+
 async function loadLightTTSBackends() {
     try {
         const res = await fetch('/text-studio/light-tts/backends');
@@ -737,7 +762,11 @@ async function loadLightTTSBackends() {
             `<option value="${esc(b.id)}" ${!b.available ? 'disabled' : ''} ${b.id === saved ? 'selected' : ''}>${esc(b.label)}${!b.available ? ' (unavailable)' : ''}</option>`
         ).join('');
         if (!select.value && select.options.length) select.selectedIndex = 0;
-        select.addEventListener('change', () => localStorage.setItem('tts-backend', select.value));
+        select.addEventListener('change', () => {
+            localStorage.setItem('tts-backend', select.value);
+            loadVoicesForBackend(select.value);
+        });
+        loadVoicesForBackend(select.value);
     } catch(e) {}
 }
 
