@@ -280,3 +280,43 @@ class TestTextStudioRoutes:
             json={"text": "Hello world", "backend": "nonexistent-backend"},
         )
         assert resp.status_code == 503
+
+    def test_list_voices_endpoint(self, client, monkeypatch):
+        import app.light_tts as lt
+        monkeypatch.setattr(lt, "list_voices", lambda b: [{"id": "x", "label": "X", "language": "vi"}])
+        resp = client.get("/text-studio/light-tts/voices?backend=edge-tts")
+        assert resp.status_code == 200
+        assert resp.json()["voices"][0]["id"] == "x"
+
+    def test_list_voices_unknown_backend(self, client):
+        resp = client.get("/text-studio/light-tts/voices?backend=nope")
+        assert resp.status_code == 400
+
+    def test_backends_excludes_kokoro(self, client):
+        resp = client.get("/text-studio/light-tts/backends")
+        ids = [b["id"] for b in resp.json()["backends"]]
+        assert "kokoro" not in ids
+
+    def test_preview_paragraph_forwards_voice(self, client, conn, book_and_patch, monkeypatch):
+        import app.routes.text_studio as ts
+        book, patch = book_and_patch
+        app = client.app
+        app.state.conn = conn
+        import threading
+        app.state.db_lock = threading.Lock()
+
+        captured = {}
+
+        class FakeEngine:
+            def synthesize_to_wav_bytes(self, text, voice=None):
+                captured["text"] = text
+                captured["voice"] = voice
+                return b"RIFF0000WAVEfmt ", 22050
+
+        monkeypatch.setattr(ts, "LightTTSEngine", lambda backend=None: FakeEngine())
+        resp = client.post(
+            f"/books/{book.id}/text-studio/patches/{patch.id}/preview-paragraph",
+            json={"text": "Xin chào", "backend": "edge-tts", "voice": "vi-VN-NamMinhNeural"},
+        )
+        assert resp.status_code == 200
+        assert captured["voice"] == "vi-VN-NamMinhNeural"

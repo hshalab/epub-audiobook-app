@@ -275,12 +275,21 @@ def list_backends(request: Request):
     return JSONResponse({"backends": result})
 
 
+@router.get("/text-studio/light-tts/voices")
+def list_voices_endpoint(backend: str):
+    from app.light_tts import _BACKENDS, list_voices
+    if backend not in _BACKENDS:
+        raise HTTPException(status_code=400, detail="unknown backend")
+    return JSONResponse({"voices": list_voices(backend)})
+
+
 @router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-paragraph")
 async def preview_paragraph(request: Request, book_id: int, patch_id: int):
     body = await request.json()
     text = body.get("text", "").strip()
     with_effects = body.get("with_effects", False)
     backend = body.get("backend")
+    voice = body.get("voice")
 
     if not text:
         raise HTTPException(status_code=400, detail="text required")
@@ -299,7 +308,7 @@ async def preview_paragraph(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=503, detail=str(e))
 
         try:
-            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text)
+            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text, voice)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
@@ -314,6 +323,7 @@ async def preview_patch(request: Request, book_id: int, patch_id: int):
     body = await request.json()
     with_effects = body.get("with_effects", False)
     backend = body.get("backend")
+    voice = body.get("voice")
 
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)
@@ -330,7 +340,7 @@ async def preview_patch(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=503, detail=str(e))
 
         try:
-            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text)
+            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text, voice)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
 
