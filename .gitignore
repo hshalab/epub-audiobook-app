@@ -19,7 +19,7 @@ data/videos
 data/backgrounds
 data/voices
 data/music
-.superpowers/sdd/
+.superpowers
 .superpowers/plans/
 # Isolated worktrees for agent-driven development
 .worktrees/

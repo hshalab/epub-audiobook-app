@@ -394,3 +394,51 @@ def normalize_text(text: str, opts: NormalizationOptions | None = None) -> str:
     if opts.punctuation:
         text = ensure_sentence_punctuation(text)
     return text
+
+
+# --- Chapter title normalization for TTS ---
+
+_CHAPTER_TITLE_PATTERNS = [
+    # Vietnamese: "Chương 1", "Chương 1:", "Chương 1 -", "Phần 1", "Hồi 1"
+    re.compile(r"^((?:Chương|Phần|Hồi|Phần|Quyển|Tập)\s+\d+)(\s*[:\-–—]?\s*)$", re.IGNORECASE | re.MULTILINE),
+    # English: "Chapter 1", "Part 1", "Volume 1"
+    re.compile(r"^((?:Chapter|Part|Volume|Book)\s+\d+)(\s*[:\-–—]?\s*)$", re.IGNORECASE | re.MULTILINE),
+    # Numeric only: "1.", "1:", "1 -", "I.", "II."
+    re.compile(r"^(\d{1,3})(\s*[.:\-–—]\s*)$", re.MULTILINE),
+]
+
+_ORDINAL_MAP_VI = {
+    "1": "một", "2": "hai", "3": "ba", "4": "bốn", "5": "năm",
+    "6": "sáu", "7": "bảy", "8": "tám", "9": "chín", "10": "mười",
+    "11": "mười một", "12": "mười hai", "13": "mười ba", "14": "mười bốn",
+    "15": "mười lăm", "16": "mười sáu", "17": "mười bảy", "18": "mười tám",
+    "19": "mười chín", "20": "hai mươi",
+}
+
+
+def _normalize_chapter_number(num_str: str) -> str:
+    """Convert chapter number to spoken Vietnamese."""
+    n = num_str.strip()
+    if n in _ORDINAL_MAP_VI:
+        return _ORDINAL_MAP_VI[n]
+    try:
+        return num2words(int(n), lang="vi")
+    except (ValueError, OverflowError):
+        return n
+
+
+def normalize_chapter_titles(text: str) -> str:
+    """Normalize chapter titles for TTS: add pauses, normalize numbers."""
+    def _replace_title(m: re.Match) -> str:
+        title = m.group(1).strip()
+        # Extract number from title
+        num_match = re.search(r"\d+", title)
+        if num_match:
+            spoken_num = _normalize_chapter_number(num_match.group())
+            title = title[:num_match.start()] + spoken_num + title[num_match.end():]
+        # Add pause after title for TTS breathing
+        return f"{title}...\n\n"
+
+    for pattern in _CHAPTER_TITLE_PATTERNS:
+        text = pattern.sub(_replace_title, text)
+    return text

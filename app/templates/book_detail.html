@@ -27,6 +27,7 @@
     <a href="#studio-card">Studio</a>
     <a href="#build-card">Auto-build</a>
     {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
+    <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
     <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
     <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
@@ -488,7 +489,7 @@
                 </td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
                 <td class="patch-actions">
-                    <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" target="_blank" class="btn-outline btn-sm">Preview</a>
+                    <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
                     {% if patch.status != "processing" %}
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">

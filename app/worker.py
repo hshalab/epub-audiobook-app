@@ -27,7 +27,7 @@ from app import audio_merge, repository, video_gen
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
-from app.normalization import NormalizationOptions, normalize_text
+from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
 from app.tts_engine import VoxCPMEngine
 
 logger = logging.getLogger(__name__)
@@ -260,6 +260,7 @@ class PatchWorker:
                     t = ch.title + ".\n\n" + suffix
             texts.append(t)
         raw = "\n\n".join(texts)
+        raw = normalize_chapter_titles(raw)
         if book is not None:
             opts = NormalizationOptions(
                 numbers=bool(book.normalize_numbers_enabled),

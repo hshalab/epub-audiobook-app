@@ -72,6 +72,9 @@ class Patch:
     chunk_count: int = 0
     next_chunk_index: int = 0
     max_chars: int | None = None
+    clean_text: str | None = None
+    clean_text_hash: str | None = None
+    text_fingerprint: str | None = None
 
 
 @dataclass

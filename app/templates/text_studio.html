@@ -1,0 +1,514 @@
+{% extends "base.html" %}
+{% block title %}Text Studio - {{ book.title }}{% endblock %}
+{% block content %}
+<style>
+main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12px!important}
+.ts-layout{display:grid;grid-template-columns:190px 1fr 210px;gap:var(--space-md);height:calc(100vh - 92px);min-height:500px}
+.ts-patch-list{border:1px solid var(--border-color);border-radius:var(--border-radius);padding:var(--space-sm);overflow-y:auto;background:var(--bg-card)}
+.ts-patch-item{padding:var(--space-xs) var(--space-sm);border-radius:var(--border-radius);cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:var(--font-size-sm);transition:background .15s}
+.ts-patch-item:hover{background:var(--border-color)}
+.ts-patch-item.active{background:var(--color-primary,#3b82f6);color:#fff}
+.ts-patch-item .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;flex-shrink:0}
+.ts-patch-item .dot.done{background:#22c55e}.ts-patch-item .dot.pending{background:#eab308}.ts-patch-item .dot.failed{background:#ef4444}.ts-patch-item .dot.processing{background:#3b82f6}
+.ts-editor{display:flex;flex-direction:column;gap:var(--space-sm);min-height:0}
+.ts-toolbar{display:flex;gap:var(--space-xs);flex-wrap:wrap;align-items:center}
+.ts-toolbar input[type=text]{flex:1;min-width:80px;padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm)}
+.ts-toolbar label{font-size:var(--font-size-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px;white-space:nowrap}
+.ts-editor-area{flex:1;min-height:0;overflow-y:auto;padding:var(--space-md);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-family:'Noto Serif',serif;font-size:15px;line-height:1.8;white-space:pre-wrap;word-wrap:break-word;outline:none;cursor:text}
+.ts-editor-area:focus{border-color:var(--color-primary,#3b82f6)}
+.ts-editor-area .spell-err{text-decoration:underline;text-decoration-color:#ef4444;text-decoration-style:wavy;text-underline-offset:3px}
+.ts-editor-area .fx-marker{background:rgba(139,92,246,.25);border-radius:3px;padding:0 2px}
+.ts-editor-area .junk-char{background:rgba(239,68,68,.2);text-decoration:line-through;text-decoration-color:#ef4444}
+.ts-editor-area .sound-desc{background:rgba(20,184,166,.2);border-bottom:2px dotted #14b8a6}
+.ts-editor-area .ts-highlight{background:rgba(245,158,11,.35);border-radius:2px;padding:0 1px}
+.ts-actions{display:flex;gap:var(--space-xs);flex-wrap:wrap;align-items:center}
+.ts-status{font-size:var(--font-size-xs);color:var(--text-muted);margin-left:auto}
+.ts-status.edited{color:#22c55e}
+.ts-warnings{border:1px solid var(--border-color);border-radius:var(--border-radius);padding:var(--space-sm);overflow-y:auto;background:var(--bg-card);display:flex;flex-direction:column;gap:var(--space-sm)}
+.ts-warnings-title{margin:0;font-size:var(--font-size-sm);text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700}
+.ts-summary{display:flex;flex-direction:column;gap:2px;font-size:var(--font-size-xs)}
+.ts-summary-row{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;border-bottom:1px solid var(--border-color)}
+.ts-summary-row:last-child{border-bottom:none}
+.ts-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 6px;border-radius:10px;font-size:11px;font-weight:700}
+.ts-badge.warn{background:#f59e0b;color:#000}.ts-badge.danger{background:#ef4444;color:#fff}.ts-badge.purple{background:#8b5cf6;color:#fff}.ts-badge.teal{background:#14b8a6;color:#000}
+.ts-warning-list{display:flex;flex-direction:column;gap:2px}
+.ts-warning-item{padding:var(--space-xs) var(--space-sm);border-left:3px solid var(--border-color);font-size:var(--font-size-xs);display:flex;justify-content:space-between;align-items:center;gap:var(--space-xs);cursor:pointer;transition:background .1s}
+.ts-warning-item:hover{background:var(--border-color)}
+.ts-warning-item.spell_vi,.ts-warning-item.spell_en{border-left-color:#f59e0b}
+.ts-warning-item.junk{border-left-color:#ef4444}
+.ts-warning-item.effect_marker{border-left-color:#8b5cf6}
+.ts-warning-item.sound_desc{border-left-color:#14b8a6}
+.ts-warning-item code{background:var(--bg-code,#2a2a2a);padding:1px 4px;border-radius:3px;word-break:break-all}
+.ts-warning-item .actions{display:flex;gap:4px;flex-shrink:0}
+.ts-fx-panel{border-top:1px solid var(--border-color);padding-top:var(--space-sm)}
+.ts-fx-panel summary{cursor:pointer;font-weight:600;font-size:var(--font-size-sm);color:var(--text-muted)}
+.ts-fx-item{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;font-size:var(--font-size-xs);border-bottom:1px solid var(--border-color)}
+.ts-fx-search{width:100%;padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm);margin-bottom:var(--space-xs)}
+.ts-fx-item.hidden{display:none}
+.ts-fx-btns{display:flex;gap:4px;flex-shrink:0}
+.mobile-nav{display:none}
+@media(max-width:960px){
+.ts-layout{grid-template-columns:1fr;grid-template-rows:auto 1fr auto;height:auto;min-height:auto}
+.ts-patch-list{display:flex;overflow-x:auto;gap:var(--space-xs);padding:var(--space-xs);flex-shrink:0}
+.ts-patch-item{white-space:nowrap;flex-shrink:0}
+.ts-warnings{max-height:280px}
+.mobile-nav{display:flex;align-items:center;gap:var(--space-sm);padding:var(--space-xs) 0}
+.mobile-nav button{padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:var(--font-size-sm)}
+}
+</style>
+
+<h2 style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+    Text Studio
+    <span style="font-size:var(--font-size-sm);color:var(--text-muted)">{{ book.title }}</span>
+    <button type="button" class="btn-outline btn-sm" onclick="document.getElementById('settingsModal').showModal()" style="margin-left:auto">⚙ Cài đặt</button>
+    <a href="/books/{{ book.id }}" class="btn-outline btn-sm">Quay lại</a>
+</h2>
+
+<dialog id="settingsModal" style="width:min(600px,calc(100% - 2rem));max-height:calc(100vh - 2rem);padding:var(--space-lg);color:var(--text-primary);background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--border-radius);box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)">
+        <h3 style="margin:0">Chuẩn hóa TTS</h3>
+        <button type="button" class="btn-outline btn-sm" onclick="this.closest('dialog').close()">Đóng</button>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">Cấu hình cách văn bản được tiền xử lý trước khi tổng hợp giọng nói.</p>
+    <form id="normForm" style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
+            Chuyển số, tiền tệ, ngày tháng, giờ thành chữ tiếng Việt
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" name="junk" {% if book.normalize_junk_enabled %}checked{% endif %}>
+            Xóa token rác/định dạng (ví dụ OO@@)
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" name="spellcheck" {% if book.normalize_spellcheck_enabled %}checked{% endif %}>
+            Sửa từ tiếng Việt bị chèn dấu chấm (vd: ch.ế.t → chết)
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" name="dictionary" {% if book.normalize_dictionary_enabled %}checked{% endif %}>
+            Tra từ viết tắt và từ ngoại ngữ qua từ điển vietnormalizer
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" name="transliteration" {% if book.normalize_transliteration_enabled %}checked{% endif %}>
+            Phiên âm từ ngoại ngữ không có trong từ điển (kèm tra từ điển)
+        </label>
+    </form>
+    <div style="display:flex;gap:var(--space-xs);flex-wrap:wrap">
+        <button type="button" class="btn-primary btn-sm" onclick="saveNorm()">Lưu cài đặt</button>
+        <button type="button" class="btn-outline btn-sm" onclick="applyNormToEditor()">Áp dụng vào editor</button>
+        <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Xem thử chương 0</a>
+    </div>
+</dialog>
+
+<div class="ts-layout">
+    <div class="ts-patch-list" id="patchList">
+        <div style="font-size:var(--font-size-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);padding:var(--space-xs) var(--space-sm);margin-bottom:var(--space-xs)">Patches</div>
+        {% for p in patches %}
+        <div class="ts-patch-item {% if patch and p.id == patch.id %}active{% endif %}" data-patch-id="{{ p.id }}" onclick="loadPatch({{ p.id }})">
+            <span><span class="dot {{ p.status }}"></span>{{ p.name or p.patch_index }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="ts-editor">
+        <div class="mobile-nav">
+            <button onclick="navPatch(-1)">◀</button>
+            <span id="mobilePatchLabel">{{ patch.name or patch.patch_index if patch else '' }}</span>
+            <button onclick="navPatch(1)">▶</button>
+        </div>
+        <div class="ts-toolbar">
+            <input type="text" id="searchInput" placeholder="Tìm..." onkeydown="if(event.key==='Enter'){event.preventDefault();if(findMatches.length&&document.getElementById('searchInput').value===lastFindQuery){findNext()}else{findInEditor();lastFindQuery=document.getElementById('searchInput').value}}">
+            <input type="text" id="replaceInput" placeholder="Thay thế..." onkeydown="if(event.key==='Enter'){event.preventDefault();doReplace()}">
+            <button class="btn-outline btn-sm" onclick="findInEditor()">Tìm</button>
+            <button class="btn-outline btn-sm" onclick="doReplace()">Thay</button>
+            <label><input type="checkbox" id="regexToggle"> Regex</label>
+        </div>
+        <div class="ts-editor-area" id="editor" contenteditable="true" spellcheck="false"></div>
+        <div class="ts-actions">
+            <button class="btn-primary btn-sm" onclick="saveText()">Lưu</button>
+            <button class="btn-outline btn-sm" onclick="analyzeText()">Phân tích</button>
+            <button class="btn-outline btn-sm" onclick="resetText()">↩ Bản gốc</button>
+            <div class="ts-status" id="statusLine">
+                {% if patch and patch.clean_text %}<span class="edited">Đã chỉnh sửa</span>{% else %}Bản gốc{% endif %}
+                &middot; {{ clean_text|length if clean_text else 0 }} ký tự
+            </div>
+        </div>
+    </div>
+
+    <div class="ts-warnings" id="warningsPanel">
+        <div class="ts-warnings-title">Kiểm tra</div>
+        <div class="ts-summary" id="summarySection">
+            <div class="ts-summary-row"><span>Chính tả</span><span class="ts-badge warn" id="sumSpell">0</span></div>
+            <div class="ts-summary-row"><span>Từ rác</span><span class="ts-badge danger" id="sumJunk">0</span></div>
+            <div class="ts-summary-row"><span>Hiệu ứng</span><span class="ts-badge purple" id="sumFx">0</span></div>
+            <div class="ts-summary-row"><span>Âm thanh</span><span class="ts-badge teal" id="sumSound">0</span></div>
+        </div>
+        <div style="font-size:var(--font-size-xs);color:var(--text-muted)" id="analyzeHint">Nhấn "Phân tích" để kiểm tra</div>
+        <div class="ts-warning-list" id="warningsList"></div>
+
+        <div class="ts-fx-panel">
+            <details open>
+                <summary>Thư viện hiệu ứng ({{ effects|length }})</summary>
+                <input type="text" class="ts-fx-search" id="fxSearch" placeholder="Tìm hiệu ứng..." oninput="filterFx()">
+                <form id="fxForm" enctype="multipart/form-data" style="margin-bottom:var(--space-xs);display:flex;flex-direction:column;gap:var(--space-xs)">
+                    <input type="text" name="marker" placeholder="[tiếng khóc]" required style="padding:var(--space-xs);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary)">
+                    <input type="file" name="file" accept=".wav,.mp3,.ogg" required>
+                    <input type="text" name="description" placeholder="Mô tả (tuỳ chọn)" style="padding:var(--space-xs);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary)">
+                    <button type="submit" class="btn-outline btn-sm">Thêm hiệu ứng</button>
+                </form>
+                <div id="fxList">
+                {% for fx in effects %}
+                <div class="ts-fx-item" style="flex-direction:column;align-items:stretch;gap:4px" data-marker="{{ fx.marker|lower }}" data-desc="{{ fx.description|lower }}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span><strong>{{ fx.marker }}</strong> {% if fx.description %}<span style="color:var(--text-muted)">— {{ fx.description }}</span>{% endif %}</span>
+                        <span class="ts-fx-btns">
+                            <button class="btn-outline btn-sm" onclick="insertFx('{{ fx.marker }}')" title="Chèn vào editor">📋</button>
+                            <button class="btn-outline btn-sm" onclick="deleteEffect({{ fx.id }})" title="Xóa">✕</button>
+                        </span>
+                    </div>
+                    <audio controls preload="none" style="width:100%;height:32px">
+                        <source src="/books/{{ book.id }}/text-studio/effects/{{ fx.id }}/audio">
+                    </audio>
+                </div>
+                {% endfor %}
+                </div>
+            </details>
+        </div>
+
+        <div class="ts-fx-panel" id="mediaPreview" style="display:none">
+            <details open>
+                <summary>Preview âm thanh</summary>
+                <div id="patchAudioWrap" style="margin-top:var(--space-xs)">
+                    <audio id="patchAudio" controls preload="none" style="width:100%;height:36px"></audio>
+                </div>
+                <div id="patchVideoWrap" style="margin-top:var(--space-xs);display:none">
+                    <video id="patchVideo" controls preload="none" style="width:100%;max-height:200px;border-radius:var(--border-radius)"></video>
+                </div>
+            </details>
+        </div>
+    </div>
+</div>
+
+<script>
+const bookId = {{ book.id }};
+let currentPatchId = {{ patch.id if patch else 'null' }};
+let dirty = false;
+let currentWarnings = [];
+const editor = document.getElementById('editor');
+const undoStack = [];
+const redoStack = [];
+let findMatches = [];
+let findIndex = -1;
+let lastFindQuery = '';
+
+function pushUndo(text) {
+    undoStack.push(text);
+    if (undoStack.length > 50) undoStack.shift();
+    redoStack.length = 0;
+}
+
+function getPlainText() { return editor.innerText.replace(/\u00A0/g, ' '); }
+
+editor.addEventListener('input', () => { dirty = true; });
+editor.addEventListener('paste', e => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    pushUndo(getPlainText());
+    document.execCommand('insertText', false, text);
+});
+
+document.addEventListener('keydown', e => {
+    if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
+        e.preventDefault();
+        if (undoStack.length) {
+            redoStack.push(getPlainText());
+            const text = undoStack.pop();
+            editor.textContent = text;
+            dirty = true;
+            updateStatus(true, text.length);
+        }
+    } else if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
+        e.preventDefault();
+        if (redoStack.length) {
+            pushUndo(getPlainText());
+            const text = redoStack.pop();
+            editor.textContent = text;
+            dirty = true;
+            updateStatus(true, text.length);
+        }
+    }
+});
+
+async function loadPatch(id) {
+    if (dirty && !confirm('Thay đổi chưa lưu. Bỏ qua?')) return;
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${id}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    currentPatchId = id;
+    currentWarnings = data.warnings || [];
+    renderEditor(data.text, currentWarnings);
+    dirty = false;
+    document.querySelectorAll('.ts-patch-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.patchId == id);
+    });
+    const label = document.getElementById('mobilePatchLabel');
+    const item = document.querySelector(`.ts-patch-item[data-patch-id="${id}"]`);
+    if (label && item) label.textContent = item.textContent.trim();
+    updateStatus(data.is_edited, data.text.length);
+    renderWarnings(currentWarnings);
+    loadMedia(id);
+}
+
+function navPatch(dir) {
+    const items = [...document.querySelectorAll('.ts-patch-item')];
+    const idx = items.findIndex(el => el.dataset.patchId == currentPatchId);
+    const next = idx + dir;
+    if (next >= 0 && next < items.length) loadPatch(items[next].dataset.patchId);
+}
+
+function renderEditor(text, warnings) {
+    if (!warnings.length) { editor.textContent = text; return; }
+    const sorted = [...warnings].sort((a,b) => a.position - b.position);
+    let html = '', pos = 0;
+    for (const w of sorted) {
+        if (w.position > pos) html += esc(text.slice(pos, w.position));
+        const chunk = text.slice(w.position, w.position + w.length);
+        const cls = w.kind === 'effect_marker' ? 'fx-marker' : w.kind === 'junk' ? 'junk-char' : w.kind === 'sound_desc' ? 'sound-desc' : 'spell-err';
+        html += `<span class="${cls}" data-warn-id="${w.id}" title="${esc(w.kind)}: ${esc(w.original)}">${esc(chunk)}</span>`;
+        pos = w.position + w.length;
+    }
+    if (pos < text.length) html += esc(text.slice(pos));
+    editor.innerHTML = html;
+}
+
+async function saveText() {
+    const text = getPlainText();
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text})
+    });
+    if (res.ok) { dirty = false; updateStatus(true, text.length); }
+}
+
+async function analyzeText() {
+    const text = getPlainText();
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/analyze`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text})
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    currentWarnings = data.warnings;
+    renderWarnings(currentWarnings);
+}
+
+async function resetText() {
+    if (!confirm('Khôi phục text về bản gốc?')) return;
+    pushUndo(getPlainText());
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/reset`, {method:'POST'});
+    if (!res.ok) return;
+    const data = await res.json();
+    currentWarnings = [];
+    renderEditor(data.text, []);
+    dirty = false;
+    updateStatus(false, data.text.length);
+    renderWarnings([]);
+}
+
+function findInEditor() {
+    const query = document.getElementById('searchInput').value;
+    if (!query) return;
+    const isRegex = document.getElementById('regexToggle').checked;
+    const text = getPlainText();
+    let re;
+    try { re = isRegex ? new RegExp(query, 'gi') : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); } catch(e) { return; }
+    const matches = [...text.matchAll(re)];
+    if (!matches.length) { alert('Không tìm thấy'); return; }
+    clearHighlights();
+    let result = '', last = 0;
+    for (const m of matches) {
+        result += esc(text.slice(last, m.index));
+        result += `<mark class="ts-highlight">${esc(m[0])}</mark>`;
+        last = m.index + m[0].length;
+    }
+    result += esc(text.slice(last));
+    editor.innerHTML = result;
+    findMatches = [...editor.querySelectorAll('.ts-highlight')];
+    findIndex = 0;
+    highlightCurrent();
+}
+
+function findNext() {
+    if (!findMatches.length) { findInEditor(); return; }
+    findIndex = (findIndex + 1) % findMatches.length;
+    highlightCurrent();
+}
+
+function findPrev() {
+    if (!findMatches.length) { findInEditor(); return; }
+    findIndex = (findIndex - 1 + findMatches.length) % findMatches.length;
+    highlightCurrent();
+}
+
+function highlightCurrent() {
+    findMatches.forEach((m,i) => { m.style.background = i === findIndex ? '#f59e0b' : 'rgba(245,158,11,.35)'; });
+    if (findMatches[findIndex]) findMatches[findIndex].scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+function clearHighlights() {
+    findMatches = [];
+    findIndex = -1;
+    editor.querySelectorAll('.ts-highlight').forEach(m => {
+        const parent = m.parentNode;
+        parent.replaceChild(document.createTextNode(m.textContent), m);
+        parent.normalize();
+    });
+}
+
+async function doReplace() {
+    const search = document.getElementById('searchInput').value;
+    const replace = document.getElementById('replaceInput').value;
+    const isRegex = document.getElementById('regexToggle').checked;
+    if (!search) return;
+    pushUndo(getPlainText());
+    const text = getPlainText();
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/replace`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({search, replace, is_regex: isRegex})
+    });
+    if (!res.ok) { const e = await res.json(); alert(e.detail || 'Lỗi'); return; }
+    const data = await res.json();
+    currentWarnings = [];
+    renderEditor(data.text, []);
+    dirty = false;
+    updateStatus(true, data.text.length);
+    if (data.replacements > 0) alert(`Đã thay ${data.replacements} chỗ`);
+}
+
+async function applyWarning(id, action) {
+    await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/apply-warning`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({warning_id: id, action})
+    });
+    const el = document.querySelector(`.ts-warning-item[data-id="${id}"]`);
+    if (el) {
+        const actions = el.querySelector('.actions');
+        actions.innerHTML = action === 'accept' ? '<span style="color:#22c55e">✓</span>' : '<span style="color:var(--text-muted)">✕</span>';
+    }
+    const span = editor.querySelector(`[data-warn-id="${id}"]`);
+    if (span && action === 'accept') {
+        span.classList.remove('spell-err','junk-char','fx-marker');
+        span.removeAttribute('data-warn-id');
+    }
+}
+
+async function deleteEffect(id) {
+    if (!confirm('Xóa hiệu ứng này?')) return;
+    await fetch(`/books/${bookId}/text-studio/effects/${id}/delete`, {method:'POST'});
+    location.reload();
+}
+
+function loadMedia(patchId) {
+    const panel = document.getElementById('mediaPreview');
+    const audio = document.getElementById('patchAudio');
+    const video = document.getElementById('patchVideo');
+    const audioWrap = document.getElementById('patchAudioWrap');
+    const videoWrap = document.getElementById('patchVideoWrap');
+    const ts = Date.now();
+    audio.src = `/books/${bookId}/text-studio/patches/${patchId}/audio?t=${ts}`;
+    audioWrap.style.display = '';
+    video.src = `/books/${bookId}/text-studio/patches/${patchId}/video?t=${ts}`;
+    video.load();
+    video.onloadeddata = () => { videoWrap.style.display = ''; };
+    video.onerror = () => { videoWrap.style.display = 'none'; };
+    audio.onloadeddata = () => { panel.style.display = ''; };
+    audio.onerror = () => { panel.style.display = 'none'; };
+}
+
+function updateStatus(edited, len) {
+    const el = document.getElementById('statusLine');
+    el.innerHTML = edited ? `<span class="edited">Đã chỉnh sửa</span> · ${len} ký tự` : `Bản gốc · ${len} ký tự`;
+}
+
+function renderWarnings(warnings) {
+    let spell=0, junk=0, fx=0, sound=0;
+    warnings.forEach(w => {
+        if (w.kind.startsWith('spell')) spell++;
+        else if (w.kind === 'junk') junk++;
+        else if (w.kind === 'effect_marker') fx++;
+        else if (w.kind === 'sound_desc') sound++;
+    });
+    document.getElementById('sumSpell').textContent = spell;
+    document.getElementById('sumJunk').textContent = junk;
+    document.getElementById('sumFx').textContent = fx;
+    document.getElementById('sumSound').textContent = sound;
+    document.getElementById('analyzeHint').style.display = warnings.length ? 'none' : '';
+
+    const panel = document.getElementById('warningsList');
+    if (!warnings.length) { panel.innerHTML = ''; return; }
+    panel.innerHTML = warnings.map(w => `
+        <div class="ts-warning-item ${w.kind}" data-id="${w.id}" onclick="scrollToWarn(${w.id})">
+            <span><code>${esc(w.original.slice(0,30))}</code>${w.suggestion ? ' → <code>'+esc(w.suggestion.slice(0,30))+'</code>' : ''}</span>
+            <span class="actions">
+                ${w.accepted === 0 ? `<button class="btn-outline btn-sm" onclick="event.stopPropagation();applyWarning(${w.id},'accept')">✓</button><button class="btn-outline btn-sm" onclick="event.stopPropagation();applyWarning(${w.id},'dismiss')">✕</button>` : w.accepted === 1 ? '<span style="color:#22c55e">✓</span>' : '<span style="color:var(--text-muted)">✕</span>'}
+            </span>
+        </div>`).join('');
+}
+
+function scrollToWarn(id) {
+    const span = editor.querySelector(`[data-warn-id="${id}"]`);
+    if (span) { span.scrollIntoView({behavior:'smooth',block:'center'}); span.style.outline='2px solid var(--color-primary,#3b82f6)'; setTimeout(()=>span.style.outline='',1500); }
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+document.getElementById('fxForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const res = await fetch(`/books/${bookId}/text-studio/effects`, {method:'POST', body: fd});
+    if (res.ok) location.reload();
+});
+
+function filterFx() {
+    const q = document.getElementById('fxSearch').value.toLowerCase();
+    document.querySelectorAll('#fxList .ts-fx-item').forEach(el => {
+        const marker = el.dataset.marker || '';
+        const desc = el.dataset.desc || '';
+        el.classList.toggle('hidden', q && !marker.includes(q) && !desc.includes(q));
+    });
+}
+
+function insertFx(marker) {
+    editor.focus();
+    pushUndo(getPlainText());
+    document.execCommand('insertText', false, marker);
+    dirty = true;
+}
+
+async function saveNorm() {
+    const form = document.getElementById('normForm');
+    const fd = new FormData(form);
+    const res = await fetch(`/books/${bookId}/normalization`, {method:'POST', body: fd});
+    if (res.ok) {
+        document.getElementById('settingsModal').close();
+        alert('Đã lưu cài đặt. Nhấn "Phân tích" lại để áp dụng.');
+    }
+}
+
+async function applyNormToEditor() {
+    const text = getPlainText();
+    const form = document.getElementById('normForm');
+    const fd = new FormData(form);
+    fd.append('text', text);
+    const res = await fetch(`/books/${bookId}/text-studio/normalize-preview`, {method:'POST', body: fd});
+    if (!res.ok) return;
+    const data = await res.json();
+    pushUndo(text);
+    editor.textContent = data.text;
+    dirty = true;
+    updateStatus(true, data.text.length);
+    document.getElementById('settingsModal').close();
+}
+
+{% if patch %}loadPatch({{ patch.id }});{% endif %}
+</script>
+{% endblock %}

@@ -190,6 +190,31 @@ CREATE TABLE IF NOT EXISTS music (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS patch_warning (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    patch_id        INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    position        INTEGER NOT NULL,
+    length          INTEGER NOT NULL,
+    original        TEXT NOT NULL,
+    suggestion      TEXT NOT NULL DEFAULT '',
+    accepted        INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_patch_warning_patch ON patch_warning(patch_id, kind);
+
+CREATE TABLE IF NOT EXISTS sound_effect (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER REFERENCES book(id) ON DELETE CASCADE,
+    marker          TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sound_effect_book ON sound_effect(book_id);
+
 CREATE TABLE IF NOT EXISTS patch_export (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     patch_id                INTEGER NOT NULL REFERENCES patch(id) ON DELETE CASCADE,
@@ -267,6 +292,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE book ADD COLUMN default_image_animation TEXT NOT NULL DEFAULT 'none'")
     if "max_chars" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN max_chars INTEGER")
+    if "clean_text" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN clean_text TEXT")
+    if "clean_text_hash" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN clean_text_hash TEXT")
+    if "text_fingerprint" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN text_fingerprint TEXT")
     if "normalize_numbers_enabled" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1")
     if "normalize_junk_enabled" not in existing:

@@ -12,7 +12,7 @@ from app.audio_merge import cleanup_chunk_dir
 from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
-from app.normalization import NormalizationOptions, normalize_text
+from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -878,6 +878,7 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
                 t = ch.title + ".\n\n" + suffix
         texts.append(t)
     raw = "\n\n".join(texts)
+    raw = normalize_chapter_titles(raw)
 
     book = get_book(conn, patch.book_id)
     if book is not None:
@@ -1678,4 +1679,99 @@ def rename_voice_meta(conn: sqlite3.Connection, old_filename: str, new_filename:
 
 def delete_voice_meta(conn: sqlite3.Connection, filename: str) -> None:
     conn.execute("DELETE FROM voice_meta WHERE filename = ?", (filename,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Text Studio: patch clean text
+# ---------------------------------------------------------------------------
+
+
+def get_effective_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
+    """Return clean_text if set, otherwise derived text."""
+    if patch.clean_text:
+        return patch.clean_text
+    return build_patch_text(conn, patch)
+
+
+def save_patch_clean_text(conn: sqlite3.Connection, patch_id: int, text: str) -> None:
+    from app.text_analysis import text_hash
+    h = text_hash(text)
+    conn.execute(
+        "UPDATE patch SET clean_text = ?, clean_text_hash = ?, updated_at = ? WHERE id = ?",
+        (text, h, _now(), patch_id),
+    )
+    conn.commit()
+
+
+def reset_patch_clean_text(conn: sqlite3.Connection, patch_id: int) -> None:
+    conn.execute(
+        "UPDATE patch SET clean_text = NULL, clean_text_hash = NULL, text_fingerprint = NULL, updated_at = ? WHERE id = ?",
+        (_now(), patch_id),
+    )
+    conn.execute("DELETE FROM patch_warning WHERE patch_id = ?", (patch_id,))
+    conn.commit()
+
+
+def list_patch_warnings(conn: sqlite3.Connection, patch_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM patch_warning WHERE patch_id = ? ORDER BY position", (patch_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_patch_warnings(conn: sqlite3.Connection, patch_id: int, warnings: list[dict]) -> None:
+    conn.execute("DELETE FROM patch_warning WHERE patch_id = ?", (patch_id,))
+    now = _now()
+    conn.executemany(
+        """INSERT INTO patch_warning (patch_id, kind, position, length, original, suggestion, accepted, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+        [(patch_id, w["kind"], w["position"], w["length"], w["original"], w.get("suggestion", ""), now) for w in warnings],
+    )
+    conn.commit()
+
+
+def update_patch_warning_status(conn: sqlite3.Connection, warning_id: int, accepted: int) -> None:
+    conn.execute("UPDATE patch_warning SET accepted = ? WHERE id = ?", (accepted, warning_id))
+    conn.commit()
+
+
+def list_sound_effects(conn: sqlite3.Connection, book_id: int | None = None) -> list[dict]:
+    """List effects: global (book_id IS NULL) + book-specific, or just global if book_id is None."""
+    if book_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM sound_effect WHERE book_id IS NULL OR book_id = ? ORDER BY marker", (book_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM sound_effect WHERE book_id IS NULL ORDER BY marker"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_sound_effect(conn: sqlite3.Connection, effect_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM sound_effect WHERE id = ?", (effect_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_sound_effect(conn: sqlite3.Connection, book_id: int | None, marker: str, file_path: str, description: str = "") -> int:
+    now = _now()
+    cur = conn.execute(
+        "INSERT INTO sound_effect (book_id, marker, file_path, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        (book_id, marker, file_path, description, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_sound_effect(conn: sqlite3.Connection, effect_id: int, marker: str, description: str) -> None:
+    conn.execute(
+        "UPDATE sound_effect SET marker = ?, description = ? WHERE id = ?",
+        (marker, description, effect_id),
+    )
+    conn.commit()
+
+
+def delete_sound_effect(conn: sqlite3.Connection, effect_id: int) -> None:
+    conn.execute("DELETE FROM sound_effect WHERE id = ?", (effect_id,))
     conn.commit()
