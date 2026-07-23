@@ -405,7 +405,8 @@ class PatchWorker:
                     with self.db_lock:
                         book = repository.get_book(self.conn, job.book_id)
                     if book:
-                        yt_info = repository.build_youtube_description(self.conn, job.book_id)
+                        with self.db_lock:
+                            yt_info = repository.build_youtube_description(self.conn, job.book_id)
                         tags = yt_info["tags"]
                         with self.db_lock:
                             upload_id = youtube.enqueue_upload(
