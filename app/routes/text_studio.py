@@ -5,6 +5,7 @@ import asyncio
 import io
 import logging
 import re
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +95,54 @@ def _mix_effects(wav_bytes: bytes, text: str, conn) -> bytes:
     out_buf = io.BytesIO()
     sf.write(out_buf, mixed, tts_sr, format="WAV")
     return out_buf.getvalue()
+
+
+def _light_synthesize_patch(
+    patch_id: int,
+    book_id: int,
+    backend: str,
+    voice: str | None,
+    with_effects: bool,
+    conn,
+    db_lock: threading.Lock,
+) -> str:
+    """Synthesize a patch using LightTTS, chunk-by-chunk. Returns audio_path."""
+    from app.chunker import split_into_tts_chunks
+    from app import audio_merge, repository
+
+    with db_lock:
+        patch = repository.get_patch(conn, patch_id)
+        text = repository.get_effective_patch_text(conn, patch)
+
+    chunks = split_into_tts_chunks(text, max_chars=patch.max_chars or settings.tts_max_chars)
+
+    engine = LightTTSEngine(backend=backend, voice=voice)
+
+    book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+    book_dir.mkdir(parents=True, exist_ok=True)
+    chunk_dir = book_dir / f"{patch_id}_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_paths = []
+    for i, chunk_text in enumerate(chunks):
+        wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text)
+        chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
+        chunk_path.write_bytes(wav_bytes)
+        chunk_paths.append(str(chunk_path))
+
+    audio_path = str(book_dir / f"{patch_id}.wav")
+    audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+
+    if with_effects:
+        merged = Path(audio_path).read_bytes()
+        with db_lock:
+            mixed = _mix_effects(merged, text, conn)
+        Path(audio_path).write_bytes(mixed)
+
+    with db_lock:
+        repository.mark_patch_done(conn, patch_id, audio_path)
+
+    return audio_path
 
 
 @router.get("/books/{book_id}/text-studio", response_class=HTMLResponse)
@@ -348,3 +397,32 @@ async def preview_patch(request: Request, book_id: int, patch_id: int):
             wav_bytes = _mix_effects(wav_bytes, text, conn)
 
     return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/light-tts-generate")
+async def light_tts_generate(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    backend = body.get("backend") or settings.light_tts_backend
+    voice = body.get("voice") or settings.light_tts_voice
+    with_effects = bool(body.get("with_effects", False))
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        if patch.status == "processing":
+            raise HTTPException(status_code=409, detail="patch is currently processing")
+
+    db_lock = request.app.state.db_lock
+    conn = request.app.state.conn
+
+    try:
+        audio_path = await asyncio.to_thread(
+            _light_synthesize_patch,
+            patch_id, book_id, backend, voice, with_effects, conn, db_lock,
+        )
+    except Exception as exc:
+        logger.exception("light_tts_generate failed for patch %s", patch_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return JSONResponse({"status": "done", "patch_id": patch_id, "audio_path": audio_path})
