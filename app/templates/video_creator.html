@@ -117,6 +117,63 @@
         </div>
     </div>
 
+    <!-- FFmpeg config (batch-wide) -->
+    <div class="card">
+        <div class="card-header">
+            <h3 style="margin:0">Cấu hình FFmpeg (áp dụng cho cả lô)</h3>
+        </div>
+        <div class="form-grid">
+            <div class="form-group">
+                <label for="cfg-resolution">Resolution</label>
+                <select id="cfg-resolution">
+                    <option value="1920x1080">1920x1080 (Full HD)</option>
+                    <option value="1280x720" selected>1280x720 (HD)</option>
+                    <option value="854x480">854x480 (SD)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-fps">FPS</label>
+                <select id="cfg-fps">
+                    <option value="24">24</option>
+                    <option value="30" selected>30</option>
+                    <option value="60">60</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-codec">Codec</label>
+                <select id="cfg-codec">
+                    <option value="libx264" selected>libx264 (CPU)</option>
+                    <option value="h264_nvenc">h264_nvenc (NVIDIA)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-audio-bitrate">Audio bitrate</label>
+                <select id="cfg-audio-bitrate">
+                    <option value="128k">128k</option>
+                    <option value="192k">192k</option>
+                    <option value="256k">256k</option>
+                    <option value="320k" selected>320k</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-image-type">Animation (chỉ áp dụng cho ảnh tĩnh)</label>
+                <select id="cfg-image-type">
+                    <option value="none" selected>Static</option>
+                    <option value="zoom-in">Zoom In (Ken Burns)</option>
+                    <option value="zoom-out">Zoom Out (Ken Burns)</option>
+                    <option value="pan-left">Pan Left</option>
+                    <option value="pan-right">Pan Right</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-crf">CRF (18 = nét, 28 = nhẹ): <span id="crf-val">23</span></label>
+                <input type="range" min="18" max="28" value="23" id="cfg-crf"
+                       oninput="document.getElementById('crf-val').textContent=this.value">
+            </div>
+        </div>
+        <p class="vc-help">Animation chỉ áp dụng cho background ảnh tĩnh; background video sẽ loop và bỏ qua animation.</p>
+    </div>
+
     <!-- Step 3: Shared publishing options -->
     <h3>3. Audio chào chung cho cả lô video</h3>
     <div class="card vc-greeting-card">

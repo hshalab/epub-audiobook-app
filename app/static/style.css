@@ -1244,8 +1244,22 @@ section {
   background: var(--bg-input);
 }
 
-.bg-preview-img.empty { 
-  display: none; 
+.bg-preview-img.empty {
+  display: none;
+}
+
+.bg-preview-video {
+  display: block;
+  width: 120px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+}
+
+.bg-preview-video.empty {
+  display: none;
 }
 
 .bg-preview-name {
@@ -1628,6 +1642,7 @@ section {
   .col-bg { min-width: 200px; }
   .col-preview { width: 110px; }
   .bg-preview-img { width: 96px; height: 54px; }
+  .bg-preview-video { width: 96px; height: 54px; }
 }
 
 @media (max-width: 480px) {

@@ -723,6 +723,12 @@
             max_concurrent: parseInt(document.getElementById('cfg-concurrent').value) || 3,
             music_id: musicSel.value ? parseInt(musicSel.value) : null,
             music_volume: parseInt(document.getElementById('cfg-music-volume').value),
+            resolution: document.getElementById('cfg-resolution').value,
+            fps: parseInt(document.getElementById('cfg-fps').value) || 30,
+            codec: document.getElementById('cfg-codec').value,
+            audio_bitrate: document.getElementById('cfg-audio-bitrate').value,
+            image_type: document.getElementById('cfg-image-type').value,
+            crf: parseInt(document.getElementById('cfg-crf').value) || 23,
         };
 
         const btn = this;
