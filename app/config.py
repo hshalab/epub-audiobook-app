@@ -51,5 +51,9 @@ class Settings(BaseSettings):
     # Maximum music file size in MB for uploads to the music library.
     music_max_size_mb: int = 20
 
+    # Lightweight TTS preview
+    light_tts_backend: str = "edge-tts"
+    light_tts_voice: str = "vi-VN-HoaiMyNeural"
+
 
 settings = Settings()

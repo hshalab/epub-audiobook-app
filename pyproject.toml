@@ -29,6 +29,9 @@ dependencies = [
 tts = [
     "voxcpm",
 ]
+light-tts = [
+    "edge-tts>=7.0",
+]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
