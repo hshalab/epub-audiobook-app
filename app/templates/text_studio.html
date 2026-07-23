@@ -63,6 +63,14 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
 .ts-fx-btns{display:flex;gap:4px;flex-shrink:0}
 .ts-warnings.panel-hidden{display:none}
 .ts-warnings-header-btns{display:flex;align-items:center;gap:4px}
+.ts-para-preview{position:absolute;left:-28px;top:2px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:3px;opacity:0;transition:opacity .15s;line-height:1}
+.ts-para-preview:hover{color:var(--color-primary,#3b82f6);background:var(--border-color)}
+.ts-para-preview.loading{opacity:1;animation:ts-pulse .8s infinite}
+@keyframes ts-pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.ts-inline-audio{margin:var(--space-xs) 0 var(--space-xs) 24px;display:block}
+.ts-tts-select{padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm)}
+.ts-editor-area .ts-para{position:relative}
+.ts-editor-area .ts-para:hover .ts-para-preview{opacity:1}
 .mobile-nav{display:none}
 @media(max-width:960px){
 .ts-layout{flex-direction:column;height:auto;min-height:auto}
@@ -89,6 +97,12 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
         <button type="button" class="btn-outline btn-sm" onclick="this.closest('dialog').close()">Đóng</button>
     </div>
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">Cấu hình cách văn bản được tiền xử lý trước khi tổng hợp giọng nói.</p>
+    <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
+        <label style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">TTS Backend:</label>
+        <select id="ttsBackendSelect" class="ts-tts-select" style="flex:1">
+            <option value="">Đang tải...</option>
+        </select>
+    </div>
     <form id="normForm" style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
         <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
             <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
@@ -148,6 +162,8 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
             <button class="btn-primary btn-sm" onclick="saveText()">Lưu</button>
             <button class="btn-outline btn-sm" onclick="analyzeText()">Phân tích</button>
             <button class="btn-outline btn-sm" onclick="resetText()">↩ Bản gốc</button>
+            <button class="btn-outline btn-sm" id="btnPreviewPatch" onclick="previewPatch()">🔊 Preview nhanh</button>
+            <label style="font-size:var(--font-size-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="fxToggle"> FX</label>
             <div class="ts-status" id="statusLine">
                 {% if patch and patch.clean_text %}<span class="edited">Đã chỉnh sửa</span>{% else %}Bản gốc{% endif %}
                 &middot; {{ clean_text|length if clean_text else 0 }} ký tự
@@ -261,7 +277,13 @@ function pushUndo(text) {
 
 function getPlainText() { return editor.innerText.replace(/\u00A0/g, ' '); }
 
-editor.addEventListener('input', () => { dirty = true; });
+let _autoSaveTimer = null;
+
+editor.addEventListener('input', () => {
+    dirty = true;
+    clearTimeout(_autoSaveTimer);
+    _autoSaveTimer = setTimeout(autoSave, 3000);
+});
 editor.addEventListener('paste', e => {
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData('text/plain');
@@ -270,24 +292,10 @@ editor.addEventListener('paste', e => {
 });
 
 document.addEventListener('keydown', e => {
-    if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        if (undoStack.length) {
-            redoStack.push(getPlainText());
-            const text = undoStack.pop();
-            editor.textContent = text;
-            dirty = true;
-            updateStatus(true, text.length);
-        }
-    } else if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
-        e.preventDefault();
-        if (redoStack.length) {
-            pushUndo(getPlainText());
-            const text = redoStack.pop();
-            editor.textContent = text;
-            dirty = true;
-            updateStatus(true, text.length);
-        }
+        clearTimeout(_autoSaveTimer);
+        saveText();
     }
 });
 
@@ -319,17 +327,51 @@ function navPatch(dir) {
 }
 
 function renderEditor(text, warnings) {
-    if (!warnings.length) { editor.textContent = text; return; }
+    // Split into paragraphs and wrap each with preview button
+    const paragraphs = text.split(/\n\n+/);
+    if (!warnings.length) {
+        editor.innerHTML = paragraphs.map((p, i) =>
+            `<div class="ts-para" data-para="${i}"><button class="ts-para-preview" onclick="event.stopPropagation();previewParagraph(this.parentElement)" title="Preview đoạn này">▶</button>${esc(p) || '<br>'}</div>`
+        ).join('');
+        return;
+    }
     const sorted = [...warnings].sort((a,b) => a.position - b.position);
-    let html = '', pos = 0;
+    let html = '', pos = 0, paraIdx = 0;
+    let paraStarts = [0];
+    for (let i = 0; i < text.length; i++) { if (text[i] === '\n' && text[i+1] === '\n') { paraStarts.push(i + 2); } }
+
+    function wrapPara(paraText, paraIndex) {
+        return `<div class="ts-para" data-para="${paraIndex}"><button class="ts-para-preview" onclick="event.stopPropagation();previewParagraph(this.parentElement)" title="Preview đoạn này">▶</button>${paraText || '<br>'}</div>`;
+    }
+
+    // Build with warning highlights, grouping by paragraph
+    let currentPara = 0;
+    let paraHtml = '';
     for (const w of sorted) {
-        if (w.position > pos) html += esc(text.slice(pos, w.position));
+        // Find which paragraph this warning belongs to
+        while (currentPara < paraStarts.length - 1 && paraStarts[currentPara + 1] <= w.position) {
+            // Close current paragraph
+            if (pos < paraStarts[currentPara + 1]) paraHtml += esc(text.slice(pos, paraStarts[currentPara + 1]));
+            html += wrapPara(paraHtml, currentPara);
+            paraHtml = '';
+            currentPara++;
+            pos = paraStarts[currentPara] || pos;
+        }
+        if (w.position > pos) paraHtml += esc(text.slice(pos, w.position));
         const chunk = text.slice(w.position, w.position + w.length);
         const cls = w.kind === 'effect_marker' ? 'fx-marker' : w.kind === 'junk' ? 'junk-char' : w.kind === 'sound_desc' ? 'sound-desc' : 'spell-err';
-        html += `<span class="${cls}" data-warn-id="${w.id}" title="${esc(w.kind)}: ${esc(w.original)}">${esc(chunk)}</span>`;
+        paraHtml += `<span class="${cls}" data-warn-id="${w.id}" title="${esc(w.kind)}: ${esc(w.original)}">${esc(chunk)}</span>`;
         pos = w.position + w.length;
     }
-    if (pos < text.length) html += esc(text.slice(pos));
+    // Close remaining paragraphs
+    while (currentPara < paraStarts.length) {
+        const paraEnd = currentPara < paraStarts.length - 1 ? paraStarts[currentPara + 1] : text.length;
+        if (pos < paraEnd) paraHtml += esc(text.slice(pos, paraEnd));
+        html += wrapPara(paraHtml, currentPara);
+        paraHtml = '';
+        currentPara++;
+        pos = paraStarts[currentPara] || paraEnd;
+    }
     editor.innerHTML = html;
 }
 
@@ -340,6 +382,24 @@ async function saveText() {
         body: JSON.stringify({text})
     });
     if (res.ok) { dirty = false; updateStatus(true, text.length); }
+}
+
+async function autoSave() {
+    if (!dirty || !currentPatchId) return;
+    const el = document.getElementById('statusLine');
+    const prev = el.innerHTML;
+    el.innerHTML = '<span style="color:var(--text-muted)">Đang lưu...</span>';
+    const text = getPlainText();
+    const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text})
+    });
+    if (res.ok) {
+        dirty = false;
+        el.innerHTML = `<span class="edited">Đã lưu tự động</span> · ${text.length} ký tự`;
+    } else {
+        el.innerHTML = prev;
+    }
 }
 
 async function analyzeText() {
@@ -602,8 +662,88 @@ async function applyNormToEditor() {
     document.getElementById('settingsModal').close();
 }
 
+function removeInlineAudio() {
+    document.querySelectorAll('.ts-inline-audio').forEach(el => el.remove());
+}
+
+function showInlineAudio(url, anchorEl) {
+    removeInlineAudio();
+    const audio = document.createElement('audio');
+    audio.className = 'ts-inline-audio';
+    audio.controls = true;
+    audio.preload = 'none';
+    audio.src = url;
+    audio.style.cssText = 'width:100%;max-width:400px;height:32px';
+    anchorEl.after(audio);
+    audio.play().catch(() => {});
+}
+
+async function previewParagraph(paraEl) {
+    if (!currentPatchId) return;
+    const btn = paraEl.querySelector('.ts-para-preview');
+    const text = paraEl.textContent.replace(/^▶/, '').trim();
+    if (!text) return;
+    btn.classList.add('loading');
+    removeInlineAudio();
+    try {
+        const backend = document.getElementById('ttsBackendSelect').value;
+        const withFx = document.getElementById('fxToggle').checked;
+        const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-paragraph`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ text, with_effects: withFx, backend: backend || undefined })
+        });
+        if (!res.ok) { alert('Lỗi preview'); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        showInlineAudio(url, paraEl);
+    } finally {
+        btn.classList.remove('loading');
+    }
+}
+
+async function previewPatch() {
+    if (!currentPatchId) return;
+    const btn = document.getElementById('btnPreviewPatch');
+    btn.disabled = true;
+    btn.textContent = 'Đang tạo...';
+    try {
+        const backend = document.getElementById('ttsBackendSelect').value;
+        const withFx = document.getElementById('fxToggle').checked;
+        const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-patch`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ with_effects: withFx, backend: backend || undefined })
+        });
+        if (!res.ok) { alert('Lỗi preview'); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = document.getElementById('patchAudio');
+        audio.src = url;
+        document.getElementById('mediaPreview').style.display = '';
+        audio.play().catch(() => {});
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔊 Preview nhanh';
+    }
+}
+
+async function loadLightTTSBackends() {
+    try {
+        const res = await fetch('/text-studio/light-tts/backends');
+        if (!res.ok) return;
+        const data = await res.json();
+        const select = document.getElementById('ttsBackendSelect');
+        const saved = localStorage.getItem('tts-backend');
+        select.innerHTML = (data.backends || []).map(b =>
+            `<option value="${esc(b.id)}" ${!b.available ? 'disabled' : ''} ${b.id === saved ? 'selected' : ''}>${esc(b.label)}${!b.available ? ' (unavailable)' : ''}</option>`
+        ).join('');
+        if (!select.value && select.options.length) select.selectedIndex = 0;
+        select.addEventListener('change', () => localStorage.setItem('tts-backend', select.value));
+    } catch(e) {}
+}
+
 {% if patch %}loadPatch({{ patch.id }});{% endif %}
 loadEffectLibrary();
+loadLightTTSBackends();
 
 const _panel = document.getElementById('warningsPanel');
 const _resizer = document.getElementById('tsResizer');
