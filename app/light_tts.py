@@ -14,10 +14,6 @@ _BACKENDS: dict[str, dict[str, Any]] = {
         "description": "Google Translate TTS (online, simple)",
         "default_voice": "vi",
     },
-    "kokoro": {
-        "description": "Kokoro ONNX (local CPU, ~100MB model)",
-        "default_voice": "vi",
-    },
     "piper": {
         "description": "Piper TTS (local CPU, Vietnamese support)",
         "default_voice": "vi_VN-vaisrex-medium",
@@ -37,11 +33,6 @@ def _check_backend(name: str) -> None:
             from gtts import gTTS  # noqa: F401
         except ImportError:
             raise RuntimeError("gTTS is not installed. pip install gTTS")
-    elif name == "kokoro":
-        try:
-            import kokoro_onnx  # noqa: F401
-        except ImportError:
-            raise RuntimeError("kokoro-onnx is not installed. pip install kokoro-onnx")
     elif name == "piper":
         try:
             import piper  # noqa: F401
@@ -78,18 +69,6 @@ def _gtts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     return _mp3_to_wav_bytes(mp3_bytes)
 
 
-def _kokoro_synthesize(text: str, voice: str) -> tuple[bytes, int]:
-    """Synthesize text via kokoro-onnx, return (wav_bytes, sample_rate)."""
-    import kokoro_onnx
-
-    model = kokoro_onnx.Kokoro("kokoro-v0_19.onnx", "voices.bin")
-    samples, sr = model.create(text, voice=voice)
-    wav_buf = io.BytesIO()
-    import soundfile as sf
-    sf.write(wav_buf, samples, sr, format="WAV")
-    return wav_buf.getvalue(), sr
-
-
 def _piper_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     """Synthesize text via piper-tts, return (wav_bytes, sample_rate)."""
     from piper import PiperVoice
@@ -120,7 +99,6 @@ def _mp3_to_wav_bytes(mp3_bytes: bytes) -> tuple[bytes, int]:
 _BACKEND_SYNTH: dict[str, Any] = {
     "edge-tts": _edge_tts_synthesize,
     "gtts": _gtts_synthesize,
-    "kokoro": _kokoro_synthesize,
     "piper": _piper_synthesize,
 }
 

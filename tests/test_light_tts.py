@@ -16,6 +16,13 @@ class TestLightTTSEngine:
         assert "edge-tts" in names
         assert "gtts" in names
 
+    def test_kokoro_removed(self):
+        from app.light_tts import _BACKENDS, _BACKEND_SYNTH
+
+        assert "kokoro" not in _BACKENDS
+        assert "kokoro" not in _BACKEND_SYNTH
+        assert set(_BACKENDS) == {"edge-tts", "gtts", "piper"}
+
     def test_synthesize_unavailable_backend(self):
         from app.light_tts import _check_backend
 
