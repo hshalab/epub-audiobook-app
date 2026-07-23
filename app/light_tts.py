@@ -20,6 +20,16 @@ _BACKENDS: dict[str, dict[str, Any]] = {
     },
 }
 
+_EDGE_VOICES_CACHE: list[dict[str, Any]] | None = None
+
+# Known rhasspy piper Vietnamese voices. The actual .onnx model is resolved from
+# settings.piper_voices_dir at synth time (see _resolve_piper_model).
+_PIPER_VOICES: list[dict[str, Any]] = [
+    {"id": "vi_VN-vais1000-medium", "label": "Tiếng Việt — vais1000 (medium)", "language": "vi"},
+    {"id": "vi_VN-vivos-x_low", "label": "Tiếng Việt — vivos (x_low)", "language": "vi"},
+    {"id": "vi_VN-25hours_single-low", "label": "Tiếng Việt — 25hours (low)", "language": "vi"},
+]
+
 
 def _check_backend(name: str) -> None:
     """Import-check a backend lazily; raise RuntimeError if missing."""
@@ -101,6 +111,65 @@ _BACKEND_SYNTH: dict[str, Any] = {
     "gtts": _gtts_synthesize,
     "piper": _piper_synthesize,
 }
+
+
+def _edge_list_voices_raw() -> list[dict[str, Any]]:
+    """Fetch the raw edge-tts voice list (network call)."""
+    import edge_tts
+
+    async def _run() -> list[dict[str, Any]]:
+        return await edge_tts.list_voices()
+
+    return asyncio.run(_run())
+
+
+def _gtts_langs() -> dict[str, str]:
+    from gtts.lang import tts_langs
+
+    return tts_langs()
+
+
+def _fallback_voice(backend: str) -> list[dict[str, Any]]:
+    dv = _BACKENDS[backend]["default_voice"]
+    return [{"id": dv, "label": dv, "language": ""}]
+
+
+def _edge_voices() -> list[dict[str, Any]]:
+    global _EDGE_VOICES_CACHE
+    if _EDGE_VOICES_CACHE is None:
+        raw = _edge_list_voices_raw()
+        voices = [
+            {
+                "id": v["ShortName"],
+                "label": f"{v['ShortName']} ({v.get('Gender', '')})",
+                "language": v.get("Locale", ""),
+            }
+            for v in raw
+        ]
+        # Vietnamese first, then by locale, then by id.
+        voices.sort(key=lambda v: (not v["language"].startswith("vi-VN"), v["language"], v["id"]))
+        _EDGE_VOICES_CACHE = voices
+    return _EDGE_VOICES_CACHE
+
+
+def list_voices(backend: str) -> list[dict[str, Any]]:
+    """Return selectable voices for a backend. Never raises for a known backend;
+    falls back to the backend's default_voice on any enumeration failure."""
+    try:
+        if backend == "edge-tts":
+            voices = _edge_voices()
+        elif backend == "gtts":
+            voices = [
+                {"id": code, "label": name, "language": code}
+                for code, name in sorted(_gtts_langs().items(), key=lambda kv: kv[1])
+            ]
+        elif backend == "piper":
+            voices = list(_PIPER_VOICES)
+        else:
+            return _fallback_voice(backend)
+        return voices or _fallback_voice(backend)
+    except Exception:
+        return _fallback_voice(backend)
 
 
 class LightTTSEngine:
