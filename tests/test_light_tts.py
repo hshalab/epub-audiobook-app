@@ -24,9 +24,10 @@ class TestLightTTSEngine:
         assert set(_BACKENDS) == {"edge-tts", "gtts", "piper"}
 
     def test_piper_voices_dir_setting_default(self):
-        from app.config import settings
+        # Assert the code-level default, independent of any local .env override.
+        from app.config import Settings
 
-        assert settings.piper_voices_dir == ""
+        assert Settings.model_fields["piper_voices_dir"].default == ""
 
     def test_synthesize_unavailable_backend(self):
         from app.light_tts import _check_backend

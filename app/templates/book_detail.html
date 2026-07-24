@@ -29,6 +29,7 @@
     {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
     <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
     <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
+    <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
     <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
 
@@ -68,6 +69,29 @@
             <a href="/books/{{ book.id }}/normalization/preview?chapter_index=0" target="_blank" class="btn-outline btn-sm">Xem thử chương 0</a>
         </div>
     </form>
+</dialog>
+
+<dialog id="light-tts-modal" class="book-modal">
+    <div class="card-header">
+        <h3 style="margin:0">Cài đặt LightTTS</h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Chọn model (backend) và giọng đọc dùng khi chạy LightTTS cho các patch bên dưới.
+        LightTTS tổng hợp <strong>theo từng đoạn/câu (chunk)</strong> chứ không chạy cả patch cùng một lúc —
+        nên nhanh và không bị lỗi kết nối với patch dài. Cài đặt được lưu lại trên trình duyệt.
+    </p>
+    <div class="form-group">
+        <label for="bookTtsBackend">Model / Backend</label>
+        <select id="bookTtsBackend"></select>
+    </div>
+    <div class="form-group">
+        <label for="bookTtsVoice">Giọng đọc</label>
+        <select id="bookTtsVoice"></select>
+    </div>
+    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
+        <input type="checkbox" id="bookTtsFx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
+    </label>
 </dialog>
 
 {% if last_error %}
@@ -530,6 +554,14 @@
 
 {% block scripts %}
 <script>
+// Global book id — the top-level LightTTS / description handlers below reference
+// it; the IIFEs keep their own shadowed copies.
+const BOOK_ID = {{ book.id }};
+
+// Patch ids currently being synthesized locally via LightTTS SSE. The status
+// poller skips these so its DB snapshot doesn't stomp live chunk progress.
+const LIGHT_TTS_ACTIVE = new Set();
+
 (function() {
     document.querySelectorAll('[data-open-dialog]').forEach(button => {
         button.addEventListener('click', () => document.getElementById(button.dataset.openDialog)?.showModal());
@@ -629,6 +661,10 @@
             if (bookBadge) bookBadge.innerHTML = badgeFor(data.book_status);
 
             for (const p of data.patches) {
+                // A local LightTTS stream owns this row's status/progress; don't
+                // overwrite it with the (still-pending) DB snapshot.
+                if (LIGHT_TTS_ACTIVE.has(p.id)) continue;
+
                 const el = document.getElementById(`patch-status-${p.id}`);
                 if (el) el.innerHTML = badgeFor(p.status);
 
@@ -647,7 +683,7 @@
                 }
             }
 
-            if (!data.has_active_patches && data.book_status !== 'processing') {
+            if (LIGHT_TTS_ACTIVE.size === 0 && !data.has_active_patches && data.book_status !== 'processing') {
                 window.location.reload();
                 return;
             }
@@ -1042,22 +1078,118 @@ document.getElementById('copy-yt-desc')?.addEventListener('click', async functio
     }
 });
 
+// --- LightTTS model settings (backend/voice) — shared with Text Studio via
+//     the same localStorage keys ('tts-backend', 'tts-voice:<backend>'). ---
+function _ttsEsc(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+
+async function loadBookVoicesForBackend(backend) {
+    const sel = document.getElementById('bookTtsVoice');
+    if (!sel) return;
+    if (!backend) { sel.innerHTML = ''; return; }
+    sel.innerHTML = '<option value="">Đang tải…</option>';
+    try {
+        const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(backend)}`);
+        if (!res.ok) { sel.innerHTML = ''; return; }
+        const data = await res.json();
+        const saved = localStorage.getItem('tts-voice:' + backend);
+        sel.innerHTML = (data.voices || []).map(v =>
+            `<option value="${_ttsEsc(v.id)}" ${v.id === saved ? 'selected' : ''}>${_ttsEsc(v.label)}</option>`
+        ).join('');
+        if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+    } catch (e) { sel.innerHTML = ''; }
+    sel.onchange = () => localStorage.setItem('tts-voice:' + backend, sel.value);
+}
+
+async function loadBookLightTTSBackends() {
+    const select = document.getElementById('bookTtsBackend');
+    if (!select) return;
+    try {
+        const res = await fetch('/text-studio/light-tts/backends');
+        if (res.ok) {
+            const data = await res.json();
+            const saved = localStorage.getItem('tts-backend');
+            select.innerHTML = (data.backends || []).map(b =>
+                `<option value="${_ttsEsc(b.id)}" ${!b.available ? 'disabled' : ''} ${b.id === saved ? 'selected' : ''}>${_ttsEsc(b.label)}${!b.available ? ' (chưa cài)' : ''}</option>`
+            ).join('');
+            if (!select.value && select.options.length) select.selectedIndex = 0;
+            select.onchange = () => {
+                localStorage.setItem('tts-backend', select.value);
+                loadBookVoicesForBackend(select.value);
+            };
+            await loadBookVoicesForBackend(select.value);
+        }
+    } catch (e) {}
+    const fx = document.getElementById('bookTtsFx');
+    if (fx) {
+        fx.checked = localStorage.getItem('tts-fx') === '1';
+        fx.onchange = () => localStorage.setItem('tts-fx', fx.checked ? '1' : '0');
+    }
+}
+loadBookLightTTSBackends();
+
+function currentTTSSettings() {
+    const backend = (document.getElementById('bookTtsBackend') || {}).value || '';
+    const voice = (document.getElementById('bookTtsVoice') || {}).value || '';
+    const withFx = !!((document.getElementById('bookTtsFx') || {}).checked);
+    return { backend, voice, withFx };
+}
+
+function setPatchProgress(patchId, done, total) {
+    const el = document.getElementById(`patch-progress-${patchId}`);
+    if (el) el.innerHTML = `<span class="chunk-progress"><span class="chunk-progress-text">${done}/${total}</span></span>`;
+}
+function setPatchStatus(patchId, html) {
+    const el = document.getElementById(`patch-status-${patchId}`);
+    if (el) el.innerHTML = html;
+}
+
+// Synthesize one patch chunk-by-chunk over SSE. The server streams a message per
+// chunk (so the connection never idles out on long patches) then merges + saves.
+// onChunk(done, total) reports progress. Resolves on 'done', rejects on 'error'.
+function streamLightTTS(patchId, onChunk) {
+    return new Promise((resolve, reject) => {
+        const { backend, voice, withFx } = currentTTSSettings();
+        const params = new URLSearchParams({
+            backend: backend || '', voice: voice || '', with_effects: withFx ? 1 : 0,
+        });
+        const url = `/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-stream?${params}`;
+        const es = new EventSource(url);
+        LIGHT_TTS_ACTIVE.add(patchId);
+        let finished = false;
+        const settle = (fn, arg) => { finished = true; es.close(); LIGHT_TTS_ACTIVE.delete(patchId); fn(arg); };
+        es.onmessage = (e) => {
+            let msg;
+            try { msg = JSON.parse(e.data); } catch { return; }
+            if (msg.type === 'chunk') {
+                if (onChunk) onChunk(msg.index + 1, msg.total);
+            } else if (msg.type === 'done') {
+                settle(resolve);
+            } else if (msg.type === 'error') {
+                settle(reject, new Error(msg.message || 'TTS lỗi'));
+            }
+        };
+        es.onerror = () => {
+            if (finished) return;   // normal close after 'done'/'error' already handled
+            settle(reject, new Error('Kết nối bị gián đoạn'));
+        };
+    });
+}
+
 async function runLightTTSPatch(patchId, btn) {
     const origText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '...';
+    btn.textContent = '0/…';
+    setPatchStatus(patchId, '<span class="badge badge-processing">Đang xử lý</span>');
     try {
-        const res = await fetch(`/books/${BOOK_ID}/patches/${patchId}/light-tts-generate`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({})
+        await streamLightTTS(patchId, (done, total) => {
+            btn.textContent = `${done}/${total}`;
+            setPatchProgress(patchId, done, total);
         });
-        const data = await res.json();
-        if (!res.ok) { alert('Lỗi: ' + (data.detail || res.status)); btn.disabled = false; btn.textContent = origText; return; }
-        const el = document.getElementById(`patch-status-${patchId}`);
-        if (el) el.innerHTML = '<span class="badge badge-done">Done</span>';
+        setPatchStatus(patchId, '<span class="badge badge-done">Hoàn tất</span>');
         btn.textContent = '✓ Done';
     } catch (e) {
-        alert('Lỗi kết nối');
+        setPatchStatus(patchId, '<span class="badge badge-failed">Thất bại</span>');
+        showToast('LightTTS lỗi: ' + (e.message || e), 'error');
         btn.disabled = false;
         btn.textContent = origText;
     }
@@ -1065,30 +1197,38 @@ async function runLightTTSPatch(patchId, btn) {
 
 async function runAllLightTTS() {
     const btn = document.getElementById('btnRunAllLightTTS');
-    btn.disabled = true;
     const origText = btn.textContent;
-    btn.textContent = 'Đang chạy...';
-    try {
-        const res = await fetch(`/books/${BOOK_ID}/light-tts-generate-all`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({})
-        });
-        const data = await res.json();
-        if (!res.ok) { alert('Lỗi: ' + (data.detail || res.status)); btn.disabled = false; btn.textContent = origText; return; }
-        let done = 0, errors = 0;
-        for (const r of (data.results || [])) {
-            if (r.status === 'done') {
-                done++;
-                const el = document.getElementById(`patch-status-${r.patch_id}`);
-                if (el) el.innerHTML = '<span class="badge badge-done">Done</span>';
-            } else if (r.status === 'error') { errors++; }
-        }
-        btn.textContent = `${done} done${errors ? ', ' + errors + ' lỗi' : ''}`;
-    } catch (e) {
-        alert('Lỗi kết nối');
-    } finally {
+    btn.disabled = true;
+
+    // Run selected patches if any are checked, else every non-processing patch.
+    const boxes = Array.from(document.querySelectorAll('.batch-patch-checkbox'));
+    const checked = boxes.filter(cb => cb.checked && !cb.disabled).map(cb => parseInt(cb.value, 10));
+    const patchIds = checked.length
+        ? checked
+        : boxes.filter(cb => !cb.disabled).map(cb => parseInt(cb.value, 10));
+
+    if (!patchIds.length) {
+        showToast('Không có patch nào để chạy.', 'error');
         btn.disabled = false;
+        return;
     }
+
+    let done = 0, errors = 0;
+    for (const pid of patchIds) {
+        btn.textContent = `Patch ${done + errors + 1}/${patchIds.length}…`;
+        setPatchStatus(pid, '<span class="badge badge-processing">Đang xử lý</span>');
+        try {
+            await streamLightTTS(pid, (c, t) => setPatchProgress(pid, c, t));
+            setPatchStatus(pid, '<span class="badge badge-done">Hoàn tất</span>');
+            done++;
+        } catch (e) {
+            setPatchStatus(pid, '<span class="badge badge-failed">Thất bại</span>');
+            errors++;
+        }
+    }
+    btn.textContent = `${done} xong${errors ? ', ' + errors + ' lỗi' : ''}`;
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = origText; }, 4000);
 }
 </script>
 {% endblock %}

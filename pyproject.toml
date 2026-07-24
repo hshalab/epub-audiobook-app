@@ -32,7 +32,6 @@ tts = [
 light-tts = [
     "edge-tts>=7.0",
     "gTTS>=2.5",
-    "kokoro-onnx>=0.4",
     "piper-tts>=1.2",
 ]
 dev = [

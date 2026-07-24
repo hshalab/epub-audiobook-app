@@ -15,7 +15,7 @@ data/*.log
 .env
 .env.local
 data/tmp/*
-data/videos
+data
 data/backgrounds
 data/voices
 data/music
