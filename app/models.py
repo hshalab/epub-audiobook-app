@@ -70,6 +70,7 @@ class Patch:
     image_type: str = "static"
     name: str = ""
     chunk_count: int = 0
+    chunk_count_exact: int = 0  # 1 once chunk_count is the real split count, not the estimate
     next_chunk_index: int = 0
     max_chars: int | None = None
     clean_text: str | None = None

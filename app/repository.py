@@ -195,11 +195,25 @@ def mark_patch_done(conn: sqlite3.Connection, patch_id: int, audio_path: str) ->
 
 
 def update_patch_chunk_count(conn: sqlite3.Connection, patch_id: int, chunk_count: int) -> None:
+    """Store the real (post-split) chunk count. All callers pass an actual
+    split length, so this also marks chunk_count as exact (no longer an estimate)."""
     conn.execute(
-        "UPDATE patch SET chunk_count = ?, updated_at = ? WHERE id = ?",
+        "UPDATE patch SET chunk_count = ?, chunk_count_exact = 1, updated_at = ? WHERE id = ?",
         (chunk_count, _now(), patch_id),
     )
     conn.commit()
+
+
+def list_stale_chunk_count_patch_ids(conn: sqlite3.Connection, book_id: int) -> list[int]:
+    """Patch ids whose stored chunk_count is still the fast estimate (not yet the
+    real split), skipping any currently processing. Ordered by patch_index."""
+    rows = conn.execute(
+        """SELECT id FROM patch
+           WHERE book_id = ? AND chunk_count_exact = 0 AND status != 'processing'
+           ORDER BY patch_index""",
+        (book_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
 
 
 def update_patch_chunk_progress(
@@ -231,7 +245,7 @@ def set_patch_max_chars(conn: sqlite3.Connection, patch_id: int, max_chars: int 
     ).fetchone()["c"]
     chunk_count = max(1, math.ceil(total_chars / effective))
     conn.execute(
-        "UPDATE patch SET max_chars = ?, chunk_count = ?, updated_at = ? WHERE id = ?",
+        "UPDATE patch SET max_chars = ?, chunk_count = ?, chunk_count_exact = 0, updated_at = ? WHERE id = ?",
         (max_chars, chunk_count, _now(), patch_id),
     )
     conn.commit()

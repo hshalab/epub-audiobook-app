@@ -89,9 +89,30 @@
         <label for="bookTtsVoice">Giọng đọc</label>
         <select id="bookTtsVoice"></select>
     </div>
+    <div class="form-group">
+        <label for="bookTtsMaxChars">Số ký tự tối đa mỗi chunk (max chars)</label>
+        <input type="number" id="bookTtsMaxChars" min="1" max="5000" step="1"
+               placeholder="Mặc định {{ default_max_chars }}">
+        <small style="color:var(--text-muted)">
+            Áp dụng cho cả sách khi chia đoạn/câu lúc chạy LightTTS. Để trống = dùng mặc định ({{ default_max_chars }}).
+            Chunk nhỏ hơn → ít lỗi hơn nhưng chậm hơn.
+        </small>
+    </div>
     <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
         <input type="checkbox" id="bookTtsFx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
     </label>
+</dialog>
+
+<dialog id="chunks-modal" class="book-modal">
+    <div class="card-header">
+        <h3 style="margin:0">Preview chunks — <span id="chunks-modal-title"></span></h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Nghe thử từng chunk bằng backend / giọng / max chars đang chọn trong
+        <strong>Cài đặt LightTTS</strong>. Chỉ nghe thử — không tổng hợp cả patch, không lưu.
+    </p>
+    <div id="chunks-modal-body"></div>
 </dialog>
 
 {% if last_error %}
@@ -103,6 +124,114 @@
     </div>
 {% endif %}
 
+{% if patches %}
+<div class="card book-panel" id="patches-card">
+    <div class="card-header">
+        <h3 style="margin:0">Patches ({{ patches|length }})</h3>
+    </div>
+    {# The table rows contain their own nested forms, so the batch form stays empty
+       and the checkboxes/buttons bind to it via the HTML5 form="" attribute. #}
+     <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
+                <th>Patch</th>
+                <th>Chapters</th>
+                <th>Progress</th>
+                <th>Status</th>
+                <th>Error</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for patch in patches %}
+            <tr>
+                <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
+                           form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
+                <td class="patch-name-cell">
+                    <strong>{{ patch.name or patch.patch_index }}</strong>
+                    {% if patch.status == "done" and patch.audio_path %}
+                    <br>
+                    <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>
+                    {% endif %}
+                </td>
+                <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
+                <td id="patch-progress-{{ patch.id }}">
+                    {% if patch.chunk_count > 0 %}
+                        <span class="chunk-progress">
+                            <span class="chunk-progress-text">{{ patch.next_chunk_index }}/{{ patch.chunk_count }}</span>
+                            {% if patch.status == 'processing' and patch.next_chunk_index > 0 %}
+                                <span class="badge badge-info" title="Worker is resuming this patch from the last persisted chunk after a restart">Resuming</span>
+                            {% endif %}
+                        </span>
+                    {% else %}
+                        <span style="color:var(--text-muted)">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td id="patch-status-{{ patch.id }}">
+                    {% if patch.status == 'done' %}
+                        <span class="badge badge-done">Hoàn tất</span>
+                    {% elif patch.status == 'processing' %}
+                        <span class="badge badge-processing">Đang xử lý</span>
+                    {% elif patch.status == 'failed' %}
+                        <span class="badge badge-failed">Thất bại</span>
+                    {% else %}
+                        <span class="badge badge-pending">{{ patch.status }}</span>
+                    {% endif %}
+                </td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
+                <td class="patch-actions">
+                    <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
+                    <button type="button" class="btn-outline btn-sm" onclick="openChunksModal({{ patch.id }})">&#9654; Chunks</button>
+                    {% if patch.status != "processing" %}
+                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
+                        <button type="submit" class="btn-outline btn-sm">Regenerate</button>
+                    </form>
+                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
+                          data-confirm="Xóa patch {{ patch.name or patch.patch_index }}? Các patch còn lại sẽ được đánh số lại.">
+                        <button type="submit" class="btn-danger btn-sm">Xóa {{ patch.name or patch.patch_index }}</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <p style="margin:0;color:var(--text-muted)">
+        No patches yet. Configure text replace rules above, then click <strong>Auto-build</strong> to create patches and start processing.
+    </p>
+</div>
+{% endif %}
+
+<div class="patch-bottom-nav" id="patch-bottom-nav">
+    <button type="button" class="btn-outline btn-sm" id="btnRunSelectedLightTTS" onclick="runAllLightTTS()">&#9654; Run Selected</button>
+    <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled
+            title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
+        Download selected (.zip)
+    </button>
+     {% if sync_targets %}
+     <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
+         <option value="">Chọn tài khoản Drive</option>
+         {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
+     </select>
+    <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
+            formaction="/books/{{ book.id }}/patches/export-batch"
+            title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
+         Export vào Drive Desktop
+    </button>
+    {% endif %}
+    <button type="button" class="btn-outline btn-sm" id="copy-yt-desc"
+            title="Copy YouTube description (music license + chapter list) to clipboard">
+        Copy Description
+    </button>
+</div>
+
 {% if book.final_audio_path %}
 <div class="card">
     <div class="card-header">
@@ -112,12 +241,6 @@
     <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">Final audio is ready for download.</p>
 </div>
 
-{% else %}
-<div class="card">
-    <p style="margin:0;color:var(--text-muted)">
-        Audio not finalized yet — waiting for all patches to complete.
-    </p>
-</div>
 {% endif %}
 
 <div class="card book-panel" id="studio-card">
@@ -135,6 +258,12 @@
         .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
         #drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
         #drag-rect:hover, #drag-rect.dragging { background:rgba(56,189,248,.22); }
+        .batch-patch-checkbox, #batch-select-all { transform:scale(2); margin:8px; }
+        .patch-name-cell { min-width:300px; }
+        .patch-name-cell .patch-audio-player { width:100%; margin-top:var(--space-xs); }
+        .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); flex-wrap:wrap; padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); }
+        .patch-bottom-nav.visible { display:flex; }
+        body.has-bottom-nav { padding-bottom:64px; }
     </style>
     <div class="card-header">
         <h3 style="margin:0">Studio — Preview &amp; chỉnh kết quả</h3>
@@ -425,7 +554,7 @@
         <h3 style="margin:0">Auto-build Patches</h3>
     </div>
     <form id="auto-build-form" class="auto-build-form">
-        <label>Start chapter <input type="number" name="start_chapter" min="0" required id="ab-start"></label>
+        <label>Start chapter <input type="number" name="start_chapter" min="0" value="0" required id="ab-start"></label>
         <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter" id="ab-end"></label>
         <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
         <button type="button" class="btn-outline" onclick="previewAutoBuild()">Preview</button>
@@ -443,113 +572,7 @@
     <p id="ab-error" style="display:none;color:var(--color-error);margin-top:var(--space-sm)"></p>
 </div>
 
-{% if patches %}
-<div class="card book-panel" id="patches-card">
-    <div class="card-header">
-        <h3 style="margin:0">Patches ({{ patches|length }})</h3>
-        <div style="display:flex;gap:var(--space-sm);align-items:center">
-            <button type="button" class="btn-outline btn-sm" id="btnRunAllLightTTS" onclick="runAllLightTTS()">▶ Run All LightTTS</button>
-            <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled
-                    title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
-                Download selected (.zip)
-            </button>
-             {% if sync_targets %}
-             <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
-                 <option value="">Chọn tài khoản Drive</option>
-                 {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
-             </select>
-            <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
-                    formaction="/books/{{ book.id }}/patches/export-batch"
-                    title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
-                 Export vào Drive Desktop
-            </button>
-            {% endif %}
-            <button type="button" class="btn-outline btn-sm" id="copy-yt-desc"
-                    title="Copy YouTube description (music license + chapter list) to clipboard">
-                Copy Description
-            </button>
-        </div>
-    </div>
-    {# The table rows contain their own nested forms, so the batch form stays empty
-       and the checkboxes/buttons bind to it via the HTML5 form="" attribute. #}
-     <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
-    <div class="table-wrap">
-    <table>
-        <thead>
-            <tr>
-                <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
-                <th>Patch</th>
-                <th>Chapters</th>
-                <th>Chunks</th>
-                <th>Progress</th>
-                <th>Status</th>
-                <th>Error</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for patch in patches %}
-            <tr>
-                <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
-                           form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
-                <td><strong>{{ patch.name or patch.patch_index }}</strong></td>
-                <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
-                <td>{{ patch.chunk_count }}</td>
-                <td id="patch-progress-{{ patch.id }}">
-                    {% if patch.chunk_count > 0 %}
-                        <span class="chunk-progress">
-                            <span class="chunk-progress-text">{{ patch.next_chunk_index }}/{{ patch.chunk_count }}</span>
-                            {% if patch.status == 'processing' and patch.next_chunk_index > 0 %}
-                                <span class="badge badge-info" title="Worker is resuming this patch from the last persisted chunk after a restart">Resuming</span>
-                            {% endif %}
-                        </span>
-                    {% else %}
-                        <span style="color:var(--text-muted)">&mdash;</span>
-                    {% endif %}
-                </td>
-                <td id="patch-status-{{ patch.id }}">
-                    {% if patch.status == 'done' %}
-                        <span class="badge badge-done">Hoàn tất</span>
-                    {% elif patch.status == 'processing' %}
-                        <span class="badge badge-processing">Đang xử lý</span>
-                    {% elif patch.status == 'failed' %}
-                        <span class="badge badge-failed">Thất bại</span>
-                    {% else %}
-                        <span class="badge badge-pending">{{ patch.status }}</span>
-                    {% endif %}
-                </td>
-                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
-                <td class="patch-actions">
-                    <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
-                    <a href="/books/{{ book.id }}/patches/{{ patch.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
-                    <button type="button" class="btn-outline btn-sm" onclick="runLightTTSPatch({{ patch.id }}, this)"
-                        {% if patch.status == 'processing' %}disabled{% endif %}>▶ LightTTS</button>
-                    {% if patch.status != "processing" %}
-                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
-                        <button type="submit" class="btn-outline btn-sm">Regenerate</button>
-                    </form>
-                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
-                          data-confirm="Xóa patch này? Các patch còn lại sẽ được đánh số lại.">
-                        <button type="submit" class="btn-danger btn-sm">Xóa</button>
-                    </form>
-                    {% endif %}
-                    {% if patch.status == "done" and patch.audio_path %}
-                        <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>
-                    {% endif %}
-                </td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</div>
-{% else %}
-<div class="card">
-    <p style="margin:0;color:var(--text-muted)">
-        No patches yet. Configure text replace rules above, then click <strong>Auto-build</strong> to create patches and start processing.
-    </p>
-</div>
-{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -592,6 +615,9 @@ const LIGHT_TTS_ACTIVE = new Set();
             const enabled = checkboxes.filter(cb => !cb.disabled);
             selectAll.checked = enabled.length > 0 && enabled.every(cb => cb.checked);
         }
+        const nav = document.getElementById('patch-bottom-nav');
+        if (nav) nav.classList.toggle('visible', anyChecked);
+        document.body.classList.toggle('has-bottom-nav', anyChecked);
     }
 
     if (selectAll) {
@@ -1124,6 +1150,15 @@ async function loadBookLightTTSBackends() {
         fx.checked = localStorage.getItem('tts-fx') === '1';
         fx.onchange = () => localStorage.setItem('tts-fx', fx.checked ? '1' : '0');
     }
+    const mc = document.getElementById('bookTtsMaxChars');
+    if (mc) {
+        mc.value = localStorage.getItem('tts-max-chars:' + BOOK_ID) || '';
+        mc.onchange = () => {
+            const v = parseInt(mc.value, 10);
+            if (v >= 1) localStorage.setItem('tts-max-chars:' + BOOK_ID, String(v));
+            else { mc.value = ''; localStorage.removeItem('tts-max-chars:' + BOOK_ID); }
+        };
+    }
 }
 loadBookLightTTSBackends();
 
@@ -1131,12 +1166,15 @@ function currentTTSSettings() {
     const backend = (document.getElementById('bookTtsBackend') || {}).value || '';
     const voice = (document.getElementById('bookTtsVoice') || {}).value || '';
     const withFx = !!((document.getElementById('bookTtsFx') || {}).checked);
-    return { backend, voice, withFx };
+    const maxChars = parseInt((document.getElementById('bookTtsMaxChars') || {}).value, 10);
+    return { backend, voice, withFx, maxChars: (maxChars >= 1 ? maxChars : 0) };
 }
 
-function setPatchProgress(patchId, done, total) {
+function setPatchProgress(patchId, done, total, failed) {
     const el = document.getElementById(`patch-progress-${patchId}`);
-    if (el) el.innerHTML = `<span class="chunk-progress"><span class="chunk-progress-text">${done}/${total}</span></span>`;
+    if (!el) return;
+    const failNote = failed ? ` <span class="badge badge-failed" title="chunk lỗi bị bỏ qua">${failed} lỗi</span>` : '';
+    el.innerHTML = `<span class="chunk-progress"><span class="chunk-progress-text">${done}/${total}</span>${failNote}</span>`;
 }
 function setPatchStatus(patchId, html) {
     const el = document.getElementById(`patch-status-${patchId}`);
@@ -1148,22 +1186,28 @@ function setPatchStatus(patchId, html) {
 // onChunk(done, total) reports progress. Resolves on 'done', rejects on 'error'.
 function streamLightTTS(patchId, onChunk) {
     return new Promise((resolve, reject) => {
-        const { backend, voice, withFx } = currentTTSSettings();
+        const { backend, voice, withFx, maxChars } = currentTTSSettings();
         const params = new URLSearchParams({
             backend: backend || '', voice: voice || '', with_effects: withFx ? 1 : 0,
         });
+        if (maxChars) params.set('max_chars', maxChars);
         const url = `/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-stream?${params}`;
         const es = new EventSource(url);
         LIGHT_TTS_ACTIVE.add(patchId);
         let finished = false;
+        let failed = 0;
         const settle = (fn, arg) => { finished = true; es.close(); LIGHT_TTS_ACTIVE.delete(patchId); fn(arg); };
         es.onmessage = (e) => {
             let msg;
             try { msg = JSON.parse(e.data); } catch { return; }
             if (msg.type === 'chunk') {
-                if (onChunk) onChunk(msg.index + 1, msg.total);
+                if (onChunk) onChunk(msg.index + 1, msg.total, failed);
+            } else if (msg.type === 'chunk_error') {
+                // Non-fatal: server skipped this chunk and keeps synthesizing.
+                failed++;
+                if (onChunk) onChunk(msg.index + 1, msg.total, failed);
             } else if (msg.type === 'done') {
-                settle(resolve);
+                settle(resolve, { ok: msg.ok, failed: (msg.failed != null ? msg.failed : failed) });
             } else if (msg.type === 'error') {
                 settle(reject, new Error(msg.message || 'TTS lỗi'));
             }
@@ -1181,12 +1225,14 @@ async function runLightTTSPatch(patchId, btn) {
     btn.textContent = '0/…';
     setPatchStatus(patchId, '<span class="badge badge-processing">Đang xử lý</span>');
     try {
-        await streamLightTTS(patchId, (done, total) => {
+        const res = await streamLightTTS(patchId, (done, total, failed) => {
             btn.textContent = `${done}/${total}`;
-            setPatchProgress(patchId, done, total);
+            setPatchProgress(patchId, done, total, failed);
         });
+        const failed = (res && res.failed) || 0;
         setPatchStatus(patchId, '<span class="badge badge-done">Hoàn tất</span>');
-        btn.textContent = '✓ Done';
+        btn.textContent = failed ? `✓ Done (${failed} lỗi)` : '✓ Done';
+        if (failed) showToast(`Patch đã lưu, bỏ qua ${failed} chunk lỗi`, 'error');
     } catch (e) {
         setPatchStatus(patchId, '<span class="badge badge-failed">Thất bại</span>');
         showToast('LightTTS lỗi: ' + (e.message || e), 'error');
@@ -1196,7 +1242,7 @@ async function runLightTTSPatch(patchId, btn) {
 }
 
 async function runAllLightTTS() {
-    const btn = document.getElementById('btnRunAllLightTTS');
+    const btn = document.getElementById('btnRunSelectedLightTTS');
     const origText = btn.textContent;
     btn.disabled = true;
 
@@ -1213,22 +1259,120 @@ async function runAllLightTTS() {
         return;
     }
 
-    let done = 0, errors = 0;
+    let done = 0, errors = 0, skipped = 0;
     for (const pid of patchIds) {
         btn.textContent = `Patch ${done + errors + 1}/${patchIds.length}…`;
         setPatchStatus(pid, '<span class="badge badge-processing">Đang xử lý</span>');
         try {
-            await streamLightTTS(pid, (c, t) => setPatchProgress(pid, c, t));
+            const res = await streamLightTTS(pid, (c, t, f) => setPatchProgress(pid, c, t, f));
             setPatchStatus(pid, '<span class="badge badge-done">Hoàn tất</span>');
+            skipped += (res && res.failed) || 0;
             done++;
         } catch (e) {
             setPatchStatus(pid, '<span class="badge badge-failed">Thất bại</span>');
             errors++;
         }
     }
-    btn.textContent = `${done} xong${errors ? ', ' + errors + ' lỗi' : ''}`;
+    let summary = `${done} xong`;
+    if (errors) summary += `, ${errors} lỗi`;
+    if (skipped) summary += `, bỏ qua ${skipped} chunk`;
+    btn.textContent = summary;
     btn.disabled = false;
     setTimeout(() => { btn.textContent = origText; }, 4000);
+}
+
+// --- Per-chunk preview: list a patch's chunks, play each on demand (no save) ---
+async function openChunksModal(patchId) {
+    const dlg = document.getElementById('chunks-modal');
+    const body = document.getElementById('chunks-modal-body');
+    document.getElementById('chunks-modal-title').textContent = 'Patch ' + patchId;
+    body.innerHTML = '<p style="color:var(--text-muted)">Đang tải danh sách chunk…</p>';
+    dlg.showModal();
+
+    const { maxChars } = currentTTSSettings();
+    const qs = maxChars ? ('?max_chars=' + maxChars) : '';
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/patches/${patchId}/chunk-texts${qs}`);
+        if (!res.ok) { body.innerHTML = '<p style="color:var(--color-error)">Không tải được danh sách chunk.</p>'; return; }
+        const data = await res.json();
+        if (!data.total) { body.innerHTML = '<p style="color:var(--text-muted)">Patch này không có chunk.</p>'; return; }
+        // With default config, the real count reconciles the table's estimate — reflect it.
+        if (!maxChars) syncPatchChunkCount(patchId, data.total);
+        renderChunkList(body, patchId, data);
+    } catch (e) {
+        body.innerHTML = '<p style="color:var(--color-error)">Lỗi kết nối.</p>';
+    }
+}
+
+// Update the patches table "Chunks" cell (col 4) to the reconciled real count.
+function syncPatchChunkCount(patchId, total) {
+    const progCell = document.getElementById('patch-progress-' + patchId);
+    const row = progCell && progCell.closest('tr');
+    const cell = row && row.querySelector('td:nth-child(4)');
+    if (cell) cell.textContent = total;
+}
+
+// On load, replace any estimated chunk counts in the table with the real split
+// count. One-time per patch server-side (persisted), so later loads are instant.
+async function reconcileChunkCounts() {
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/patches/reconcile-chunk-counts`, { method: 'POST' });
+        if (!res.ok) return;
+        const data = await res.json();
+        for (const p of (data.updated || [])) syncPatchChunkCount(p.id, p.chunk_count);
+    } catch (_) {}
+}
+{% if patches %}reconcileChunkCounts();{% endif %}
+
+function renderChunkList(body, patchId, data) {
+    const head = `<p style="margin:0 0 var(--space-sm) 0;font-size:var(--font-size-xs);color:var(--text-muted)">${data.total} chunk · tối đa ${data.max_chars} ký tự/chunk</p>`;
+    const rows = data.chunks.map(c => `
+        <div class="chunk-row" data-index="${c.index}" style="display:flex;gap:var(--space-sm);align-items:flex-start;padding:var(--space-sm) 0;border-bottom:1px solid var(--border-color)">
+            <button type="button" class="btn-outline btn-sm chunk-play" title="Nghe chunk này" style="flex:none">▶</button>
+            <div style="flex:1;min-width:0">
+                <div style="font-size:var(--font-size-xs);color:var(--text-muted)">#${c.index} · ${c.chars} ký tự</div>
+                <div style="white-space:pre-wrap;word-break:break-word">${_ttsEsc(c.text)}</div>
+                <div class="chunk-audio-slot"></div>
+            </div>
+        </div>`).join('');
+    body.innerHTML = head + `<div style="max-height:60vh;overflow:auto">${rows}</div>`;
+    body.querySelectorAll('.chunk-row').forEach(row => {
+        const idx = parseInt(row.dataset.index, 10);
+        row.querySelector('.chunk-play').addEventListener('click', function () {
+            playChunk(patchId, data.chunks[idx].text, this, row.querySelector('.chunk-audio-slot'));
+        });
+    });
+}
+
+async function playChunk(patchId, text, btn, slot) {
+    const { backend, voice, withFx } = currentTTSSettings();
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-paragraph`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, backend: backend || undefined, voice: voice || undefined, with_effects: withFx })
+        });
+        if (!res.ok) {
+            let msg = 'HTTP ' + res.status;
+            try { const d = await res.json(); if (d && d.detail) msg = d.detail; } catch (_) {}
+            throw new Error(msg);
+        }
+        const url = URL.createObjectURL(await res.blob());
+        slot.innerHTML = '';
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = url;
+        audio.style.cssText = 'width:100%;margin-top:var(--space-xs)';
+        slot.appendChild(audio);
+        audio.play().catch(() => {});
+    } catch (e) {
+        showToast('Chunk lỗi: ' + (e.message || e), 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
 }
 </script>
 {% endblock %}

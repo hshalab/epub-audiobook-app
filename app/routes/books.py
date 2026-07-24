@@ -174,6 +174,7 @@ def book_detail(request: Request, book_id: int):
             "overlay_cfg": overlay_cfg,
             "voices": voices,
             "current_voice_name": current_voice_name,
+            "default_max_chars": settings.tts_max_chars,
         }
     )
 

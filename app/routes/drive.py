@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import threading
+import sys
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -47,6 +50,23 @@ def pick_drive_folder():
     if error:
         raise HTTPException(status_code=500, detail=str(error[0]))
     return {"folder_path": selected[0] if selected else ""}
+
+
+@router.get("/drive/open-folder")
+def open_folder(path: str):
+    """Open a folder in the system file explorer."""
+    if not path or not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail="Thư mục không tồn tại")
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok"}
 
 
 @router.get("/drive", response_class=HTMLResponse)

@@ -236,7 +236,7 @@ body {
 
 main {
   flex: 1;
-  max-width: var(--max-width);
+  max-width: none;
   margin: 0 auto;
   padding: var(--space-3xl) var(--space-xl);
   margin-left: var(--sidebar-width, 240px);

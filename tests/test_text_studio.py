@@ -320,3 +320,99 @@ class TestTextStudioRoutes:
         )
         assert resp.status_code == 200
         assert captured["voice"] == "vi-VN-NamMinhNeural"
+
+
+class TestLightSynthesizeResilience:
+    """A single failing chunk must be skipped, not abort the whole patch."""
+
+    @staticmethod
+    def _wav_bytes():
+        import io
+        import numpy as np
+        import soundfile as sf
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(2205, dtype="float32"), 22050, format="WAV")
+        return buf.getvalue()
+
+    def test_skips_failed_chunk_and_saves(self, conn, book_and_patch, monkeypatch, tmp_path):
+        import threading
+        from pathlib import Path
+        import soundfile as sf
+        import app.routes.text_studio as ts
+        from app.config import settings
+
+        book, patch = book_and_patch
+        wav = self._wav_bytes()
+
+        class FakeEngine:
+            def __init__(self, backend="edge-tts", voice=None):
+                self.backend, self.voice = backend, voice
+
+            def synthesize_to_wav_bytes(self, text, voice=None):
+                if "BOOM" in text:
+                    raise RuntimeError("synth failed")
+                return wav, 22050
+
+        monkeypatch.setattr(ts, "LightTTSEngine", FakeEngine)
+        monkeypatch.setattr("app.chunker.split_into_tts_chunks",
+                            lambda text, max_chars: ["one", "BOOM", "three"])
+        monkeypatch.setattr(settings, "data_root", str(tmp_path))
+
+        audio_path = ts._light_synthesize_patch(
+            patch.id, book.id, "edge-tts", None, False, conn, threading.Lock(),
+        )
+
+        assert Path(audio_path).exists()
+        data, _ = sf.read(audio_path)
+        assert len(data) == 4410  # 2 good chunks × 2205 frames; failed chunk omitted
+        assert repository.get_patch(conn, patch.id).status == "done"
+
+    def test_all_chunks_fail_raises(self, conn, book_and_patch, monkeypatch, tmp_path):
+        import threading
+        import app.routes.text_studio as ts
+        from app.config import settings
+
+        book, patch = book_and_patch
+
+        class FakeEngine:
+            def __init__(self, backend="edge-tts", voice=None):
+                pass
+
+            def synthesize_to_wav_bytes(self, text, voice=None):
+                raise RuntimeError("nope")
+
+        monkeypatch.setattr(ts, "LightTTSEngine", FakeEngine)
+        monkeypatch.setattr("app.chunker.split_into_tts_chunks",
+                            lambda text, max_chars: ["a", "b"])
+        monkeypatch.setattr(settings, "data_root", str(tmp_path))
+
+        with pytest.raises(RuntimeError, match="all chunks failed"):
+            ts._light_synthesize_patch(
+                patch.id, book.id, "edge-tts", None, False, conn, threading.Lock(),
+            )
+
+
+class TestChunkCountReconcile:
+    """The stored chunk_count is an estimate until the real split reconciles it."""
+
+    def test_update_marks_exact_and_clears_stale(self, conn, book_and_patch):
+        book, patch = book_and_patch
+        # A freshly built patch holds the estimate and is flagged stale.
+        assert patch.chunk_count_exact == 0
+        assert patch.id in repository.list_stale_chunk_count_patch_ids(conn, book.id)
+
+        repository.update_patch_chunk_count(conn, patch.id, 7)
+        updated = repository.get_patch(conn, patch.id)
+        assert updated.chunk_count == 7
+        assert updated.chunk_count_exact == 1
+        assert patch.id not in repository.list_stale_chunk_count_patch_ids(conn, book.id)
+
+    def test_set_max_chars_resets_exact(self, conn, book_and_patch):
+        book, patch = book_and_patch
+        repository.update_patch_chunk_count(conn, patch.id, 7)
+        assert repository.get_patch(conn, patch.id).chunk_count_exact == 1
+
+        # Changing max_chars re-estimates the count, so it needs reconciling again.
+        assert repository.set_patch_max_chars(conn, patch.id, 100)
+        assert repository.get_patch(conn, patch.id).chunk_count_exact == 0
+        assert patch.id in repository.list_stale_chunk_count_patch_ids(conn, book.id)

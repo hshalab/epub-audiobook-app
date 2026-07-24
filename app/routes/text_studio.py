@@ -127,10 +127,19 @@ def _light_synthesize_patch(
 
     chunk_paths = []
     for i, chunk_text in enumerate(chunks):
-        wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text)
+        try:
+            wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text)
+        except Exception:
+            # Skip a failed chunk and keep going so one bad chunk doesn't lose the
+            # whole patch; missing chunks are simply omitted from the merge.
+            logger.warning("light-tts chunk %s of patch %s failed", i, patch_id, exc_info=True)
+            continue
         chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
         chunk_path.write_bytes(wav_bytes)
         chunk_paths.append(str(chunk_path))
+
+    if not chunk_paths:
+        raise RuntimeError("all chunks failed to synthesize")
 
     audio_path = str(book_dir / f"{patch_id}.wav")
     audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
@@ -334,6 +343,77 @@ def list_voices_endpoint(backend: str):
     return JSONResponse({"voices": list_voices(backend)})
 
 
+@router.get("/books/{book_id}/patches/{patch_id}/chunk-texts")
+def patch_chunk_texts(request: Request, book_id: int, patch_id: int, max_chars: int = 0):
+    """Split a patch into TTS chunks and return their text (no synthesis, no save).
+
+    Used by the per-chunk preview list on the book page. ``max_chars`` follows the
+    same precedence as preview-stream: explicit override > per-patch > global default.
+    """
+    from app.chunker import split_into_tts_chunks
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        text = repository.get_effective_patch_text(conn, patch)
+
+        _max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
+        chunks = split_into_tts_chunks(text, max_chars=_max_chars)
+        total = len(chunks)
+
+        # patch.chunk_count is a fast char-count estimate; the real sentence-aware
+        # split differs. When listing with the patch's default config, reconcile the
+        # stored estimate so the patches table, progress bar, and this list all agree.
+        # Skip while processing so we don't disturb resume bookkeeping.
+        reconciled = False
+        if max_chars == 0 and patch.status != "processing" and patch.chunk_count != total:
+            repository.update_patch_chunk_count(conn, patch_id, total)
+            reconciled = True
+
+    return JSONResponse({
+        "total": total,
+        "max_chars": _max_chars,
+        "reconciled": reconciled,
+        "chunks": [{"index": i, "text": c, "chars": len(c)} for i, c in enumerate(chunks)],
+    })
+
+
+@router.post("/books/{book_id}/patches/reconcile-chunk-counts")
+async def reconcile_chunk_counts(request: Request, book_id: int):
+    """Replace estimated chunk_counts with the real split count for this book's
+    patches so the patches table matches what actually gets generated. Runs once
+    per patch (persisted via chunk_count_exact), off-thread, locking per patch so
+    it never blocks other requests for long. Already-exact patches are skipped."""
+    from app.chunker import split_into_tts_chunks
+
+    db_lock = request.app.state.db_lock
+    conn = request.app.state.conn
+
+    with locked_conn(request) as c:
+        if repository.get_book(c, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+
+    def _run():
+        with db_lock:
+            ids = repository.list_stale_chunk_count_patch_ids(conn, book_id)
+        updated = []
+        for pid in ids:
+            with db_lock:
+                patch = repository.get_patch(conn, pid)
+                if patch is None or patch.status == "processing":
+                    continue
+                text = repository.get_effective_patch_text(conn, patch)
+                total = len(split_into_tts_chunks(
+                    text, max_chars=patch.max_chars or settings.tts_max_chars))
+                repository.update_patch_chunk_count(conn, pid, total)
+            updated.append({"id": pid, "chunk_count": total})
+        return updated
+
+    updated = await asyncio.to_thread(_run)
+    return JSONResponse({"updated": updated})
+
+
 @router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-paragraph")
 async def preview_paragraph(request: Request, book_id: int, patch_id: int):
     body = await request.json()
@@ -491,6 +571,7 @@ async def preview_stream(
     backend: str = "",
     voice: str = "",
     with_effects: int = 0,
+    max_chars: int = 0,
 ):
     from starlette.responses import StreamingResponse
 
@@ -503,6 +584,8 @@ async def preview_stream(
     _backend = backend or settings.light_tts_backend
     _voice = voice or settings.light_tts_voice
     _with_effects = bool(with_effects)
+    # Chunk size precedence: explicit request override > per-patch > global default.
+    _max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
     db_lock = request.app.state.db_lock
     conn_ref = request.app.state.conn
 
@@ -517,9 +600,14 @@ async def preview_stream(
             old.unlink(missing_ok=True)
 
         session_token = _uuid.uuid4().hex[:8]
-        chunks = split_into_tts_chunks(text, max_chars=patch.max_chars or settings.tts_max_chars)
+        chunks = split_into_tts_chunks(text, max_chars=_max_chars)
         total = len(chunks)
         tmp_paths = []
+
+        # Keep the stored estimate in sync with the real split (default config only).
+        if max_chars == 0 and patch.chunk_count != total:
+            with db_lock:
+                repository.update_patch_chunk_count(conn_ref, patch_id, total)
 
         try:
             engine = LightTTSEngine(backend=_backend, voice=_voice or None)
@@ -527,14 +615,20 @@ async def preview_stream(
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
             return
 
+        fail_count = 0
         for i, chunk_text in enumerate(chunks):
             try:
                 wav_bytes, _ = await asyncio.to_thread(
                     engine.synthesize_to_wav_bytes, chunk_text, _voice or None
                 )
             except Exception as exc:
-                yield f"data: {json.dumps({'type': 'error', 'message': f'chunk {i} failed: {exc}'})}\n\n"
-                return
+                # A single failing chunk must not abort the whole patch: record
+                # it, tell the client, and carry on with the next chunk. The
+                # failed chunk is simply omitted from the merge.
+                fail_count += 1
+                logger.warning("preview_stream chunk %s of patch %s failed: %s", i, patch_id, exc)
+                yield f"data: {json.dumps({'type': 'chunk_error', 'index': i, 'total': total, 'message': str(exc)})}\n\n"
+                continue
 
             tmp_name = f"{patch_id}_{session_token}_{i}.wav"
             tmp_path = tmp_dir / tmp_name
@@ -542,6 +636,10 @@ async def preview_stream(
             tmp_paths.append(str(tmp_path))
 
             yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': total, 'url': f'/preview-tmp/{tmp_name}'})}\n\n"
+
+        if not tmp_paths:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Tất cả chunk đều lỗi, không có audio để lưu'})}\n\n"
+            return
 
         try:
             book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
@@ -558,7 +656,7 @@ async def preview_stream(
             with db_lock:
                 repository.mark_patch_done(conn_ref, patch_id, audio_path)
 
-            yield f"data: {json.dumps({'type': 'done', 'saved': True})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'saved': True, 'ok': len(tmp_paths), 'failed': fail_count})}\n\n"
         except Exception as exc:
             logger.exception("preview_stream merge/save failed for patch %s", patch_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"

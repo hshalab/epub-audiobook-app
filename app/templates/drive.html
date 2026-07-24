@@ -6,17 +6,17 @@
 .drive-kicker{color:var(--text-muted);font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;margin:0 0 .45rem}
 .drive-hero h2{font-size:clamp(1.8rem,4vw,2.8rem);margin:0 0 .55rem;letter-spacing:-.03em}
 .drive-hero p{max-width:650px;color:var(--text-muted);margin:0;line-height:1.6}
-.drive-status{border:1px solid var(--border);border-radius:999px;padding:.55rem .85rem;white-space:nowrap;font-size:.85rem}
+.drive-status{border:1px solid var(--border-color);border-radius:999px;padding:.55rem .85rem;white-space:nowrap;font-size:.85rem}
 .drive-status b{color:#267a50}.drive-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.25rem}
-.drive-step{background:var(--surface, #fff);border:1px solid var(--border);padding:1.15rem;border-radius:12px}
-.drive-step-no{display:inline-grid;place-items:center;width:1.65rem;height:1.65rem;border-radius:50%;background:var(--text,#222);color:var(--bg,#fff);font-size:.8rem;margin-bottom:.7rem}
+.drive-step{background:var(--bg-card);border:1px solid var(--border-color);padding:1.15rem;border-radius:12px}
+.drive-step-no{display:inline-grid;place-items:center;width:1.65rem;height:1.65rem;border-radius:50%;background:var(--text-primary);color:var(--text-inverse);font-size:.8rem;margin-bottom:.7rem}
 .drive-step h3{font-size:1rem;margin:.1rem 0 .4rem}.drive-step p{font-size:.9rem;color:var(--text-muted);line-height:1.5;margin:0}
-.drive-panel{border:1px solid var(--border);border-radius:14px;padding:1.25rem;background:var(--surface,#fff);margin-bottom:1.25rem}
+.drive-panel{border:1px solid var(--border-color);border-radius:14px;padding:1.25rem;background:var(--bg-card);margin-bottom:1.25rem}
 .drive-panel-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem}.drive-panel h3{margin:0}.drive-panel-header p{margin:.3rem 0 0;color:var(--text-muted);font-size:.9rem}
-.drive-form{display:grid;grid-template-columns:1fr 1fr 2fr auto;gap:.75rem;align-items:end}.drive-form .form-group{margin:0}.drive-form label{font-size:.8rem;font-weight:600}.drive-path{display:flex;gap:.5rem}.drive-path input{min-width:0;flex:1}
-.drive-table td{vertical-align:middle}.drive-path-code{display:block;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.drive-empty{padding:1.5rem;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:10px}
-.drive-help{background:color-mix(in srgb, var(--text) 5%, transparent);border-radius:10px;padding:.85rem 1rem;color:var(--text-muted);line-height:1.55;font-size:.9rem}.drive-help strong{color:var(--text)}
-@media(max-width:800px){.drive-hero{display:block}.drive-status{display:inline-block;margin-top:1rem}.drive-steps{grid-template-columns:1fr}.drive-form{grid-template-columns:1fr}.drive-path{display:flex}.drive-table{min-width:720px}.drive-table-wrap{overflow:auto}}
+.drive-form{display:grid;grid-template-columns:1fr 1fr 2fr auto;gap:.75rem;align-items:end}.drive-form .form-group{margin:0}.drive-form label{font-size:.8rem;font-weight:600}.drive-path{display:flex;gap:0}.drive-path input{min-width:0;flex:1;border-top-right-radius:0;border-bottom-right-radius:0}.drive-path .btn-outline{border-top-left-radius:0;border-bottom-left-radius:0;border-left:0;white-space:nowrap}
+.drive-table td{vertical-align:middle}.drive-table input{font-size:.85rem;padding:.4rem .6rem}.drive-path-code{display:block;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.drive-empty{padding:1.5rem;text-align:center;color:var(--text-muted);border:1px dashed var(--border-color);border-radius:10px}
+.drive-help{background:color-mix(in srgb, var(--text-primary) 5%, transparent);border-radius:10px;padding:.85rem 1rem;color:var(--text-muted);line-height:1.55;font-size:.9rem}.drive-help strong{color:var(--text-primary)}
+@media(max-width:800px){.drive-hero{display:block}.drive-status{display:inline-block;margin-top:1rem}.drive-steps{grid-template-columns:1fr}.drive-form{grid-template-columns:1fr}.drive-path{display:flex;gap:0}.drive-path input{border-radius:var(--border-radius-sm)}.drive-path .btn-outline{border-radius:var(--border-radius-sm);margin-top:.5rem}.drive-table{min-width:720px}.drive-table-wrap{overflow:auto}}
 </style>
 
 <header class="drive-hero">
@@ -37,7 +37,7 @@
     <form method="post" action="/drive/targets" class="drive-form" id="target-form">
         <div class="form-group"><label for="target-name">Tên hiển thị</label><input id="target-name" name="name" placeholder="Cá nhân · Audiobook" required></div>
         <div class="form-group"><label for="target-email">Email Google</label><input id="target-email" name="account_email" type="email" placeholder="you@gmail.com" required></div>
-        <div class="form-group"><label for="target-path">Folder trên máy này</label><div class="drive-path"><input id="target-path" name="folder_path" placeholder="Ví dụ: G:\\My Drive\\EPUB Audiobook Exports" required><button type="button" class="btn-outline" id="pick-folder">Chọn folder</button></div></div>
+        <div class="form-group"><label for="target-path">Folder trên máy này</label><div class="drive-path"><input id="target-path" name="folder_path" placeholder="Ví dụ: G:\\My Drive\\EPUB Audiobook Exports" required><button type="button" class="btn-outline" id="pick-folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Chọn folder</button></div></div>
         <button class="btn-primary" type="submit">Lưu đích</button>
     </form>
     <div class="drive-help" style="margin-top:1rem"><strong>Không thấy folder?</strong> Mở Google Drive for desktop, chờ tài khoản hiển thị trong File Explorer rồi chọn folder con bên trong <code>My Drive</code>. Đường dẫn này là trên máy chạy server, không phải đường dẫn trên trình duyệt.</div>
@@ -46,7 +46,7 @@
 <section class="drive-panel">
     <div class="drive-panel-header"><div><h3>Đích đồng bộ của bạn</h3><p>Khi export patch hoặc batch, chọn đúng dòng theo email tài khoản.</p></div></div>
     {% if targets %}<div class="table-wrap drive-table-wrap"><table class="drive-table"><thead><tr><th>Tên</th><th>Tài khoản</th><th>Folder</th><th>Thao tác</th></tr></thead><tbody>
-    {% for t in targets %}<tr><form method="post" action="/drive/targets/{{ t.id }}/edit"><td><input name="name" value="{{ t.name }}" required></td><td><input name="account_email" type="email" value="{{ t.account_email }}" required></td><td><input name="folder_path" value="{{ t.folder_path }}" required style="min-width:300px"></td><td style="white-space:nowrap"><button class="btn-outline btn-sm">Lưu</button></form> <form method="post" action="/drive/targets/{{ t.id }}/delete" style="display:inline" onsubmit="return confirm('Xóa cấu hình này? Lịch sử và file đã export vẫn được giữ.')"><button class="btn-danger btn-sm">Xóa</button></form></td></tr>{% endfor %}
+    {% for t in targets %}<tr><form method="post" action="/drive/targets/{{ t.id }}/edit"><td><input name="name" value="{{ t.name }}" required></td><td><input name="account_email" type="email" value="{{ t.account_email }}" required></td><td><input name="folder_path" value="{{ t.folder_path }}" required style="min-width:300px"></td><td style="white-space:nowrap"><button class="btn-outline btn-sm">Lưu</button></form> <button class="btn-outline btn-sm" onclick="openFolder(this.dataset.path)" data-path="{{ t.folder_path }}" title="Mở trong File Explorer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button> <form method="post" action="/drive/targets/{{ t.id }}/delete" style="display:inline" onsubmit="return confirm('Xóa cấu hình này? Lịch sử và file đã export vẫn được giữ.')"><button class="btn-danger btn-sm">Xóa</button></form></td></tr>{% endfor %}
     </tbody></table></div>{% else %}<div class="drive-empty">Chưa có đích nào. Hãy thêm folder đầu tiên ở trên.</div>{% endif %}
 </section>
 
@@ -58,9 +58,14 @@
 {% block scripts %}<script>
 document.getElementById('pick-folder')?.addEventListener('click', async function () {
     const button = this, input = document.getElementById('target-path');
+    const originalHTML = button.innerHTML;
     button.disabled = true; button.textContent = 'Đang mở...';
     try { const response = await fetch('/drive/pick-folder'); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Không thể mở hộp thoại chọn folder'); if (data.folder_path) input.value = data.folder_path; }
     catch (error) { alert(error.message); }
-    finally { button.disabled = false; button.textContent = 'Chọn folder'; }
+    finally { button.disabled = false; button.innerHTML = originalHTML; }
 });
+async function openFolder(path) {
+    try { const response = await fetch('/drive/open-folder?path=' + encodeURIComponent(path)); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Không thể mở thư mục'); }
+    catch (error) { alert(error.message); }
+}
 </script>{% endblock %}

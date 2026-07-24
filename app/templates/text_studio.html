@@ -745,6 +745,9 @@ async function previewPatch() {
                 src.start(startAt);
                 nextStartTime = startAt + audio.duration;
             } catch (_) {}
+        } else if (msg.type === 'chunk_error') {
+            // Server skipped this chunk and keeps going; just advance the label.
+            btn.textContent = `Chunk ${msg.index + 1}/${msg.total} (bỏ qua lỗi)`;
         } else if (msg.type === 'done') {
             es.close();
             btn.disabled = false;
