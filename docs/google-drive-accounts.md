@@ -36,7 +36,14 @@ Muốn đổi 1 trong 4 tài khoản này: sign out tài khoản cũ trong Drive
 | codex10 | codex10@g.lsts.edu.vn | `codex10:` | `D:\RcloneDriveStaging\codex10` |
 
 App export vào folder staging cục bộ (giống hệt cách nó ghi vào ổ Drive Desktop-mounted). Folder này **không**
-tự động lên cloud — phải chạy script đẩy lên:
+tự động lên cloud — phải đẩy lên bằng rclone.
+
+**Cách 1 — trong UI (khuyến nghị):** ở trang `/drive`, điền cột **rclone remote** cho từng sync target codex5-10
+(đích đầy đủ dạng `remote:path`, ví dụ `codex5:EPUB Audiobook Exports`). Khi có remote, dòng đó hiện nút **Sync**;
+ngoài ra có nút **Sync all folders** đẩy tất cả target có remote một lượt. Backend chạy `rclone copy` (xem
+`_run_rclone_copy` trong `app/routes/drive.py`) — **luôn `copy`, không bao giờ `sync`** (xem luật an toàn bên dưới).
+
+**Cách 2 — script CLI (fallback):**
 
 ```powershell
 # Đẩy cả 6 tài khoản
@@ -46,7 +53,7 @@ tự động lên cloud — phải chạy script đẩy lên:
 .\scripts\rclone_push_drives.ps1 codex7
 ```
 
-Chạy script này sau khi export xong (thủ công), hoặc tự thêm Windows Task Scheduler nếu muốn tự động theo chu kỳ.
+Chạy sau khi export xong (thủ công), hoặc tự thêm Windows Task Scheduler nếu muốn tự động theo chu kỳ.
 
 ### ⚠️ Luật an toàn quan trọng nhất: KHÔNG BAO GIỜ dùng `rclone sync` để đẩy lên các remote này
 
@@ -85,8 +92,13 @@ trừ khi bạn chắc chắn 100% folder đích không chứa gì cần giữ.
 
 - rclone hiện dùng client_id dùng chung mặc định của chính rclone (thấy warning "This remote uses rclone's
   shared Google Drive client_id... will stop working during 2026" mỗi lần chạy). Trước khi nó ngừng hoạt động,
-  cần tạo Client ID/Secret riêng trên Google Cloud Console và cập nhật lại từng remote — xem
-  https://rclone.org/drive/#making-your-own-client-id.
+  cần tạo Client ID/Secret riêng trên Google Cloud Console — xem
+  https://rclone.org/drive/#making-your-own-client-id. **Cách nhanh nhất:** dán Client ID/Secret vào panel
+  **"rclone OAuth client"** ở trang `/drive` (lưu trong `app_state`, key `rclone.drive_client_id` /
+  `rclone.drive_client_secret`); khi bấm Sync trong UI, app tự truyền `--drive-client-id`/`--drive-client-secret`
+  nên warning biến mất, **không cần re-auth từng remote**. Script `rclone_push_drives.ps1` (fallback) không đọc
+  giá trị này — muốn tắt warning khi chạy script thì `rclone config update <remote> client_id ... client_secret ...`
+  hoặc đặt env `RCLONE_DRIVE_CLIENT_ID`/`RCLONE_DRIVE_CLIENT_SECRET`.
 - Kiểm tra danh sách remote: `rclone listremotes`. Kiểm tra dung lượng/quota: `rclone about <remote>:`.
 - Nếu vô tình xoá nhầm gì trên remote: kiểm tra trash trước khi hoảng — `rclone lsf <remote>: --drive-trashed-only -R`,
   rồi `rclone backend untrash "<remote>:<path>"` để khôi phục hàng loạt.

@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS drive_sync_target (
     name            TEXT NOT NULL,
     account_email   TEXT NOT NULL,
     folder_path     TEXT NOT NULL,
+    rclone_remote   TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -332,6 +333,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     uploads_existing = {row["name"] for row in conn.execute("PRAGMA table_info(youtube_uploads)")}
     if "video_id" not in uploads_existing:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL")
+    sync_target_existing = {row["name"] for row in conn.execute("PRAGMA table_info(drive_sync_target)")}
+    if "rclone_remote" not in sync_target_existing:
+        conn.execute("ALTER TABLE drive_sync_target ADD COLUMN rclone_remote TEXT")
     from app.config import settings
     if settings.google_drive_client_id:
         row = conn.execute("SELECT 1 FROM drive_oauth_client LIMIT 1").fetchone()

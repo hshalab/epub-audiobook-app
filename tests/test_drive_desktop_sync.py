@@ -57,6 +57,17 @@ def test_sync_target_crud(tmp_path):
     assert repository.delete_drive_sync_target(conn, target["id"])
 
 
+def test_sync_target_stores_rclone_remote(tmp_path):
+    conn = make_conn()
+    target = repository.create_drive_sync_target(
+        conn, "codex5", "codex5@example.com", str(tmp_path), "codex5:EPUB Audiobook Exports"
+    )
+    assert target["rclone_remote"] == "codex5:EPUB Audiobook Exports"
+    # empty string normalizes to NULL (Drive-Desktop target, no rclone)
+    assert repository.update_drive_sync_target(conn, target["id"], "codex5", "codex5@example.com", str(tmp_path), "")
+    assert repository.get_drive_sync_target(conn, target["id"])["rclone_remote"] is None
+
+
 def test_validate_and_publish_package(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "target"
@@ -115,6 +126,113 @@ def test_target_route_rejects_invalid_folder(client, tmp_path):
     }, follow_redirects=False)
     assert response.status_code == 303
     assert "error=" in response.headers["location"]
+
+
+def test_target_route_rejects_rclone_remote_without_colon(client, tmp_path):
+    folder = tmp_path / "drive"
+    folder.mkdir()
+    response = client.post("/drive/targets", data={
+        "name": "codex5", "account_email": "a@example.com", "folder_path": str(folder),
+        "rclone_remote": "nocolon",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+
+def test_rclone_config_route_persists_client_id(client):
+    from app.routes import drive as drive_routes
+
+    response = client.post("/drive/rclone-config", data={
+        "client_id": "abc.apps.googleusercontent.com", "client_secret": "GOCSPX-xyz",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("#rclone")
+    with db.connect(str(settings.db_path)) as conn:
+        assert repository.get_app_state(conn, drive_routes._RCLONE_CLIENT_ID_KEY) == "abc.apps.googleusercontent.com"
+        assert repository.get_app_state(conn, drive_routes._RCLONE_CLIENT_SECRET_KEY) == "GOCSPX-xyz"
+
+
+def test_sync_target_without_remote_returns_400(client, tmp_path):
+    folder = tmp_path / "drive"
+    folder.mkdir()
+    client.post("/drive/targets", data={
+        "name": "codex1", "account_email": "a@example.com", "folder_path": str(folder),
+    }, follow_redirects=False)
+    response = client.post("/drive/targets/1/sync")
+    assert response.status_code == 400
+
+
+def test_sync_target_runs_rclone_copy_with_client_id(client, tmp_path, monkeypatch):
+    from app.routes import drive as drive_routes
+
+    folder = tmp_path / "staging"
+    folder.mkdir()
+    client.post("/drive/targets", data={
+        "name": "codex5", "account_email": "a@example.com", "folder_path": str(folder),
+        "rclone_remote": "codex5:EPUB Audiobook Exports",
+    }, follow_redirects=False)
+    client.post("/drive/rclone-config", data={
+        "client_id": "cid.apps.googleusercontent.com", "client_secret": "GOCSPX-secret",
+    }, follow_redirects=False)
+
+    calls = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = "Transferred: 1 / 1\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(drive_routes.subprocess, "run", fake_run)
+    response = client.post("/drive/targets/1/sync")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["remote"] == "codex5:EPUB Audiobook Exports"
+    # copy, never sync; client_id/secret forwarded to suppress the shared-client warning
+    assert calls["cmd"][1] == "copy"
+    assert "--drive-client-id" in calls["cmd"] and "cid.apps.googleusercontent.com" in calls["cmd"]
+    assert "--drive-client-secret" in calls["cmd"] and "GOCSPX-secret" in calls["cmd"]
+    assert "sync" not in calls["cmd"]
+
+
+def test_sync_all_only_targets_with_remote(client, tmp_path, monkeypatch):
+    from app.routes import drive as drive_routes
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    desktop = tmp_path / "desktop"
+    desktop.mkdir()
+    client.post("/drive/targets", data={
+        "name": "codex5", "account_email": "a@example.com", "folder_path": str(staging),
+        "rclone_remote": "codex5:EPUB Audiobook Exports",
+    }, follow_redirects=False)
+    client.post("/drive/targets", data={
+        "name": "codex1", "account_email": "b@example.com", "folder_path": str(desktop),
+    }, follow_redirects=False)
+
+    run_count = {"n": 0}
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = "nothing to transfer"
+
+    def fake_run(cmd, **kwargs):
+        run_count["n"] += 1
+        return FakeProc()
+
+    monkeypatch.setattr(drive_routes.subprocess, "run", fake_run)
+    response = client.post("/drive/sync-all")
+    assert response.status_code == 200
+    body = response.json()
+    # only the codex5 (rclone-backed) target is synced; the Drive-Desktop one is skipped
+    assert body["count"] == 1
+    assert run_count["n"] == 1
+    assert body["results"][0]["name"] == "codex5"
 
 
 def test_drive_page_explains_setup_and_folder_picker(client):

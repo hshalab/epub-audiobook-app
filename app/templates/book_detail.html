@@ -24,8 +24,7 @@
 </form>
 
 <nav class="book-nav" aria-label="Điều hướng nội dung sách">
-    <a href="#studio-card">Studio</a>
-    <a href="#build-card">Auto-build</a>
+    <button type="button" data-open-dialog="studio-modal">Studio</button>
     {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
     <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
     <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
@@ -124,13 +123,35 @@
     </div>
 {% endif %}
 
-{% if patches %}
 <div class="card book-panel" id="patches-card">
     <div class="card-header">
         <h3 style="margin:0">Patches ({{ patches|length }})</h3>
     </div>
-    {# The table rows contain their own nested forms, so the batch form stays empty
-       and the checkboxes/buttons bind to it via the HTML5 form="" attribute. #}
+    <details id="build-section" style="margin-bottom:var(--space-md)">
+        <summary style="cursor:pointer;font-weight:500;font-size:var(--font-size-sm)">Auto-build Patches</summary>
+        <form id="auto-build-form" class="auto-build-form" style="margin-top:var(--space-sm)">
+            <label>Start chapter <input type="number" name="start_chapter" min="0" value="0" required id="ab-start"></label>
+            <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter" id="ab-end"></label>
+            <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
+            <button type="button" class="btn-outline" onclick="previewAutoBuild()">Preview</button>
+            <button type="button" class="btn-primary" id="btn-start-queue" onclick="startQueue()" style="display:none">Start Queue</button>
+        </form>
+        <div id="auto-build-preview" style="display:none;margin-top:var(--space-md)">
+            <p style="margin:0 0 var(--space-sm) 0;font-weight:500">Planned patches:</p>
+            <div class="table-wrap">
+            <table>
+                <thead><tr><th>#</th><th>Chapters</th><th>Name</th><th>Chunks</th></tr></thead>
+                <tbody id="ab-preview-body"></tbody>
+            </table>
+            </div>
+        </div>
+        <p id="ab-error" style="display:none;color:var(--color-error);margin-top:var(--space-sm)"></p>
+    </details>
+    {% if patches %}
+    <div class="patch-search">
+        <input type="text" id="patch-search-input" placeholder="Tìm patch theo tên..." oninput="filterAndPaginate()">
+        <span id="patch-filter-count" style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
+    </div>
      <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
     <div class="table-wrap">
     <table>
@@ -190,8 +211,8 @@
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                     </form>
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
-                          data-confirm="Xóa patch {{ patch.name or patch.patch_index }}? Các patch còn lại sẽ được đánh số lại.">
-                        <button type="submit" class="btn-danger btn-sm">Xóa {{ patch.name or patch.patch_index }}</button>
+                          data-confirm="Xóa patch này? Các patch còn lại sẽ được đánh số lại.">
+                        <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
                     {% endif %}
                 </td>
@@ -200,36 +221,27 @@
         </tbody>
     </table>
     </div>
-</div>
-{% else %}
-<div class="card">
+    <div class="patch-pagination" id="patch-pagination"></div>
+    {% else %}
     <p style="margin:0;color:var(--text-muted)">
         No patches yet. Configure text replace rules above, then click <strong>Auto-build</strong> to create patches and start processing.
     </p>
+    {% endif %}
 </div>
-{% endif %}
 
 <div class="patch-bottom-nav" id="patch-bottom-nav">
     <button type="button" class="btn-outline btn-sm" id="btnRunSelectedLightTTS" onclick="runAllLightTTS()">&#9654; Run Selected</button>
-    <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled
-            title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
-        Download selected (.zip)
-    </button>
-     {% if sync_targets %}
-     <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
-         <option value="">Chọn tài khoản Drive</option>
-         {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
-     </select>
+    <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled>Download selected (.zip)</button>
+    {% if sync_targets %}
+    <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
+        <option value="">Chọn tài khoản Drive</option>
+        {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
+    </select>
     <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
-            formaction="/books/{{ book.id }}/patches/export-batch"
-            title="Upload the selected patches to Google Drive so the Colab notebook can find them automatically">
-         Export vào Drive Desktop
-    </button>
+            formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
     {% endif %}
-    <button type="button" class="btn-outline btn-sm" id="copy-yt-desc"
-            title="Copy YouTube description (music license + chapter list) to clipboard">
-        Copy Description
-    </button>
+    <span id="patch-selection-count" style="margin-left:auto;font-size:var(--font-size-xs);color:var(--text-muted)"></span>
+    <button type="button" class="btn-outline btn-sm" id="copy-yt-desc">Copy Description</button>
 </div>
 
 {% if book.final_audio_path %}
@@ -243,7 +255,7 @@
 
 {% endif %}
 
-<div class="card book-panel" id="studio-card">
+<dialog id="studio-modal" class="book-modal" style="width:min(960px,calc(100% - 2rem))">
     <style>
         .book-nav { position:sticky; top:0; z-index:10; display:flex; gap:var(--space-xs); flex-wrap:wrap; padding:var(--space-sm); margin:var(--space-md) 0; background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 2px 8px rgba(0,0,0,.08); }
         .book-nav a, .book-nav button { padding:var(--space-xs) var(--space-sm); border:0; border-radius:var(--border-radius); background:transparent; color:var(--text-muted); text-decoration:none; font:inherit; font-size:var(--font-size-sm); cursor:pointer; }
@@ -261,13 +273,24 @@
         .batch-patch-checkbox, #batch-select-all { transform:scale(2); margin:8px; }
         .patch-name-cell { min-width:300px; }
         .patch-name-cell .patch-audio-player { width:100%; margin-top:var(--space-xs); }
-        .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); flex-wrap:wrap; padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); }
+        .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); white-space:nowrap; overflow-x:auto; }
         .patch-bottom-nav.visible { display:flex; }
         body.has-bottom-nav { padding-bottom:64px; }
+        .patch-search { display:flex; gap:var(--space-sm); align-items:center; margin-bottom:var(--space-sm); }
+        .patch-search input { flex:1; max-width:320px; }
+        .patch-pagination { display:flex; gap:var(--space-xs); align-items:center; justify-content:center; margin-top:var(--space-sm); flex-wrap:wrap; }
+        .patch-pagination button { padding:var(--space-xs) var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font:inherit; font-size:var(--font-size-sm); }
+        .patch-pagination button:hover:not(:disabled) { background:var(--border-color); }
+        .patch-pagination button:disabled { opacity:.4; cursor:default; }
+        .patch-pagination button.active { background:var(--color-primary); color:#fff; border-color:var(--color-primary); }
+        .patch-pagination .page-info { font-size:var(--font-size-xs); color:var(--text-muted); }
     </style>
     <div class="card-header">
         <h3 style="margin:0">Studio — Preview &amp; chỉnh kết quả</h3>
-        <button type="button" id="studio-save" class="btn-primary btn-sm">Lưu tất cả</button>
+        <div style="display:flex;gap:var(--space-sm);align-items:center">
+            <button type="button" id="studio-save" class="btn-primary btn-sm">Lưu tất cả</button>
+            <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+        </div>
     </div>
     <div id="studio-grid">
         <div style="position:sticky;top:var(--space-md);display:flex;flex-direction:column;gap:var(--space-md)">
@@ -501,7 +524,7 @@
             </form>
         </div>
     </div>
-</div>
+</dialog>
 
 <dialog id="rules-modal" class="book-modal">
     <div class="card-header">
@@ -549,28 +572,7 @@
     </form>
 </dialog>
 
-<div class="card book-panel" id="build-card">
-    <div class="card-header">
-        <h3 style="margin:0">Auto-build Patches</h3>
-    </div>
-    <form id="auto-build-form" class="auto-build-form">
-        <label>Start chapter <input type="number" name="start_chapter" min="0" value="0" required id="ab-start"></label>
-        <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter" id="ab-end"></label>
-        <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
-        <button type="button" class="btn-outline" onclick="previewAutoBuild()">Preview</button>
-        <button type="button" class="btn-primary" id="btn-start-queue" onclick="startQueue()" style="display:none">Start Queue</button>
-    </form>
-    <div id="auto-build-preview" style="display:none;margin-top:var(--space-md)">
-        <p style="margin:0 0 var(--space-sm) 0;font-weight:500">Planned patches:</p>
-        <div class="table-wrap">
-        <table>
-            <thead><tr><th>#</th><th>Chapters</th><th>Name</th><th>Chunks</th></tr></thead>
-            <tbody id="ab-preview-body"></tbody>
-        </table>
-        </div>
-    </div>
-    <p id="ab-error" style="display:none;color:var(--color-error);margin-top:var(--space-sm)"></p>
-</div>
+
 
 
 {% endblock %}
@@ -609,20 +611,27 @@ const LIGHT_TTS_ACTIVE = new Set();
     const target = document.getElementById('batch-sync-target');
 
     function refreshBatchButtons() {
+        const visibleCheckboxes = checkboxes.filter(cb => cb.closest('tr').style.display !== 'none');
         const anyChecked = checkboxes.some(cb => cb.checked);
         batchButtons.forEach(btn => { btn.disabled = !anyChecked || (btn.id === 'batch-drive-btn' && !target.value); });
         if (selectAll) {
-            const enabled = checkboxes.filter(cb => !cb.disabled);
+            const enabled = visibleCheckboxes.filter(cb => !cb.disabled);
             selectAll.checked = enabled.length > 0 && enabled.every(cb => cb.checked);
         }
         const nav = document.getElementById('patch-bottom-nav');
         if (nav) nav.classList.toggle('visible', anyChecked);
         document.body.classList.toggle('has-bottom-nav', anyChecked);
+        const countEl = document.getElementById('patch-selection-count');
+        if (countEl) {
+            const n = checkboxes.filter(cb => cb.checked).length;
+            countEl.textContent = n > 0 ? n + ' selected' : '';
+        }
     }
 
     if (selectAll) {
         selectAll.addEventListener('change', () => {
-            checkboxes.forEach(cb => { if (!cb.disabled) cb.checked = selectAll.checked; });
+            const visibleCheckboxes = checkboxes.filter(cb => cb.closest('tr').style.display !== 'none');
+            visibleCheckboxes.forEach(cb => { if (!cb.disabled) cb.checked = selectAll.checked; });
             refreshBatchButtons();
         });
     }
@@ -660,6 +669,74 @@ const LIGHT_TTS_ACTIVE = new Set();
         }
     });
 })();
+
+const PATCHES_PER_PAGE = 20;
+let currentPage = 1;
+
+function filterAndPaginate() {
+    const searchInput = document.getElementById('patch-search-input');
+    const filterCount = document.getElementById('patch-filter-count');
+    const tbody = document.querySelector('#patches-card table tbody');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const query = (searchInput.value || '').toLowerCase().trim();
+
+    // filter
+    let visible = 0;
+    rows.forEach(row => {
+        const nameCell = row.querySelector('.patch-name-cell');
+        const text = (nameCell ? nameCell.textContent : '').toLowerCase();
+        const match = !query || text.includes(query);
+        row.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    filterCount.textContent = query ? `${visible}/${rows.length}` : '';
+
+    // paginate
+    const totalVisible = rows.filter(r => r.style.display !== 'none').length;
+    const totalPages = Math.max(1, Math.ceil(totalVisible / PATCHES_PER_PAGE));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    let idx = 0;
+    rows.forEach(row => {
+        if (row.style.display === 'none') return;
+        const page = Math.floor(idx / PATCHES_PER_PAGE) + 1;
+        row.style.display = (page === currentPage) ? '' : 'none';
+        idx++;
+    });
+
+    // render pagination controls
+    const container = document.getElementById('patch-pagination');
+    if (!container) return;
+    container.innerHTML = '';
+    if (totalPages <= 1) return;
+
+    const mkBtn = (label, page, disabled, active) => {
+        const btn = document.createElement('button');
+        btn.textContent = label;
+        btn.disabled = disabled;
+        if (active) btn.className = 'active';
+        btn.onclick = () => { currentPage = page; filterAndPaginate(); };
+        return btn;
+    };
+
+    container.appendChild(mkBtn('\u00ab', 1, currentPage === 1));
+    container.appendChild(mkBtn('\u2039', currentPage - 1, currentPage === 1));
+    const start = Math.max(1, currentPage - 2);
+    const end = Math.min(totalPages, currentPage + 2);
+    for (let p = start; p <= end; p++) {
+        container.appendChild(mkBtn(String(p), p, false, p === currentPage));
+    }
+    container.appendChild(mkBtn('\u203a', currentPage + 1, currentPage === totalPages));
+    container.appendChild(mkBtn('\u00bb', totalPages, currentPage === totalPages));
+    const info = document.createElement('span');
+    info.className = 'page-info';
+    info.textContent = totalVisible + ' patch';
+    container.appendChild(info);
+}
+
+// init pagination on load
+filterAndPaginate();
 
 (function() {
     const BOOK_ID = {{ book.id }};

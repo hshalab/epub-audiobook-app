@@ -21,6 +21,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
+# rclone's own Google Drive OAuth client (fixes the "shared client_id will stop working
+# during 2026" warning). Stored per-DB in app_state and passed as --drive-client-id /
+# --drive-client-secret on every rclone copy. See docs/google-drive-accounts.md.
+_RCLONE_CLIENT_ID_KEY = "rclone.drive_client_id"
+_RCLONE_CLIENT_SECRET_KEY = "rclone.drive_client_secret"
+
+
+def _run_rclone_copy(folder_path: str, remote: str, client_id: str, client_secret: str) -> dict:
+    """Push a local staging folder up to its Google Drive remote via rclone.
+
+    ALWAYS `copy`, never `sync`: each export is a uniquely-named/timestamped folder, so
+    nothing needs deleting on the remote - and `sync` would wipe anything on the account
+    that isn't in the local folder. See the safety rule in docs/google-drive-accounts.md.
+    """
+    if not os.path.isdir(folder_path):
+        return {"status": "error", "remote": remote, "output": f"Folder không tồn tại: {folder_path}"}
+    cmd = [settings.rclone_path, "copy", folder_path, remote, "-v"]
+    if client_id:
+        cmd += ["--drive-client-id", client_id]
+    if client_secret:
+        cmd += ["--drive-client-secret", client_secret]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except FileNotFoundError:
+        return {"status": "error", "remote": remote,
+                "output": f"Không tìm thấy rclone (RCLONE_PATH='{settings.rclone_path}'). Cài rclone hoặc đặt đường dẫn."}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "remote": remote, "output": "rclone copy quá thời gian (30 phút)."}
+    output = (proc.stdout or "") + (proc.stderr or "")
+    output = output.strip()[-4000:]
+    return {"status": "ok" if proc.returncode == 0 else "error", "remote": remote, "output": output}
+
 
 @router.get("/drive/pick-folder")
 def pick_drive_folder():
@@ -74,24 +106,30 @@ def drive_page(request: Request):
     with locked_conn(request) as conn:
         targets = repository.list_drive_sync_targets(conn)
         exports = repository.list_all_patch_exports(conn, limit=30)
+        rclone_client_id = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
+        rclone_client_secret = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
     return templates.TemplateResponse(request, "drive.html", {
         "request": request,
         "targets": targets,
         "exports": exports,
+        "rclone_client_id": rclone_client_id,
+        "rclone_client_secret": rclone_client_secret,
     })
 
 
-def _target_fields(name: str, account_email: str, folder_path: str) -> tuple[str, str, str]:
-    name, account_email = name.strip(), account_email.strip()
+def _target_fields(name: str, account_email: str, folder_path: str, rclone_remote: str) -> tuple[str, str, str, str | None]:
+    name, account_email, rclone_remote = name.strip(), account_email.strip(), rclone_remote.strip()
     if not name or not account_email:
         raise ValueError("Name and account email are required")
-    return name, account_email, str(drive_export.validate_sync_folder(folder_path))
+    if rclone_remote and ":" not in rclone_remote:
+        raise ValueError("rclone remote must look like 'remote:path', e.g. codex5:EPUB Audiobook Exports")
+    return name, account_email, str(drive_export.validate_sync_folder(folder_path)), (rclone_remote or None)
 
 
 @router.post("/drive/targets")
-def create_sync_target(request: Request, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...)):
+def create_sync_target(request: Request, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...), rclone_remote: str = Form("")):
     try:
-        fields = _target_fields(name, account_email, folder_path)
+        fields = _target_fields(name, account_email, folder_path, rclone_remote)
         with locked_conn(request) as conn:
             repository.create_drive_sync_target(conn, *fields)
     except ValueError as exc:
@@ -100,9 +138,9 @@ def create_sync_target(request: Request, name: str = Form(...), account_email: s
 
 
 @router.post("/drive/targets/{target_id}/edit")
-def update_sync_target(request: Request, target_id: int, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...)):
+def update_sync_target(request: Request, target_id: int, name: str = Form(...), account_email: str = Form(...), folder_path: str = Form(...), rclone_remote: str = Form("")):
     try:
-        fields = _target_fields(name, account_email, folder_path)
+        fields = _target_fields(name, account_email, folder_path, rclone_remote)
         with locked_conn(request) as conn:
             if not repository.update_drive_sync_target(conn, target_id, *fields):
                 raise HTTPException(status_code=404, detail="Sync target not found")
@@ -117,6 +155,48 @@ def delete_sync_target(request: Request, target_id: int):
         if not repository.delete_drive_sync_target(conn, target_id):
             raise HTTPException(status_code=404, detail="Sync target not found")
     return RedirectResponse(url="/drive", status_code=303)
+
+
+@router.post("/drive/rclone-config")
+def save_rclone_config(request: Request, client_id: str = Form(""), client_secret: str = Form("")):
+    """Store rclone's own Google Drive OAuth client_id/secret (fixes the shared-client
+    deprecation warning). Applied via --drive-client-id/--drive-client-secret on sync."""
+    with locked_conn(request) as conn:
+        repository.set_app_state(conn, _RCLONE_CLIENT_ID_KEY, client_id.strip())
+        repository.set_app_state(conn, _RCLONE_CLIENT_SECRET_KEY, client_secret.strip())
+        conn.commit()
+    return RedirectResponse(url="/drive#rclone", status_code=303)
+
+
+@router.post("/drive/targets/{target_id}/sync")
+def sync_target(request: Request, target_id: int):
+    """rclone copy one target's staging folder up to its Google Drive remote."""
+    with locked_conn(request) as conn:
+        target = repository.get_drive_sync_target(conn, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Sync target not found")
+        if not target.get("rclone_remote"):
+            raise HTTPException(status_code=400, detail="Target này không có rclone remote (Drive Desktop tự đồng bộ).")
+        cid = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
+        cs = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
+    result = _run_rclone_copy(target["folder_path"], target["rclone_remote"], cid, cs)
+    result["name"] = target["name"]
+    return JSONResponse(result)
+
+
+@router.post("/drive/sync-all")
+def sync_all(request: Request):
+    """rclone copy every target that has an rclone remote configured, sequentially."""
+    with locked_conn(request) as conn:
+        targets = [t for t in repository.list_drive_sync_targets(conn) if t.get("rclone_remote")]
+        cid = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
+        cs = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
+    results = []
+    for t in targets:
+        result = _run_rclone_copy(t["folder_path"], t["rclone_remote"], cid, cs)
+        result["name"] = t["name"]
+        results.append(result)
+    return JSONResponse({"count": len(results), "results": results})
 
 
 @router.get("/drive/connect")

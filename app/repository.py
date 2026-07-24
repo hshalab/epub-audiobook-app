@@ -1421,11 +1421,11 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def create_drive_sync_target(conn: sqlite3.Connection, name: str, account_email: str, folder_path: str):
+def create_drive_sync_target(conn: sqlite3.Connection, name: str, account_email: str, folder_path: str, rclone_remote: str | None = None):
     now = _now()
     cur = conn.execute(
-        "INSERT INTO drive_sync_target (name, account_email, folder_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (name, account_email, folder_path, now, now),
+        "INSERT INTO drive_sync_target (name, account_email, folder_path, rclone_remote, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, account_email, folder_path, rclone_remote or None, now, now),
     )
     conn.commit()
     return get_drive_sync_target(conn, cur.lastrowid)
@@ -1440,10 +1440,10 @@ def list_drive_sync_targets(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in conn.execute("SELECT * FROM drive_sync_target ORDER BY name, id").fetchall()]
 
 
-def update_drive_sync_target(conn: sqlite3.Connection, target_id: int, name: str, account_email: str, folder_path: str) -> bool:
+def update_drive_sync_target(conn: sqlite3.Connection, target_id: int, name: str, account_email: str, folder_path: str, rclone_remote: str | None = None) -> bool:
     cur = conn.execute(
-        "UPDATE drive_sync_target SET name = ?, account_email = ?, folder_path = ?, updated_at = ? WHERE id = ?",
-        (name, account_email, folder_path, _now(), target_id),
+        "UPDATE drive_sync_target SET name = ?, account_email = ?, folder_path = ?, rclone_remote = ?, updated_at = ? WHERE id = ?",
+        (name, account_email, folder_path, rclone_remote or None, _now(), target_id),
     )
     conn.commit()
     return cur.rowcount > 0

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     google_drive_client_id: str = ""
     google_drive_client_secret: str = ""
 
+    # rclone binary used to push staging folders (codex5-10 targets) up to Google Drive
+    # from the /drive page. Defaults to the name on PATH; set an absolute path to override.
+    rclone_path: str = "rclone"
+
     # Font path for text overlay on patch background images (Pillow).
     # Set to the absolute path of a .ttf/.otf font file supporting Vietnamese.
     # If empty or file not found, Pillow falls back to its built-in bitmap font.
