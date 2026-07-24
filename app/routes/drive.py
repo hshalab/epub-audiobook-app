@@ -108,12 +108,17 @@ def drive_page(request: Request):
         exports = repository.list_all_patch_exports(conn, limit=30)
         rclone_client_id = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
         rclone_client_secret = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
+        # Drive API accounts (refresh tokens) power the Kaggle GDRIVE_CREDS secret the
+        # batch notebook reads to talk to Drive directly - separate from the desktop /
+        # rclone sync targets above. The copy button below is the only place this is used.
+        accounts = google_drive.list_accounts(conn)
     return templates.TemplateResponse(request, "drive.html", {
         "request": request,
         "targets": targets,
         "exports": exports,
         "rclone_client_id": rclone_client_id,
         "rclone_client_secret": rclone_client_secret,
+        "accounts": accounts,
     })
 
 

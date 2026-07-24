@@ -387,6 +387,21 @@ def test_drive_page_has_desktop_targets(client):
     assert b"Google Drive Desktop" in resp.content
 
 
+def test_drive_page_shows_kaggle_copy_button_when_account_connected(client):
+    """A connected Drive API account surfaces the GDRIVE_CREDS copy button so the
+    Kaggle notebook's one-time secret setup still works (regression: it was dropped
+    when the page was refactored to the desktop-sync UI)."""
+    google_drive.save_credentials(
+        app.state.conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="kaggle@example.com", oauth_client_id=None,
+    )
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert b"GDRIVE_CREDS" in resp.content
+    assert b"copyKaggleCreds" in resp.content
+    assert b"kaggle@example.com" in resp.content
+
+
 # ---------------------------------------------------------------------------
 # Client + OAuth credential integration
 # ---------------------------------------------------------------------------
@@ -414,4 +429,112 @@ def test_kaggle_creds_uses_client_creds():
     )
     row = google_drive.get_account(conn, aid)
     assert row["oauth_client_id"] == cid
+
+
+# ---------------------------------------------------------------------------
+# API batch export route (drive.file upload so Kaggle GDRIVE_CREDS can see it)
+# ---------------------------------------------------------------------------
+
+from app.routes import patches as patches_mod
+
+
+def _insert_book_and_patch_on(conn):
+    conn.execute(
+        """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status,
+                              created_at, updated_at)
+           VALUES (1, 'My Book', 'f.epub', '/tmp/f.epub', 10, 'ready', ?, ?)""",
+        (_NOW, _NOW),
+    )
+    cur = conn.execute(
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
+                               created_at, updated_at)
+           VALUES (1, 0, 0, 0, 'pending', ?, ?)""",
+        (_NOW, _NOW),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_export_batch_api_uploads_and_records(client, monkeypatch, tmp_path):
+    """The API export builds the batch package, uploads it through the drive.file API
+    into the chosen account's Drive, and records a patch_export pointing at the created
+    Drive subfolder - so the Kaggle notebook (same account's GDRIVE_CREDS) can find it."""
+    conn = app.state.conn
+    patch_id = _insert_book_and_patch_on(conn)
+    account_id = google_drive.save_credentials(
+        app.state.conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="kaggle@example.com",
+    )
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    fake_manifest = {"patches": [
+        {"patch_id": patch_id, "patch_index": 0, "folder": "patches/patch_000", "chunk_count": 3},
+    ]}
+    monkeypatch.setattr(patches_mod.drive_export, "build_batch_export_package",
+                        lambda *a, **k: (pkg, fake_manifest))
+    monkeypatch.setattr(patches_mod.google_drive, "get_drive_service", lambda conn, aid: object())
+    monkeypatch.setattr(patches_mod.google_drive, "get_or_create_root_folder", lambda svc: "root_id")
+    monkeypatch.setattr(patches_mod.google_drive, "create_folder",
+                        lambda svc, name, parent_id=None: {"id": "batch_fid", "link": "https://batch"})
+    captured = {}
+
+    def fake_upload(svc, parent_id, local_dir):
+        captured["parent"] = parent_id
+        captured["dir"] = local_dir
+        return {"patches/patch_000": {"id": "p0", "link": "https://p0"}}
+
+    monkeypatch.setattr(patches_mod.google_drive, "upload_directory", fake_upload)
+
+    resp = client.post(
+        "/books/1/patches/export-batch-api",
+        data={"patch_ids": [patch_id], "account_id": account_id},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/books/1"
+    assert captured["parent"] == "batch_fid"  # uploaded into the created batch folder
+    assert captured["dir"] == str(pkg)
+
+    exports = repository.list_patch_exports(conn, patch_id)
+    assert len(exports) == 1
+    assert exports[0].drive_account_id == account_id
+    assert exports[0].drive_folder_id == "p0"  # the patch's own Drive subfolder
+    assert exports[0].exported_chunk_count == 3
+
+
+def test_book_detail_shows_kaggle_api_export_when_account_connected(client):
+    """A connected Drive account surfaces the account picker + 'Export lên Drive
+    (Kaggle)' button that posts to the API export route."""
+    conn = app.state.conn
+    _insert_book_and_patch_on(conn)
+    google_drive.save_credentials(
+        conn, access_token="at", refresh_token="rt", token_expiry=_NOW,
+        account_email="kaggle@example.com",
+    )
+    resp = client.get("/books/1")
+    assert resp.status_code == 200
+    assert "export-batch-api" in resp.text
+    assert "batch-drive-api-btn" in resp.text
+    assert "kaggle@example.com" in resp.text
+
+
+def test_book_detail_no_api_export_without_account(client):
+    """Without a connected Drive account the API export button is absent."""
+    conn = app.state.conn
+    _insert_book_and_patch_on(conn)
+    resp = client.get("/books/1")
+    assert resp.status_code == 200
+    assert "export-batch-api" not in resp.text
+
+
+def test_export_batch_api_unknown_account_returns_400(client):
+    conn = app.state.conn
+    patch_id = _insert_book_and_patch_on(conn)
+    resp = client.post(
+        "/books/1/patches/export-batch-api",
+        data={"patch_ids": [patch_id], "account_id": 999999},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
 

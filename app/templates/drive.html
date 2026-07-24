@@ -64,12 +64,53 @@
     </tbody></table></div>{% else %}<div class="drive-empty">Chưa có đích nào. Hãy thêm folder đầu tiên ở trên.</div>{% endif %}
 </section>
 
+<section class="drive-panel" id="kaggle">
+    <div class="drive-panel-header"><div><h3>Kaggle — GDRIVE_CREDS</h3><p>Để notebook batch chạy trên Kaggle truy cập Drive trực tiếp (tự tải package về và upload .wav lên khi chạy — resume qua nhiều session).</p></div></div>
+    <div class="drive-help" style="margin-bottom:1rem">Bấm <strong>Copy Kaggle credentials</strong> ở tài khoản tương ứng, rồi trên Kaggle vào <strong>Add-ons &gt; Secrets</strong>, tạo secret tên <code>GDRIVE_CREDS</code> với giá trị vừa copy và bật cho notebook. Mỗi tài khoản có credentials riêng — phải dùng đúng tài khoản đang chứa export cần chạy. Secret này chứa refresh token của tài khoản Drive — chỉ dán vào Kaggle Secrets (riêng tư), không dán vào code notebook. Colab thì không cần secret này (Cell 3 tự mount Drive).</div>
+    {% if accounts %}
+    <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+    {% for a in accounts %}<button type="button" class="btn-outline btn-sm" onclick="copyKaggleCreds({{ a.id }})">Copy Kaggle credentials — {{ a.account_email or '(không rõ email)' }}</button>{% endfor %}
+    </div>
+    <textarea id="kaggle-creds-out" readonly rows="3" style="width:100%;display:none;margin-top:.75rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem"></textarea>
+    <p id="kaggle-creds-msg" style="display:none;margin:.6rem 0 0"></p>
+    {% else %}
+    <div class="drive-empty">Chưa có tài khoản Google Drive API nào được kết nối, nên chưa có credentials để copy. Kết nối tài khoản qua <code>/drive/connect</code> trước (chỉ cần cho luồng Kaggle).</div>
+    {% endif %}
+</section>
+
 <section class="drive-panel"><div class="drive-panel-header"><div><h3>Lịch sử export</h3><p>Các package đã tạo vẫn giữ nguyên ngay cả khi bạn xóa cấu hình đích.</p></div></div>
 {% if exports %}<div class="table-wrap drive-table-wrap"><table class="drive-table"><thead><tr><th>Book</th><th>Patch</th><th>Đích</th><th>Folder package</th><th>Status</th><th>Import</th></tr></thead><tbody>{% for e in exports %}<tr><td><a href="/books/{{ e.book_id }}">{{ e.book_title }}</a></td><td><a href="/books/{{ e.book_id }}/patches/{{ e.patch_id }}/chunks">{{ e.patch_index }}</a></td><td>{{ e.sync_target_name or e.sync_target_email or e.account_email or 'Legacy Drive API' }}</td><td><code class="drive-path-code" title="{{ e.local_folder_path or e.drive_folder_link }}">{{ e.local_folder_path or e.drive_folder_link }}</code></td><td>{{ e.status }}</td><td>{{ e.imported_chunk_count }}/{{ e.exported_chunk_count }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="drive-empty">Chưa có package export.</div>{% endif %}
 </section>
 {% endblock %}
 
 {% block scripts %}<script>
+async function copyKaggleCreds(accountId) {
+    const msg = document.getElementById('kaggle-creds-msg');
+    const out = document.getElementById('kaggle-creds-out');
+    if (!msg || !out) return;
+    try {
+        const res = await fetch('/drive/kaggle-credentials?account_id=' + accountId);
+        if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error((body && body.detail) || res.statusText);
+        }
+        const text = JSON.stringify(await res.json());
+        out.value = text;
+        try {
+            await navigator.clipboard.writeText(text);
+            msg.textContent = 'Đã copy vào clipboard — dán vào Kaggle secret GDRIVE_CREDS.';
+        } catch (e) {
+            out.style.display = 'block';
+            out.select();
+            msg.textContent = 'Không copy tự động được — JSON hiển thị bên dưới, hãy copy thủ công.';
+        }
+        msg.style.color = 'var(--text-muted)';
+    } catch (e) {
+        msg.textContent = 'Lỗi: ' + e.message;
+        msg.style.color = 'var(--color-error)';
+    }
+    msg.style.display = 'block';
+}
 document.getElementById('pick-folder')?.addEventListener('click', async function () {
     const button = this, input = document.getElementById('target-path');
     const originalHTML = button.innerHTML;

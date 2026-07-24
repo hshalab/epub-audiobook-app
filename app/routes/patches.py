@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import audio_merge, drive_export, image_overlay, repository, video_gen, video_repository
+from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
@@ -422,6 +422,54 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
             logger.exception("batch export to Google Drive failed for book %s", book_id)
             conn.rollback()
             raise HTTPException(status_code=500, detail=f"Drive Desktop export failed: {exc}")
+        finally:
+            shutil.rmtree(package_dir, ignore_errors=True)
+
+    return RedirectResponse(url=f"/books/{book_id}", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/export-batch-api")
+def export_batch_to_drive_api(request: Request, book_id: int, patch_ids: list[int] = Form(...), account_id: int = Form(...)):
+    """Upload the batch package to Google Drive via the Drive API (drive.file scope) so
+    the Kaggle notebook can use it. This is the API counterpart of export_batch_to_drive,
+    which copies into a local Google Drive Desktop folder - files that arrive on Drive
+    that way (or via rclone / manual upload) are invisible to the drive.file scope the
+    Kaggle GDRIVE_CREDS secret uses, so Kaggle could never find them. Uploading through
+    the app's own API makes the batch (and every result the notebook pushes back) visible
+    to those same credentials.
+
+    The account chosen here MUST be the one whose "Copy Kaggle credentials" JSON is stored
+    in the Kaggle GDRIVE_CREDS secret: drive.file only reveals files created by that exact
+    account."""
+    with locked_conn(request) as conn:
+        book, patches = _load_batch_patches(conn, book_id, patch_ids)
+        if google_drive.get_account(conn, account_id) is None:
+            raise HTTPException(status_code=400, detail="Google Drive account not found")
+
+        folder_name = drive_export.folder_name_for_batch(book.title, patches)
+        package_dir, batch_manifest = _build_or_400(
+            drive_export.build_batch_export_package,
+            conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
+        )
+        try:
+            service = google_drive.get_drive_service(conn, account_id)
+            root_id = google_drive.get_or_create_root_folder(service)
+            batch_folder = google_drive.create_folder(service, folder_name, parent_id=root_id)
+            folder_map = google_drive.upload_directory(service, batch_folder["id"], str(package_dir))
+            for entry in batch_manifest["patches"]:
+                sub = folder_map.get(entry["folder"], batch_folder)
+                repository.create_patch_export(
+                    conn, entry["patch_id"], sub["id"], sub["link"], entry["chunk_count"],
+                    drive_account_id=account_id, commit=False,
+                )
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as exc:
+            logger.exception("batch export to Google Drive API failed for book %s", book_id)
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=f"Drive API export failed: {exc}")
         finally:
             shutil.rmtree(package_dir, ignore_errors=True)
 

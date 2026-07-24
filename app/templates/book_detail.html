@@ -242,6 +242,16 @@
     <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
             formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
     {% endif %}
+    {% if drive_accounts %}
+    <select name="account_id" id="batch-drive-account" form="batch-export-form"
+            title="Tài khoản Drive phải trùng với secret GDRIVE_CREDS đã đặt trên Kaggle">
+        <option value="">Chọn tài khoản (Kaggle)</option>
+        {% for a in drive_accounts %}<option value="{{ a.id }}">{{ a.account_email or ('account #' ~ a.id) }}</option>{% endfor %}
+    </select>
+    <button type="submit" form="batch-export-form" id="batch-drive-api-btn" class="btn-outline btn-sm" disabled
+            formaction="/books/{{ book.id }}/patches/export-batch-api"
+            title="Upload batch lên Drive qua API để chạy trên Kaggle (Cell 4 dùng GDRIVE_CREDS)">Export lên Drive (Kaggle)</button>
+    {% endif %}
     <span id="patch-selection-count" style="margin-left:auto;font-size:var(--font-size-xs);color:var(--text-muted)"></span>
     <button type="button" class="btn-outline btn-sm" id="copy-yt-desc">Copy Description</button>
 </div>
@@ -608,14 +618,20 @@ const LIGHT_TTS_ACTIVE = new Set();
     // at least one patch is selected (the server validates too).
     const selectAll = document.getElementById('batch-select-all');
     const checkboxes = Array.from(document.querySelectorAll('.batch-patch-checkbox'));
-    const batchButtons = ['batch-download-btn', 'batch-drive-btn']
+    const batchButtons = ['batch-download-btn', 'batch-drive-btn', 'batch-drive-api-btn']
         .map(id => document.getElementById(id)).filter(Boolean);
     const target = document.getElementById('batch-sync-target');
+    const account = document.getElementById('batch-drive-account');
 
     function refreshBatchButtons() {
         const visibleCheckboxes = checkboxes.filter(cb => cb.closest('tr').style.display !== 'none');
         const anyChecked = checkboxes.some(cb => cb.checked);
-        batchButtons.forEach(btn => { btn.disabled = !anyChecked || (btn.id === 'batch-drive-btn' && !target.value); });
+        batchButtons.forEach(btn => {
+            let disabled = !anyChecked;
+            if (btn.id === 'batch-drive-btn') disabled = disabled || !target || !target.value;
+            if (btn.id === 'batch-drive-api-btn') disabled = disabled || !account || !account.value;
+            btn.disabled = disabled;
+        });
         if (selectAll) {
             const enabled = visibleCheckboxes.filter(cb => !cb.disabled);
             selectAll.checked = enabled.length > 0 && enabled.every(cb => cb.checked);
@@ -639,6 +655,7 @@ const LIGHT_TTS_ACTIVE = new Set();
     }
     checkboxes.forEach(cb => cb.addEventListener('change', refreshBatchButtons));
     if (target) target.addEventListener('change', refreshBatchButtons);
+    if (account) account.addEventListener('change', refreshBatchButtons);
     refreshBatchButtons();
 })();
 
@@ -647,7 +664,7 @@ const LIGHT_TTS_ACTIVE = new Set();
     if (!form) return;
     form.addEventListener('submit', async function (event) {
         const submitter = event.submitter;
-        if (!submitter || submitter.id !== 'batch-drive-btn') return;
+        if (!submitter || (submitter.id !== 'batch-drive-btn' && submitter.id !== 'batch-drive-api-btn')) return;
         event.preventDefault();
         const action = submitter.formAction || form.action;
         submitter.disabled = true;

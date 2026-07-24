@@ -24,6 +24,7 @@ $targets = @(
     @{ Remote = "codex8";  Local = "D:\RcloneDriveStaging\codex8" },
     @{ Remote = "codex9";  Local = "D:\RcloneDriveStaging\codex9" },
     @{ Remote = "codex10"; Local = "D:\RcloneDriveStaging\codex10" }
+    @{ Remote = "huytd"; Local = "D:\RcloneDriveStaging\huytd" }
 )
 
 foreach ($t in $targets) {
