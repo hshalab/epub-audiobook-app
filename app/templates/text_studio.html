@@ -169,6 +169,7 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
             <button class="btn-outline btn-sm" onclick="analyzeText()">Phân tích</button>
             <button class="btn-outline btn-sm" onclick="resetText()">↩ Bản gốc</button>
             <button class="btn-outline btn-sm" id="btnPreviewPatch" onclick="previewPatch()">🔊 Preview nhanh</button>
+            <button class="btn-outline btn-sm" id="btnGenerateLightTTS" onclick="generateLightTTS()">💾 Generate LightTTS</button>
             <label style="font-size:var(--font-size-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="fxToggle"> FX</label>
             <div class="ts-status" id="statusLine">
                 {% if patch and patch.clean_text %}<span class="edited">Đã chỉnh sửa</span>{% else %}Bản gốc{% endif %}
@@ -712,25 +713,81 @@ async function previewPatch() {
     if (!currentPatchId) return;
     const btn = document.getElementById('btnPreviewPatch');
     btn.disabled = true;
-    btn.textContent = 'Đang tạo...';
-    try {
-        const backend = document.getElementById('ttsBackendSelect').value;
-        const voice = document.getElementById('ttsVoiceSelect').value;
-        const withFx = document.getElementById('fxToggle').checked;
-        const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-patch`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ with_effects: withFx, backend: backend || undefined, voice: voice || undefined })
-        });
-        if (!res.ok) { alert('Lỗi preview'); return; }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = document.getElementById('patchAudio');
-        audio.src = url;
-        document.getElementById('mediaPreview').style.display = '';
-        audio.play().catch(() => {});
-    } finally {
+    btn.textContent = 'Chunk 0/...';
+
+    const backend = document.getElementById('ttsBackendSelect').value;
+    const voice = document.getElementById('ttsVoiceSelect').value;
+    const withFx = document.getElementById('fxToggle').checked ? 1 : 0;
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let nextStartTime = ctx.currentTime + 0.05;
+
+    const params = new URLSearchParams({
+        backend: backend || '', voice: voice || '', with_effects: withFx,
+    });
+    const url = `/books/${bookId}/text-studio/patches/${currentPatchId}/preview-stream?${params}`;
+    const es = new EventSource(url);
+
+    es.onmessage = async (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch { return; }
+
+        if (msg.type === 'chunk') {
+            btn.textContent = `Chunk ${msg.index + 1}/${msg.total}...`;
+            try {
+                const resp = await fetch(msg.url);
+                const buf = await resp.arrayBuffer();
+                const audio = await ctx.decodeAudioData(buf);
+                const src = ctx.createBufferSource();
+                src.buffer = audio;
+                src.connect(ctx.destination);
+                const startAt = Math.max(nextStartTime, ctx.currentTime);
+                src.start(startAt);
+                nextStartTime = startAt + audio.duration;
+            } catch (_) {}
+        } else if (msg.type === 'done') {
+            es.close();
+            btn.disabled = false;
+            btn.textContent = '🔊 Preview nhanh';
+            document.getElementById('mediaPreview').style.display = '';
+            const item = document.querySelector(`.ts-patch-item[data-patch-id="${currentPatchId}"]`);
+            if (item) { const dot = item.querySelector('.dot'); if (dot) dot.className = 'dot done'; }
+        } else if (msg.type === 'error') {
+            es.close();
+            btn.disabled = false;
+            btn.textContent = '🔊 Preview nhanh';
+            alert('Lỗi preview: ' + msg.message);
+        }
+    };
+    es.onerror = () => {
+        es.close();
         btn.disabled = false;
         btn.textContent = '🔊 Preview nhanh';
+    };
+}
+
+async function generateLightTTS() {
+    if (!currentPatchId) return;
+    const btn = document.getElementById('btnGenerateLightTTS');
+    btn.disabled = true;
+    btn.textContent = 'Đang generate...';
+    const backend = document.getElementById('ttsBackendSelect').value;
+    const voice = document.getElementById('ttsVoiceSelect').value;
+    const withFx = document.getElementById('fxToggle').checked;
+    try {
+        const res = await fetch(`/books/${bookId}/patches/${currentPatchId}/light-tts-generate`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({backend: backend||undefined, voice: voice||undefined, with_effects: withFx})
+        });
+        const data = await res.json();
+        if (!res.ok) { alert('Lỗi: ' + (data.detail || res.status)); return; }
+        const item = document.querySelector(`.ts-patch-item[data-patch-id="${currentPatchId}"]`);
+        if (item) { const dot = item.querySelector('.dot'); if (dot) dot.className = 'dot done'; }
+    } catch (e) {
+        alert('Lỗi kết nối');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '💾 Generate LightTTS';
     }
 }
 

@@ -424,6 +424,7 @@
     <div class="card-header">
         <h3 style="margin:0">Patches ({{ patches|length }})</h3>
         <div style="display:flex;gap:var(--space-sm);align-items:center">
+            <button type="button" class="btn-outline btn-sm" id="btnRunAllLightTTS" onclick="runAllLightTTS()">▶ Run All LightTTS</button>
             <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled
                     title="Download the selected patches as one zip (chunks + batch notebook for Colab/Kaggle)">
                 Download selected (.zip)
@@ -497,6 +498,8 @@
                 <td class="patch-actions">
                     <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/chunks" class="btn-outline btn-sm">Chunks</a>
+                    <button type="button" class="btn-outline btn-sm" onclick="runLightTTSPatch({{ patch.id }}, this)"
+                        {% if patch.status == 'processing' %}disabled{% endif %}>▶ LightTTS</button>
                     {% if patch.status != "processing" %}
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>
@@ -1038,5 +1041,54 @@ document.getElementById('copy-yt-desc')?.addEventListener('click', async functio
         showToast(e.message || 'Copy failed', 'error');
     }
 });
+
+async function runLightTTSPatch(patchId, btn) {
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/patches/${patchId}/light-tts-generate`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!res.ok) { alert('Lỗi: ' + (data.detail || res.status)); btn.disabled = false; btn.textContent = origText; return; }
+        const el = document.getElementById(`patch-status-${patchId}`);
+        if (el) el.innerHTML = '<span class="badge badge-done">Done</span>';
+        btn.textContent = '✓ Done';
+    } catch (e) {
+        alert('Lỗi kết nối');
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+}
+
+async function runAllLightTTS() {
+    const btn = document.getElementById('btnRunAllLightTTS');
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = 'Đang chạy...';
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/light-tts-generate-all`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!res.ok) { alert('Lỗi: ' + (data.detail || res.status)); btn.disabled = false; btn.textContent = origText; return; }
+        let done = 0, errors = 0;
+        for (const r of (data.results || [])) {
+            if (r.status === 'done') {
+                done++;
+                const el = document.getElementById(`patch-status-${r.patch_id}`);
+                if (el) el.innerHTML = '<span class="badge badge-done">Done</span>';
+            } else if (r.status === 'error') { errors++; }
+        }
+        btn.textContent = `${done} done${errors ? ', ' + errors + ' lỗi' : ''}`;
+    } catch (e) {
+        alert('Lỗi kết nối');
+    } finally {
+        btn.disabled = false;
+    }
+}
 </script>
 {% endblock %}
