@@ -78,7 +78,9 @@
     <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
         Chọn model (backend) và giọng đọc dùng khi chạy LightTTS cho các patch bên dưới.
         LightTTS tổng hợp <strong>theo từng đoạn/câu (chunk)</strong> chứ không chạy cả patch cùng một lúc —
-        nên nhanh và không bị lỗi kết nối với patch dài. Cài đặt được lưu lại trên trình duyệt.
+        nên nhanh và không bị lỗi kết nối với patch dài. Chunk đã tạo được <strong>lưu lại</strong>;
+        chunk lỗi được tự động thử lại, và chạy lại chỉ tổng hợp các chunk còn thiếu.
+        Cài đặt được lưu lại trên trình duyệt.
     </p>
     <div class="form-group">
         <label for="bookTtsBackend">Model / Backend</label>
@@ -1284,7 +1286,13 @@ function streamLightTTS(patchId, onChunk) {
                 failed++;
                 if (onChunk) onChunk(msg.index + 1, msg.total, failed);
             } else if (msg.type === 'done') {
-                settle(resolve, { ok: msg.ok, failed: (msg.failed != null ? msg.failed : failed) });
+                const nFailed = (msg.failed != null ? msg.failed : failed);
+                settle(resolve, {
+                    ok: msg.ok,
+                    failed: nFailed,
+                    // Older server payloads lack `complete`; infer from failures.
+                    complete: (msg.complete != null ? msg.complete : nFailed === 0),
+                });
             } else if (msg.type === 'error') {
                 settle(reject, new Error(msg.message || 'TTS lỗi'));
             }
@@ -1296,20 +1304,72 @@ function streamLightTTS(patchId, onChunk) {
     });
 }
 
+// Re-run the stream until every chunk exists, up to this many passes. Chunks
+// persist server-side, so each pass only synthesizes the still-missing ones.
+const LIGHT_TTS_MAX_PASSES = 3;
+const LIGHT_TTS_RETRY_DELAY_MS = 800;
+
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Drive a patch to completion across multiple passes. A pass can end two ways:
+// resolve (server finished the stream, maybe with skipped chunks) or reject
+// (engine error, all-chunks-failed, or a dropped SSE connection). BOTH are
+// retried — the retry only stops once a pass fails to complete any more chunks
+// than the best previous pass, which means the remaining failure is
+// deterministic (bad config / permanently bad chunk) and looping won't help.
+async function runPatchToCompletion(patchId, onChunk, onRetry) {
+    let bestProgress = 0;      // most chunks successfully done in any pass so far
+    let lastResolved = null;
+    let lastError = null;
+    for (let pass = 1; pass <= LIGHT_TTS_MAX_PASSES; pass++) {
+        let passProgress = 0;
+        try {
+            const res = await streamLightTTS(patchId, (done, total, failed) => {
+                passProgress = done - failed;   // chunks done (excl. failures) this pass
+                if (onChunk) onChunk(done, total, failed);
+            });
+            lastResolved = res;
+            lastError = null;
+            if (res.complete) return res;
+        } catch (e) {
+            lastError = e;
+        }
+        // No forward progress over the best pass so far → stop retrying.
+        if (passProgress <= bestProgress) break;
+        bestProgress = passProgress;
+        if (pass < LIGHT_TTS_MAX_PASSES) {
+            if (onRetry) onRetry(pass + 1);
+            await _sleep(LIGHT_TTS_RETRY_DELAY_MS);
+        }
+    }
+    // Prefer a partial-but-saved result (chunks on disk, user can resume) over
+    // throwing; only surface an error when no pass ever made progress.
+    if (lastResolved) return lastResolved;
+    throw lastError || new Error('LightTTS lỗi');
+}
+
 async function runLightTTSPatch(patchId, btn) {
     const origText = btn.textContent;
     btn.disabled = true;
     btn.textContent = '0/…';
     setPatchStatus(patchId, '<span class="badge badge-processing">Đang xử lý</span>');
     try {
-        const res = await streamLightTTS(patchId, (done, total, failed) => {
+        const res = await runPatchToCompletion(patchId, (done, total, failed) => {
             btn.textContent = `${done}/${total}`;
             setPatchProgress(patchId, done, total, failed);
+        }, (nextPass) => {
+            btn.textContent = `↻ thử lại (lượt ${nextPass})…`;
         });
-        const failed = (res && res.failed) || 0;
-        setPatchStatus(patchId, '<span class="badge badge-done">Hoàn tất</span>');
-        btn.textContent = failed ? `✓ Done (${failed} lỗi)` : '✓ Done';
-        if (failed) showToast(`Patch đã lưu, bỏ qua ${failed} chunk lỗi`, 'error');
+        if (res.complete) {
+            setPatchStatus(patchId, '<span class="badge badge-done">Hoàn tất</span>');
+            btn.textContent = '✓ Done';
+        } else {
+            // Progress is saved server-side; another run resumes at the missing chunks.
+            setPatchStatus(patchId, '<span class="badge badge-failed">Còn lỗi</span>');
+            showToast(`Còn ${res.failed} chunk lỗi — bấm Run để chạy tiếp các chunk thiếu`, 'error');
+            btn.disabled = false;
+            btn.textContent = `↻ Còn ${res.failed} chunk`;
+        }
     } catch (e) {
         setPatchStatus(patchId, '<span class="badge badge-failed">Thất bại</span>');
         showToast('LightTTS lỗi: ' + (e.message || e), 'error');
@@ -1336,15 +1396,21 @@ async function runAllLightTTS() {
         return;
     }
 
-    let done = 0, errors = 0, skipped = 0;
+    let done = 0, errors = 0, incomplete = 0;
     for (const pid of patchIds) {
-        btn.textContent = `Patch ${done + errors + 1}/${patchIds.length}…`;
+        btn.textContent = `Patch ${done + errors + incomplete + 1}/${patchIds.length}…`;
         setPatchStatus(pid, '<span class="badge badge-processing">Đang xử lý</span>');
         try {
-            const res = await streamLightTTS(pid, (c, t, f) => setPatchProgress(pid, c, t, f));
-            setPatchStatus(pid, '<span class="badge badge-done">Hoàn tất</span>');
-            skipped += (res && res.failed) || 0;
-            done++;
+            const res = await runPatchToCompletion(pid, (c, t, f) => setPatchProgress(pid, c, t, f), (nextPass) => {
+                btn.textContent = `Patch ${done + errors + incomplete + 1}/${patchIds.length} ↻ thử lại…`;
+            });
+            if (res.complete) {
+                setPatchStatus(pid, '<span class="badge badge-done">Hoàn tất</span>');
+                done++;
+            } else {
+                setPatchStatus(pid, '<span class="badge badge-failed">Còn lỗi</span>');
+                incomplete++;
+            }
         } catch (e) {
             setPatchStatus(pid, '<span class="badge badge-failed">Thất bại</span>');
             errors++;
@@ -1352,7 +1418,7 @@ async function runAllLightTTS() {
     }
     let summary = `${done} xong`;
     if (errors) summary += `, ${errors} lỗi`;
-    if (skipped) summary += `, bỏ qua ${skipped} chunk`;
+    if (incomplete) summary += `, ${incomplete} chưa đủ chunk (chạy lại để tiếp tục)`;
     btn.textContent = summary;
     btn.disabled = false;
     setTimeout(() => { btn.textContent = origText; }, 4000);

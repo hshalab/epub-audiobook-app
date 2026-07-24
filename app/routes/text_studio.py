@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
 import re
 import threading
+import time
 import uuid as _uuid
 from pathlib import Path
 
@@ -99,6 +101,25 @@ def _mix_effects(wav_bytes: bytes, text: str, conn) -> bytes:
     return out_buf.getvalue()
 
 
+def _synth_chunk_with_retries(
+    engine: LightTTSEngine, chunk_text: str, voice: str | None = None
+) -> bytes:
+    """Synthesize one chunk, retrying up to ``light_tts_chunk_retries`` times with a
+    short backoff before giving up. Runs synchronously — call via asyncio.to_thread
+    from async code. Raises the last error once every attempt has failed."""
+    attempts = max(1, settings.light_tts_chunk_retries)
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text, voice)
+            return wav_bytes
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.5 * (attempt + 1))
+    raise last_exc
+
+
 def _light_synthesize_patch(
     patch_id: int,
     book_id: int,
@@ -128,10 +149,10 @@ def _light_synthesize_patch(
     chunk_paths = []
     for i, chunk_text in enumerate(chunks):
         try:
-            wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text)
+            wav_bytes = _synth_chunk_with_retries(engine, chunk_text)
         except Exception:
-            # Skip a failed chunk and keep going so one bad chunk doesn't lose the
-            # whole patch; missing chunks are simply omitted from the merge.
+            # Retries exhausted: skip this chunk and keep going so one bad chunk
+            # doesn't lose the whole patch; missing chunks are omitted from the merge.
             logger.warning("light-tts chunk %s of patch %s failed", i, patch_id, exc_info=True)
             continue
         chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
@@ -563,6 +584,25 @@ def serve_preview_tmp(filename: str):
     return FileResponse(str(p), media_type="audio/wav")
 
 
+@router.get("/books/{book_id}/patches/{patch_id}/chunk-audio/{index}")
+def serve_patch_chunk_audio(request: Request, book_id: int, patch_id: int, index: int):
+    """Serve one persisted chunk WAV from the patch's chunk dir. Used by the
+    preview-stream client to play chunks as they land (or are reused)."""
+    if index < 0:
+        raise HTTPException(status_code=400, detail="invalid chunk index")
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+    p = (
+        Path(settings.data_root) / "books" / str(book_id) / "patches"
+        / f"{patch_id}_chunks" / f"chunk_{index:03d}.wav"
+    )
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="chunk not found")
+    return FileResponse(str(p), media_type="audio/wav")
+
+
 @router.get("/books/{book_id}/text-studio/patches/{patch_id}/preview-stream")
 async def preview_stream(
     request: Request,
@@ -593,16 +633,34 @@ async def preview_stream(
         from app import audio_merge
         from app.chunker import split_into_tts_chunks
 
-        tmp_dir = Path(settings.data_root) / "preview_tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        for old in tmp_dir.glob(f"{patch_id}_*.wav"):
-            old.unlink(missing_ok=True)
-
-        session_token = _uuid.uuid4().hex[:8]
         chunks = split_into_tts_chunks(text, max_chars=_max_chars)
         total = len(chunks)
-        tmp_paths = []
+        if total == 0:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Patch này không có chunk nào'})}\n\n"
+            return
+
+        # Chunks persist in the same dir the worker/import paths use, so a re-run
+        # after failures only synthesizes the still-missing indices.
+        book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+        chunk_dir = book_dir / f"{patch_id}_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+
+        # Existing chunk files are only reusable if they came from the same
+        # text/split/backend/voice; a meta marker records those inputs. On
+        # mismatch (or files from the worker/Drive flows, which write no marker)
+        # start from a clean dir so we never merge mixed-source audio.
+        meta_key = hashlib.md5(
+            f"{_backend}|{_voice}|{_max_chars}|{text}".encode("utf-8")
+        ).hexdigest()
+        meta_path = chunk_dir / ".light_tts_meta"
+        try:
+            reusable = meta_path.read_text(encoding="utf-8").strip() == meta_key
+        except OSError:
+            reusable = False
+        if not reusable:
+            for old in chunk_dir.glob("chunk_*.wav"):
+                old.unlink(missing_ok=True)
+            meta_path.write_text(meta_key, encoding="utf-8")
 
         # Keep the stored estimate in sync with the real split (default config only).
         if max_chars == 0 and patch.chunk_count != total:
@@ -615,37 +673,62 @@ async def preview_stream(
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
             return
 
+        cache_bust = _uuid.uuid4().hex[:8]
         fail_count = 0
+        ok_count = 0
+        contiguous = 0      # length of the unbroken run of chunks present from index 0
+        prefix_open = True  # False once a gap appears — later chunks can't extend it
         for i, chunk_text in enumerate(chunks):
-            try:
-                wav_bytes, _ = await asyncio.to_thread(
-                    engine.synthesize_to_wav_bytes, chunk_text, _voice or None
-                )
-            except Exception as exc:
-                # A single failing chunk must not abort the whole patch: record
-                # it, tell the client, and carry on with the next chunk. The
-                # failed chunk is simply omitted from the merge.
-                fail_count += 1
-                logger.warning("preview_stream chunk %s of patch %s failed: %s", i, patch_id, exc)
-                yield f"data: {json.dumps({'type': 'chunk_error', 'index': i, 'total': total, 'message': str(exc)})}\n\n"
-                continue
+            chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
+            chunk_url = f"/books/{book_id}/patches/{patch_id}/chunk-audio/{i}?v={cache_bust}"
+            present = False
+            if chunk_path.is_file():
+                # Already synthesized on a previous run with the same settings.
+                ok_count += 1
+                present = True
+                yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': total, 'url': chunk_url, 'reused': True})}\n\n"
+            else:
+                try:
+                    wav_bytes = await asyncio.to_thread(
+                        _synth_chunk_with_retries, engine, chunk_text, _voice or None
+                    )
+                except Exception as exc:
+                    # Retries exhausted for this chunk: record it, tell the client,
+                    # and carry on. The index stays missing on disk so a later run
+                    # picks it up again instead of redoing the whole patch.
+                    fail_count += 1
+                    logger.warning("preview_stream chunk %s of patch %s failed: %s", i, patch_id, exc)
+                    yield f"data: {json.dumps({'type': 'chunk_error', 'index': i, 'total': total, 'message': str(exc)})}\n\n"
+                else:
+                    chunk_path.write_bytes(wav_bytes)
+                    ok_count += 1
+                    present = True
+                    yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': total, 'url': chunk_url})}\n\n"
 
-            tmp_name = f"{patch_id}_{session_token}_{i}.wav"
-            tmp_path = tmp_dir / tmp_name
-            tmp_path.write_bytes(wav_bytes)
-            tmp_paths.append(str(tmp_path))
+            # Persist the contiguous prefix as we go, so a mid-stream reload (which
+            # cancels this generator) still leaves next_chunk_index matching disk.
+            if prefix_open:
+                if present:
+                    contiguous = i + 1
+                else:
+                    prefix_open = False
+                with db_lock:
+                    repository.update_patch_chunk_progress(conn_ref, patch_id, contiguous)
 
-            yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': total, 'url': f'/preview-tmp/{tmp_name}'})}\n\n"
-
-        if not tmp_paths:
+        if ok_count == 0:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Tất cả chunk đều lỗi, không có audio để lưu'})}\n\n"
             return
 
+        if fail_count:
+            # Incomplete: do NOT merge or mark done with holes in the audio.
+            # Synthesized chunks stay on disk; the client re-runs to fill the gaps.
+            yield f"data: {json.dumps({'type': 'done', 'saved': False, 'complete': False, 'ok': ok_count, 'failed': fail_count})}\n\n"
+            return
+
         try:
-            book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-            book_dir.mkdir(parents=True, exist_ok=True)
             audio_path = str(book_dir / f"{patch_id}.wav")
-            await asyncio.to_thread(audio_merge.merge_chunk_files_to_patch, tmp_paths, audio_path)
+            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
+            await asyncio.to_thread(audio_merge.merge_chunk_files_to_patch, chunk_paths, audio_path)
 
             if _with_effects:
                 merged_bytes = Path(audio_path).read_bytes()
@@ -656,7 +739,7 @@ async def preview_stream(
             with db_lock:
                 repository.mark_patch_done(conn_ref, patch_id, audio_path)
 
-            yield f"data: {json.dumps({'type': 'done', 'saved': True, 'ok': len(tmp_paths), 'failed': fail_count})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'saved': True, 'complete': True, 'ok': ok_count, 'failed': 0})}\n\n"
         except Exception as exc:
             logger.exception("preview_stream merge/save failed for patch %s", patch_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"

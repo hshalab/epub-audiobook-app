@@ -290,6 +290,10 @@ class PatchWorker:
 
         chunk_dir = book_dir / f"{patch.id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
+        # The LightTTS preview-stream reuses chunk files only when its meta marker
+        # matches; the worker writes different audio, so drop the marker to keep
+        # LightTTS from ever merging worker-produced chunks as its own.
+        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
         try:
             chunks = split_into_tts_chunks(patch_text, max_chars=patch.max_chars or settings.tts_max_chars)
             with self.db_lock:

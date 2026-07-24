@@ -451,6 +451,8 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
 
         chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
+        # Imported chunks are not LightTTS output — invalidate its reuse marker.
+        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
 
         try:
             source_dir = package_folder / "output"
@@ -517,6 +519,8 @@ async def import_patch_from_upload(
 
         chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
+        # Uploaded chunks are not LightTTS output — invalidate its reuse marker.
+        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
 
         # Pull every chunk_NNN.wav out of the uploads (loose .wav files and/or .zip archives)
         # and drop them into the chunk dir, keeping only names we actually expect.

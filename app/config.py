@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # Directory holding piper *.onnx models. A piper voice id is resolved to
     # "<piper_voices_dir>/<id>.onnx" at synth time. Empty => use the id as-is.
     piper_voices_dir: str = ""
+    # How many times to attempt each LightTTS chunk before reporting it failed.
+    light_tts_chunk_retries: int = 3
 
 
 settings = Settings()
