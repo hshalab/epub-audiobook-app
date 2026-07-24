@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import re
 import threading
+import uuid as _uuid
 from pathlib import Path
 
 import numpy as np
@@ -466,3 +468,99 @@ async def light_tts_generate_all(request: Request, book_id: int):
             results.append({"patch_id": patch.id, "status": "error", "detail": str(exc)})
 
     return JSONResponse({"results": results})
+
+
+_SAFE_PREVIEW_NAME = re.compile(r"^[\w\-]+\.wav$")
+
+
+@router.get("/preview-tmp/{filename}")
+def serve_preview_tmp(filename: str):
+    if not _SAFE_PREVIEW_NAME.match(filename):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    p = Path(settings.data_root) / "preview_tmp" / filename
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(str(p), media_type="audio/wav")
+
+
+@router.get("/books/{book_id}/text-studio/patches/{patch_id}/preview-stream")
+async def preview_stream(
+    request: Request,
+    book_id: int,
+    patch_id: int,
+    backend: str = "",
+    voice: str = "",
+    with_effects: int = 0,
+):
+    from starlette.responses import StreamingResponse
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        text = repository.get_effective_patch_text(conn, patch)
+
+    _backend = backend or settings.light_tts_backend
+    _voice = voice or settings.light_tts_voice
+    _with_effects = bool(with_effects)
+    db_lock = request.app.state.db_lock
+    conn_ref = request.app.state.conn
+
+    async def _generate():
+        from app import audio_merge
+        from app.chunker import split_into_tts_chunks
+
+        tmp_dir = Path(settings.data_root) / "preview_tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        for old in tmp_dir.glob(f"{patch_id}_*.wav"):
+            old.unlink(missing_ok=True)
+
+        session_token = _uuid.uuid4().hex[:8]
+        chunks = split_into_tts_chunks(text, max_chars=patch.max_chars or settings.tts_max_chars)
+        total = len(chunks)
+        tmp_paths = []
+
+        try:
+            engine = LightTTSEngine(backend=_backend, voice=_voice or None)
+        except RuntimeError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            return
+
+        for i, chunk_text in enumerate(chunks):
+            try:
+                wav_bytes, _ = await asyncio.to_thread(
+                    engine.synthesize_to_wav_bytes, chunk_text, _voice or None
+                )
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'chunk {i} failed: {exc}'})}\n\n"
+                return
+
+            tmp_name = f"{patch_id}_{session_token}_{i}.wav"
+            tmp_path = tmp_dir / tmp_name
+            tmp_path.write_bytes(wav_bytes)
+            tmp_paths.append(str(tmp_path))
+
+            yield f"data: {json.dumps({'type': 'chunk', 'index': i, 'total': total, 'url': f'/preview-tmp/{tmp_name}'})}\n\n"
+
+        try:
+            book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+            book_dir.mkdir(parents=True, exist_ok=True)
+            audio_path = str(book_dir / f"{patch_id}.wav")
+            await asyncio.to_thread(audio_merge.merge_chunk_files_to_patch, tmp_paths, audio_path)
+
+            if _with_effects:
+                merged_bytes = Path(audio_path).read_bytes()
+                with db_lock:
+                    mixed = _mix_effects(merged_bytes, text, conn_ref)
+                Path(audio_path).write_bytes(mixed)
+
+            with db_lock:
+                repository.mark_patch_done(conn_ref, patch_id, audio_path)
+
+            yield f"data: {json.dumps({'type': 'done', 'saved': True})}\n\n"
+        except Exception as exc:
+            logger.exception("preview_stream merge/save failed for patch %s", patch_id)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")

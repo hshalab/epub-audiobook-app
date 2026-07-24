@@ -5,6 +5,7 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -40,6 +41,7 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     conn = db.connect(settings.db_path)
     db.init_schema(conn)
+    Path(settings.data_root, "preview_tmp").mkdir(parents=True, exist_ok=True)
     requeued_patches = repository.requeue_stuck_processing_returning(conn)
     if requeued_patches:
         logging.info(
