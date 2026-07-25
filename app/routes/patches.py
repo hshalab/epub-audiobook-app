@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository
@@ -171,8 +172,86 @@ def get_patch_image(request: Request, book_id: int, patch_id: int):
     raise HTTPException(status_code=404, detail="no image available")
 
 
+def _patch_video_path(book_id: int, patch_id: int) -> Path:
+    return Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
+
+
+def _patch_video_title(book, patch) -> str:
+    label = patch.name or f"Patch {patch.patch_index + 1}"
+    return f"{book.title} - {label}" if book and book.title else label
+
+
+def _register_patch_video(conn, book, patch, video_path: Path) -> int:
+    """Insert (or refresh) a `videos` row for a patch's MP4 so it shows in the
+    Video Library and can be handed to the YouTube upload worker. Returns id."""
+    existing = conn.execute(
+        "SELECT id FROM videos WHERE file_path = ?", (str(video_path),)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE videos SET file_size_bytes = ?, updated_at = datetime('now') WHERE id = ?",
+            (video_path.stat().st_size, existing["id"]),
+        )
+        conn.commit()
+        return existing["id"]
+    rec = video_repository.insert_video(
+        conn,
+        filename=f"patch_{book.id}_{patch.id}.mp4",
+        original_name=f"{_patch_video_title(book, patch)}.mp4",
+        file_path=str(video_path),
+        file_size_bytes=video_path.stat().st_size,
+        resolution=book.video_resolution or "1920x1080",
+        batch_id=f"patch:{book.id}",
+        source_audio=patch.audio_path,
+        background_path=patch.image_path,
+        title=_patch_video_title(book, patch),
+    )
+    return rec["id"]
+
+
+def _enqueue_patch_youtube(
+    request: Request, book, patch, video_db_id: int, video_path: Path, privacy: str,
+) -> dict:
+    """Queue a patch video for YouTube upload. Never raises — returns a status
+    dict the frontend can surface per row. MUST be called outside locked_conn:
+    the upload worker shares app.state.db_lock (non-reentrant)."""
+    from app import youtube
+    if not youtube.is_configured():
+        return {"queued": False, "reason": "not_configured"}
+    with locked_conn(request) as conn:
+        connected = youtube.get_creds_from_db(conn) is not None
+    if not connected:
+        return {"queued": False, "reason": "not_connected"}
+    from app.upload_worker import upload_worker
+    if upload_worker is None:
+        return {"queued": False, "reason": "worker_unavailable"}
+    priv = privacy if privacy in {"private", "unlisted", "public"} else settings.youtube_default_privacy
+    try:
+        upload_worker.enqueue(
+            video_id=video_db_id,
+            title=_patch_video_title(book, patch),
+            description="",
+            tags=settings.youtube_default_tags,
+            privacy=priv,
+            video_path=str(video_path),
+        )
+        return {"queued": True, "privacy": priv}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("patch %s youtube enqueue failed: %s", patch.id, exc)
+        return {"queued": False, "reason": str(exc)[:120]}
+
+
+def _wants_json(request: Request, ajax: int) -> bool:
+    return bool(ajax) or "application/json" in (request.headers.get("accept") or "")
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/generate-video")
-async def generate_patch_video(request: Request, book_id: int, patch_id: int):
+async def generate_patch_video(
+    request: Request, book_id: int, patch_id: int,
+    upload_youtube: bool = Form(default=False),
+    privacy: str = Form(default=""),
+    ajax: int = Query(default=0),
+):
     with locked_conn(request) as conn:
         patch = repository.get_patch(conn, patch_id)
         if patch is None or patch.book_id != book_id:
@@ -222,14 +301,86 @@ async def generate_patch_video(request: Request, book_id: int, patch_id: int):
             marquee_meta=seg_marquee_meta,
         )
     except Exception as exc:
+        if _wants_json(request, ajax):
+            return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
         raise HTTPException(status_code=500, detail=str(exc))
 
+    video_path = Path(out_path)
+    with locked_conn(request) as conn:
+        video_db_id = _register_patch_video(conn, book, patch, video_path)
+
+    youtube_status: dict | None = None
+    if upload_youtube:
+        youtube_status = _enqueue_patch_youtube(
+            request, book, patch, video_db_id, video_path, privacy
+        )
+
+    if _wants_json(request, ajax):
+        return JSONResponse({
+            "status": "done",
+            "video_url": f"/books/{book_id}/patches/{patch_id}/video?v={int(time.time())}",
+            "youtube": youtube_status,
+        })
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/youtube-upload")
+def upload_patch_video_to_youtube(
+    request: Request, book_id: int, patch_id: int,
+    privacy: str = Form(default=""),
+):
+    """Push a patch's already-generated MP4 (server-rendered or uploaded from
+    Colab/Kaggle) to YouTube via the upload worker. Returns JSON."""
+    video_path = _patch_video_path(book_id, patch_id)
+    if not video_path.exists():
+        raise HTTPException(status_code=400, detail="Chưa có video cho patch này")
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        video_db_id = _register_patch_video(conn, book, patch, video_path)
+
+    status = _enqueue_patch_youtube(request, book, patch, video_db_id, video_path, privacy)
+    if not status.get("queued"):
+        reason = status.get("reason", "unknown")
+        msg = {
+            "not_configured": "YouTube chưa được cấu hình (thiếu client id/secret).",
+            "not_connected": "YouTube chưa được kết nối. Vào trang /youtube để kết nối.",
+            "worker_unavailable": "Upload worker chưa sẵn sàng.",
+        }.get(reason, f"Không thể xếp hàng upload: {reason}")
+        raise HTTPException(status_code=400, detail=msg)
+    return JSONResponse({"status": "queued", "youtube": status})
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/overlay-image")
+def get_patch_overlay_image(request: Request, book_id: int, patch_id: int):
+    """Render (idempotent, cached) and serve the per-patch overlay PNG
+    (background + "Book - Patch" text). Powers the row thumbnail, the lightbox
+    preview, download, and the batch "generate images" action."""
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+
+    overlay = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None)
+    if overlay and Path(overlay).exists():
+        return FileResponse(str(overlay), media_type="image/png")
+    # Fall back to the raw patch/book background so the row still shows something.
+    fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    if fallback and Path(fallback).exists():
+        return FileResponse(str(fallback))
+    raise HTTPException(status_code=404, detail="Chưa có ảnh nền để tạo overlay")
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/video")
 def get_patch_video(request: Request, book_id: int, patch_id: int):
-    video_path = Path(settings.data_root) / "books" / str(book_id) / "patch_videos" / f"{patch_id}.mp4"
+    video_path = _patch_video_path(book_id, patch_id)
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not generated yet")
     return FileResponse(str(video_path), media_type="video/mp4")
@@ -538,6 +689,57 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
             raise HTTPException(status_code=500, detail=f"Drive Desktop import failed: {exc}")
 
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/background")
+async def set_patch_background(
+    request: Request,
+    book_id: int,
+    patch_id: int,
+    background_path: str = Form(default=""),
+):
+    """Set patch background to an existing library path (empty = clear to book default)."""
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+        path = background_path.strip() or None
+        if path:
+            from app.routes.books import _list_backgrounds
+            allowed = {item["path"] for item in _list_backgrounds()}
+            if path not in allowed:
+                raise HTTPException(status_code=400, detail="unknown background path")
+        repository.save_patch_image(conn, patch_id, path)
+    return JSONResponse({"ok": True, "patch_id": patch_id})
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/upload-audio")
+async def upload_patch_audio(
+    request: Request,
+    book_id: int,
+    patch_id: int,
+    audio: UploadFile = File(...),
+):
+    """Upload a completed audio file for a patch and mark it as done."""
+    ext = Path(audio.filename or "").suffix.lower()
+    if ext not in {".wav", ".mp3", ".ogg", ".flac"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}")
+
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+
+    audio_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = audio_dir / f"{patch_id}.wav"
+    with open(audio_path, "wb") as dest:
+        shutil.copyfileobj(audio.file, dest)
+
+    with locked_conn(request) as conn:
+        repository.mark_patch_done(conn, patch_id, str(audio_path))
+
+    return JSONResponse({"ok": True, "patch_id": patch_id})
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/import-local")

@@ -150,6 +150,17 @@ def book_detail(request: Request, book_id: int):
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
 
+    # Which patches already have a rendered MP4 on disk (server-side or uploaded
+    # from Colab/Kaggle) — so the row shows video-ready state on first load.
+    patch_videos_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
+    patch_video_ids = {
+        p.id for p in patch_list
+        if (patch_videos_dir / f"{p.id}.mp4").exists()
+    }
+
+    from app import youtube
+    youtube_configured = youtube.is_configured()
+
     from app import image_overlay
     overlay_cfg = image_overlay.parse_overlay_config(book.overlay_config) if book else image_overlay.get_default_overlay_config()
 
@@ -177,8 +188,50 @@ def book_detail(request: Request, book_id: int):
             "voices": voices,
             "current_voice_name": current_voice_name,
             "default_max_chars": settings.tts_max_chars,
+            "patch_video_ids": patch_video_ids,
+            "youtube_configured": youtube_configured,
+            "youtube_auto_upload": settings.youtube_auto_upload,
+            "youtube_default_privacy": settings.youtube_default_privacy,
         }
     )
+
+
+@router.post("/books/{book_id}/video-settings")
+def update_video_settings(
+    request: Request, book_id: int,
+    video_resolution: str = Form(default=""),
+    video_fps: str = Form(default=""),
+    default_image_animation: str = Form(default=""),
+):
+    """Persist the book-wide video config (resolution / fps / default animation)
+    used by per-patch video generation. Returns JSON for the async config modal."""
+    valid_res = {"1920x1080", "1280x720", "854x480"}
+    valid_fps = {24, 30, 60}
+    valid_anim = {"none", "static", "zoom-in", "zoom-out", "pan-left", "pan-right"}
+
+    res = video_resolution if video_resolution in valid_res else None
+    fps: int | None = None
+    if video_fps.strip():
+        try:
+            fps_val = int(video_fps)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="fps không hợp lệ")
+        fps = fps_val if fps_val in valid_fps else None
+    anim = default_image_animation if default_image_animation in valid_anim else None
+
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        repository.update_book_video_settings(
+            conn, book_id,
+            video_resolution=res, video_fps=fps, default_image_animation=anim,
+        )
+    return JSONResponse({
+        "status": "saved",
+        "video_resolution": res or (book.video_resolution or "1920x1080"),
+        "video_fps": fps or (book.video_fps or 30),
+    })
 
 
 @router.get("/books/{book_id}/status")

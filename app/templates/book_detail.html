@@ -29,6 +29,7 @@
     <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
     <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
     <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
+    <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
     <button type="button" data-open-dialog="rules-modal">Replace rules</button>
 </nav>
 
@@ -104,6 +105,118 @@
     </label>
 </dialog>
 
+<dialog id="video-config-modal" class="book-modal">
+    <div class="card-header">
+        <h3 style="margin:0">Cấu hình video chung</h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Áp dụng khi render MP4 cho các patch (ảnh nền đã có chữ + audio). Nhạc nền, ảnh nền chung
+        và chữ overlay được chỉnh trong <button type="button" class="btn-link" data-open-dialog="studio-modal">Studio</button>.
+    </p>
+    <form id="video-config-form" class="form-grid" style="margin-bottom:var(--space-md)">
+        <div class="form-group" style="margin:0">
+            <label for="vc-resolution">Độ phân giải</label>
+            <select id="vc-resolution" name="video_resolution">
+                <option value="1920x1080" {% if book.video_resolution == '1920x1080' %}selected{% endif %}>1920x1080 (Full HD)</option>
+                <option value="1280x720" {% if book.video_resolution == '1280x720' %}selected{% endif %}>1280x720 (HD)</option>
+                <option value="854x480" {% if book.video_resolution == '854x480' %}selected{% endif %}>854x480 (SD)</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label for="vc-fps">FPS</label>
+            <select id="vc-fps" name="video_fps">
+                <option value="24" {% if book.video_fps == 24 %}selected{% endif %}>24</option>
+                <option value="30" {% if not book.video_fps or book.video_fps == 30 %}selected{% endif %}>30</option>
+                <option value="60" {% if book.video_fps == 60 %}selected{% endif %}>60</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label for="vc-animation">Animation mặc định (ảnh tĩnh)</label>
+            <select id="vc-animation" name="default_image_animation">
+                <option value="none" {% if book.default_image_animation in (None, '', 'none', 'static') %}selected{% endif %}>Static</option>
+                <option value="zoom-in" {% if book.default_image_animation == 'zoom-in' %}selected{% endif %}>Zoom In</option>
+                <option value="zoom-out" {% if book.default_image_animation == 'zoom-out' %}selected{% endif %}>Zoom Out</option>
+                <option value="pan-left" {% if book.default_image_animation == 'pan-left' %}selected{% endif %}>Pan Left</option>
+                <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
+            </select>
+        </div>
+    </form>
+    <div class="studio-section" style="margin-bottom:var(--space-md)">
+        <h4>Tự động upload YouTube</h4>
+        {% if youtube_configured %}
+        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <input type="checkbox" id="vc-auto-youtube" {% if youtube_auto_upload %}checked{% endif %}>
+            Bật mặc định khi tạo video (có thể ghi đè theo từng lượt ở thanh dưới)
+        </label>
+        <div class="form-group" style="margin:var(--space-sm) 0 0 0;max-width:240px">
+            <label for="vc-privacy">Chế độ hiển thị</label>
+            <select id="vc-privacy" name="privacy">
+                <option value="private" {% if youtube_default_privacy == 'private' %}selected{% endif %}>Private</option>
+                <option value="unlisted" {% if youtube_default_privacy == 'unlisted' %}selected{% endif %}>Unlisted</option>
+                <option value="public" {% if youtube_default_privacy == 'public' %}selected{% endif %}>Public</option>
+            </select>
+        </div>
+        {% else %}
+        <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">
+            YouTube chưa được cấu hình. Vào <a href="/youtube" target="_blank">trang YouTube</a> để kết nối,
+            sau đó tùy chọn upload sẽ xuất hiện ở đây.
+        </p>
+        {% endif %}
+    </div>
+    <div class="btn-group">
+        <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
+    </div>
+</dialog>
+
+<dialog id="patch-image-modal" class="book-modal">
+    <div class="card-header">
+        <h3 style="margin:0">Ảnh overlay — <span id="pi-title"></span></h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <div style="text-align:center">
+        <img id="pi-image" alt="Ảnh overlay patch" style="max-width:100%;max-height:52vh;border:1px solid var(--border-color);border-radius:var(--border-radius)">
+    </div>
+    <div class="btn-group" style="margin-top:var(--space-md);flex-wrap:wrap">
+        <a id="pi-download" class="btn-outline btn-sm" href="#" download>Tải ảnh</a>
+        <button type="button" id="pi-regen" class="btn-outline btn-sm">Tạo lại ảnh overlay</button>
+    </div>
+    <div class="studio-section" style="margin-top:var(--space-md)">
+        <h4>Tùy chỉnh nền &amp; hiệu ứng cho patch này</h4>
+        <form id="pi-bg-form" enctype="multipart/form-data" class="vc-row-wrap" style="align-items:flex-end">
+            <div class="form-group" style="margin:0;flex:1;min-width:200px">
+                <label for="pi-bg-file">Ảnh / video nền riêng</label>
+                <input type="file" id="pi-bg-file" name="image" accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov">
+            </div>
+            <button type="submit" class="btn-outline btn-sm">Upload nền</button>
+            <button type="button" id="pi-bg-remove" class="btn-danger btn-sm">Bỏ nền riêng</button>
+        </form>
+        <div class="form-group" style="margin:var(--space-sm) 0 0 0;max-width:240px">
+            <label for="pi-anim">Animation (Ken Burns)</label>
+            <select id="pi-anim">
+                <option value="static">Static</option>
+                <option value="zoom-in">Zoom In</option>
+                <option value="zoom-out">Zoom Out</option>
+                <option value="pan-left">Pan Left</option>
+                <option value="pan-right">Pan Right</option>
+            </select>
+        </div>
+        <p class="vc-help">Ảnh nền riêng chỉ áp dụng cho patch này. Animation áp dụng khi render video từ ảnh tĩnh.</p>
+    </div>
+</dialog>
+
+<dialog id="patch-video-modal" class="book-modal">
+    <div class="card-header">
+        <h3 style="margin:0">Video — <span id="pvm-title"></span></h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <video id="pvm-video" controls preload="metadata" style="width:100%;max-height:60vh;background:#000;border-radius:var(--border-radius)"></video>
+    <div class="btn-group" style="margin-top:var(--space-md);flex-wrap:wrap">
+        <a id="pvm-download" class="btn-outline btn-sm" href="#" download>Tải .mp4</a>
+        <button type="button" id="pvm-youtube" class="btn-primary btn-sm">Upload lên YouTube</button>
+    </div>
+</dialog>
+
 <dialog id="chunks-modal" class="book-modal">
     <div class="card-header">
         <h3 style="margin:0">Preview chunks — <span id="chunks-modal-title"></span></h3>
@@ -160,10 +273,13 @@
         <thead>
             <tr>
                 <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
+                <th>STT</th>
                 <th>Patch</th>
                 <th>Chapters</th>
+                <th>Ảnh</th>
                 <th>Progress</th>
                 <th>Status</th>
+                <th>Video</th>
                 <th>Error</th>
                 <th>Actions</th>
             </tr>
@@ -173,6 +289,7 @@
             <tr>
                 <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
                            form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
+                <td class="patch-stt-cell">{{ "%03d"|format(patch.patch_index) }}</td>
                 <td class="patch-name-cell">
                     <strong>{{ patch.name or patch.patch_index }}</strong>
                     {% if patch.status == "done" and patch.audio_path %}
@@ -181,6 +298,16 @@
                     {% endif %}
                 </td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
+                <td class="patch-image-cell">
+                    <button type="button" class="patch-thumb-btn" data-patch-id="{{ patch.id }}"
+                            data-patch-name="{{ patch.name or patch.patch_index }}"
+                            data-image-type="{{ patch.image_type or 'static' }}" title="Xem / tải ảnh overlay">
+                        <img loading="lazy" class="patch-thumb-img"
+                             src="/books/{{ book.id }}/patches/{{ patch.id }}/overlay-image?v={{ patch.updated_at }}"
+                             alt="ảnh {{ patch.name or patch.patch_index }}"
+                             onerror="this.classList.add('thumb-error')">
+                    </button>
+                </td>
                 <td id="patch-progress-{{ patch.id }}">
                     {% if patch.chunk_count > 0 %}
                         <span class="chunk-progress">
@@ -204,6 +331,19 @@
                         <span class="badge badge-pending">{{ patch.status }}</span>
                     {% endif %}
                 </td>
+                <td class="patch-video-cell" id="patch-video-{{ patch.id }}"
+                    data-patch-id="{{ patch.id }}"
+                    data-patch-name="{{ patch.name or patch.patch_index }}"
+                    data-has-video="{% if patch.id in patch_video_ids %}1{% else %}0{% endif %}"
+                    data-audio-ready="{% if patch.status == 'done' and patch.audio_path %}1{% else %}0{% endif %}"
+                    data-updated="{{ patch.updated_at }}"
+                    data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}">
+                    {% if patch.status == 'done' and patch.audio_path %}
+                        <div class="pv-wrap"></div>
+                    {% else %}
+                        <span class="pv-muted" title="Cần chạy TTS xong mới tạo được video">&mdash;</span>
+                    {% endif %}
+                </td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
                 <td class="patch-actions">
                     <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
@@ -216,6 +356,28 @@
                           data-confirm="Xóa patch này? Các patch còn lại sẽ được đánh số lại.">
                         <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
+                    {% endif %}
+                    {% if patch.status != "done" %}
+                    <details class="patch-inline-upload">
+                        <summary class="btn-outline btn-sm">&#8681; Upload</summary>
+                        <div class="patch-inline-upload-body">
+                            <div class="patch-inline-section">
+                                <label class="patch-inline-label">Audio kết quả</label>
+                                <input type="file" class="patch-audio-file" accept=".wav,.mp3,.ogg,.flac">
+                                <button type="button" class="btn-primary btn-sm patch-audio-upload-btn" data-patch-id="{{ patch.id }}">Lưu &amp; Hoàn tất</button>
+                            </div>
+                            <div class="patch-inline-section">
+                                <label class="patch-inline-label">Background riêng</label>
+                                <select class="patch-bg-select" data-patch-id="{{ patch.id }}">
+                                    <option value="">— Dùng background sách —</option>
+                                    {% for bg in backgrounds %}
+                                    <option value="{{ bg.path }}" {% if patch.image_path == bg.path %}selected{% endif %}>{{ bg.name }}{% if bg.is_video %} 🎬{% endif %}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="button" class="btn-outline btn-sm patch-bg-save-btn" data-patch-id="{{ patch.id }}">Lưu nền</button>
+                            </div>
+                        </div>
+                    </details>
                     {% endif %}
                 </td>
             </tr>
@@ -233,6 +395,11 @@
 
 <div class="patch-bottom-nav" id="patch-bottom-nav">
     <button type="button" class="btn-outline btn-sm" id="btnRunSelectedLightTTS" onclick="runAllLightTTS()">&#9654; Run Selected</button>
+    <button type="button" class="btn-primary btn-sm" id="btnGenSelectedVideos" onclick="genSelectedVideos()">&#127916; Tạo video (đã chọn)</button>
+    {% if youtube_configured %}
+    <label class="bn-check" title="Áp dụng cho lượt tạo video này"><input type="checkbox" id="batch-auto-youtube" {% if youtube_auto_upload %}checked{% endif %}> Auto YouTube</label>
+    {% endif %}
+    <button type="button" class="btn-outline btn-sm" id="btnGenSelectedImages" onclick="genSelectedImages()">&#128444; Tạo ảnh (đã chọn)</button>
     <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled>Download selected (.zip)</button>
     {% if sync_targets %}
     <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
@@ -255,6 +422,47 @@
     <span id="patch-selection-count" style="margin-left:auto;font-size:var(--font-size-xs);color:var(--text-muted)"></span>
     <button type="button" class="btn-outline btn-sm" id="copy-yt-desc">Copy Description</button>
 </div>
+
+<style>
+/* Per-row image thumbnail */
+.patch-stt-cell { width:40px; text-align:center; font-variant-numeric:tabular-nums; font-size:var(--font-size-xs); color:var(--text-muted); font-weight:600; }
+.patch-image-cell { width:64px; }
+.patch-thumb-btn { padding:0; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-card); cursor:pointer; line-height:0; overflow:hidden; }
+.patch-thumb-btn:hover { border-color:var(--color-primary); }
+.patch-thumb-img { width:56px; height:32px; object-fit:cover; display:block; }
+.patch-thumb-img.thumb-error { visibility:hidden; }
+.patch-thumb-btn:has(.thumb-error) { width:56px; height:32px; }
+.patch-thumb-btn:has(.thumb-error)::after { content:'—'; color:var(--text-muted); font-size:var(--font-size-xs); }
+
+/* Per-row video cell */
+.patch-video-cell { min-width:150px; }
+.pv-muted { color:var(--text-muted); }
+.pv-wrap { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+.pv-wrap .btn-sm { padding:2px 8px; }
+.pv-icon-btn { min-width:30px; text-align:center; }
+.pv-progress { font-size:var(--font-size-xs); color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.pv-more { display:inline; }
+.pv-more > summary { cursor:pointer; list-style:none; padding:2px 6px; border:1px solid var(--border-color); border-radius:var(--border-radius); color:var(--text-muted); font-size:var(--font-size-sm); }
+.pv-more[open] > summary { color:var(--text-primary); }
+.pv-yt-state { font-size:var(--font-size-xs); }
+.pv-yt-state.ok { color:var(--color-success, #16a34a); }
+.pv-yt-state.err { color:var(--color-error, #dc2626); }
+
+/* Bottom-nav inline checkbox */
+.bn-check { display:flex; align-items:center; gap:4px; font-size:var(--font-size-xs); white-space:nowrap; color:var(--text-muted); }
+.btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
+
+/* Per-row inline upload panel */
+.patch-inline-upload { display:inline; }
+.patch-inline-upload > summary { cursor:pointer; list-style:none; display:inline-flex; align-items:center; padding:2px 8px; border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); color:var(--text-muted); font-size:var(--font-size-sm); font-family:inherit; }
+.patch-inline-upload > summary:hover { background:var(--border-color); color:var(--text-primary); }
+.patch-inline-upload[open] > summary { color:var(--text-primary); }
+.patch-inline-upload-body { position:absolute; z-index:200; margin-top:4px; padding:var(--space-sm); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 4px 16px rgba(0,0,0,.2); min-width:260px; display:flex; flex-direction:column; gap:var(--space-sm); }
+.patch-inline-section { display:flex; flex-direction:column; gap:4px; }
+.patch-inline-label { font-size:var(--font-size-xs); font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+.patch-inline-section input[type=file] { font-size:var(--font-size-xs); }
+.patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
+</style>
 
 {% if book.final_audio_path %}
 <div class="card">
@@ -595,9 +803,14 @@
 // it; the IIFEs keep their own shadowed copies.
 const BOOK_ID = {{ book.id }};
 
-// Patch ids currently being synthesized locally via LightTTS SSE. The status
-// poller skips these so its DB snapshot doesn't stomp live chunk progress.
-const LIGHT_TTS_ACTIVE = new Set();
+// Patch ids with an in-flight local task (LightTTS SSE, video render, image
+// render). The status poller skips these so its DB snapshot doesn't stomp live
+// progress, and it won't reload the page while any local task is running.
+const ACTIVE_TASKS = new Set();
+
+// YouTube availability + defaults from the server (mirrors the video-config modal).
+const YOUTUBE_CONFIGURED = {{ 'true' if youtube_configured else 'false' }};
+const YOUTUBE_DEFAULT_PRIVACY = "{{ youtube_default_privacy }}";
 
 (function() {
     document.querySelectorAll('[data-open-dialog]').forEach(button => {
@@ -692,10 +905,18 @@ const LIGHT_TTS_ACTIVE = new Set();
 const PATCHES_PER_PAGE = 20;
 let currentPage = 1;
 
+// The patches table is NOT the first table in #patches-card (the auto-build
+// preview table comes first). Resolve the real patches <tbody> via the
+// select-all checkbox that lives in the patches table header.
+function patchesTbody() {
+    const sel = document.getElementById('batch-select-all');
+    return sel ? sel.closest('table').querySelector('tbody') : null;
+}
+
 function filterAndPaginate() {
     const searchInput = document.getElementById('patch-search-input');
     const filterCount = document.getElementById('patch-filter-count');
-    const tbody = document.querySelector('#patches-card table tbody');
+    const tbody = patchesTbody();
     if (!tbody) return;
     const rows = Array.from(tbody.querySelectorAll('tr'));
     const query = (searchInput.value || '').toLowerCase().trim();
@@ -785,7 +1006,7 @@ filterAndPaginate();
             for (const p of data.patches) {
                 // A local LightTTS stream owns this row's status/progress; don't
                 // overwrite it with the (still-pending) DB snapshot.
-                if (LIGHT_TTS_ACTIVE.has(p.id)) continue;
+                if (ACTIVE_TASKS.has(p.id)) continue;
 
                 const el = document.getElementById(`patch-status-${p.id}`);
                 if (el) el.innerHTML = badgeFor(p.status);
@@ -805,7 +1026,7 @@ filterAndPaginate();
                 }
             }
 
-            if (LIGHT_TTS_ACTIVE.size === 0 && !data.has_active_patches && data.book_status !== 'processing') {
+            if (ACTIVE_TASKS.size === 0 && !data.has_active_patches && data.book_status !== 'processing') {
                 window.location.reload();
                 return;
             }
@@ -1289,10 +1510,10 @@ function streamLightTTS(patchId, onChunk) {
         if (maxChars) params.set('max_chars', maxChars);
         const url = `/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-stream?${params}`;
         const es = new EventSource(url);
-        LIGHT_TTS_ACTIVE.add(patchId);
+        ACTIVE_TASKS.add(patchId);
         let finished = false;
         let failed = 0;
-        const settle = (fn, arg) => { finished = true; es.close(); LIGHT_TTS_ACTIVE.delete(patchId); fn(arg); };
+        const settle = (fn, arg) => { finished = true; es.close(); ACTIVE_TASKS.delete(patchId); fn(arg); };
         es.onmessage = (e) => {
             let msg;
             try { msg = JSON.parse(e.data); } catch { return; }
@@ -1464,12 +1685,11 @@ async function openChunksModal(patchId) {
     }
 }
 
-// Update the patches table "Chunks" cell (col 4) to the reconciled real count.
+// Update the patches table progress cell to the reconciled real chunk count.
+// Target the cell by id (not column index) so it stays correct as columns change.
 function syncPatchChunkCount(patchId, total) {
     const progCell = document.getElementById('patch-progress-' + patchId);
-    const row = progCell && progCell.closest('tr');
-    const cell = row && row.querySelector('td:nth-child(4)');
-    if (cell) cell.textContent = total;
+    if (progCell) progCell.textContent = total;
 }
 
 // On load, replace any estimated chunk counts in the table with the real split
@@ -1534,5 +1754,390 @@ async function playChunk(patchId, text, btn, slot) {
         btn.textContent = orig;
     }
 }
+
+// =====================================================================
+// Video creation + per-patch image, all as independent per-row tasks.
+// Each action fetches on its own and updates only its own row; nothing
+// blocks another row. Shared config lives in the "Cấu hình video" modal.
+// =====================================================================
+
+function ytReason(r) {
+    return ({
+        not_connected: 'chưa kết nối YouTube',
+        worker_unavailable: 'upload worker chưa sẵn sàng',
+        not_configured: 'YouTube chưa cấu hình',
+    })[r] || r;
+}
+
+function getBatchPrivacy() {
+    const sel = document.getElementById('vc-privacy');
+    return (sel && sel.value) || YOUTUBE_DEFAULT_PRIVACY || 'private';
+}
+
+// Selected patch ids (checked ones, or every enabled patch when none checked).
+function getSelectedPatchIds() {
+    const boxes = Array.from(document.querySelectorAll('.batch-patch-checkbox'));
+    const checked = boxes.filter(cb => cb.checked && !cb.disabled).map(cb => parseInt(cb.value, 10));
+    return checked.length ? checked : boxes.filter(cb => !cb.disabled).map(cb => parseInt(cb.value, 10));
+}
+
+// ---- Per-row video cell rendering -----------------------------------
+function buildVideoCell(cell) {
+    const wrap = cell.querySelector('.pv-wrap');
+    if (!wrap) return;   // audio not ready → server rendered a muted dash
+    const pid = cell.dataset.patchId;
+    const hasVideo = cell.dataset.hasVideo === '1';
+    const v = cell.dataset.updated || Date.now();
+    let html = '';
+    if (hasVideo) {
+        html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-preview" title="Xem video">&#9654;</button>`;
+        html += `<a class="btn-outline btn-sm pv-icon-btn" href="/books/${BOOK_ID}/patches/${pid}/video?v=${v}" download title="Tải .mp4">&#8681;</a>`;
+        html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-gen" title="Tạo lại video">&#8635;</button>`;
+        if (YOUTUBE_CONFIGURED) html += `<button type="button" class="btn-outline btn-sm pv-yt" title="Upload lên YouTube">YT</button>`;
+    } else {
+        html += `<button type="button" class="btn-primary btn-sm pv-gen">&#127916; Tạo</button>`;
+    }
+    html += `<details class="pv-more"><summary title="Upload MP4 tạo từ Colab/Kaggle">&#8943;</summary>`
+          + `<form class="pv-upload-form" style="margin-top:6px;display:flex;flex-direction:column;gap:4px">`
+          + `<input type="file" name="video" accept="video/mp4,.mp4" required style="max-width:180px;font-size:var(--font-size-xs)">`
+          + `<button type="submit" class="btn-outline btn-sm">Upload MP4</button></form></details>`;
+    wrap.innerHTML = html;
+}
+
+function initVideoCells() {
+    document.querySelectorAll('.patch-video-cell').forEach(cell => {
+        if (cell.dataset.audioReady === '1') buildVideoCell(cell);
+    });
+}
+
+// ---- Per-row actions -------------------------------------------------
+async function genPatchVideo(pid, cell, opts = {}) {
+    const uploadYoutube = opts.uploadYoutube || false;
+    const privacy = opts.privacy || getBatchPrivacy();
+    const wrap = cell.querySelector('.pv-wrap');
+    if (!wrap) return false;
+    const prev = wrap.innerHTML;
+    ACTIVE_TASKS.add(pid);
+    wrap.innerHTML = '<span class="pv-progress">&#9203; Đang tạo…</span>';
+    try {
+        const fd = new FormData();
+        fd.set('upload_youtube', uploadYoutube ? 'true' : 'false');
+        if (privacy) fd.set('privacy', privacy);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/generate-video?ajax=1`, { method: 'POST', body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.status === 'error') throw new Error(data.detail || `HTTP ${res.status}`);
+        cell.dataset.hasVideo = '1';
+        cell.dataset.updated = String(Date.now());
+        buildVideoCell(cell);
+        let msg = `Đã tạo video: ${cell.dataset.patchName}`;
+        if (data.youtube) {
+            if (data.youtube.queued) msg += ' · đã xếp hàng YouTube';
+            else if (data.youtube.reason && data.youtube.reason !== 'not_configured') msg += ` · ${ytReason(data.youtube.reason)}`;
+        }
+        showToast(msg);
+        return true;
+    } catch (e) {
+        wrap.innerHTML = prev;
+        showToast('Tạo video lỗi: ' + (e.message || e), 'error');
+        return false;
+    } finally {
+        ACTIVE_TASKS.delete(pid);
+    }
+}
+
+async function uploadPatchMp4(pid, form, cell) {
+    const fileInput = form.querySelector('input[type=file]');
+    if (!fileInput || !fileInput.files.length) return;
+    const wrap = cell.querySelector('.pv-wrap');
+    const prev = wrap.innerHTML;
+    ACTIVE_TASKS.add(pid);
+    wrap.innerHTML = '<span class="pv-progress">&#9203; Đang tải lên…</span>';
+    try {
+        const fd = new FormData();
+        fd.set('video', fileInput.files[0]);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/video`, { method: 'POST', body: fd });
+        if (!res.ok) {
+            let d; try { d = await res.json(); } catch (_) {}
+            throw new Error((d && d.detail) || `HTTP ${res.status}`);
+        }
+        cell.dataset.hasVideo = '1';
+        cell.dataset.updated = String(Date.now());
+        buildVideoCell(cell);
+        showToast(`Đã tải video cho ${cell.dataset.patchName}`);
+    } catch (e) {
+        wrap.innerHTML = prev;
+        showToast('Upload video lỗi: ' + (e.message || e), 'error');
+    } finally {
+        ACTIVE_TASKS.delete(pid);
+    }
+}
+
+async function uploadPatchAudio(btn) {
+    const pid = parseInt(btn.dataset.patchId, 10);
+    const details = btn.closest('details.patch-inline-upload');
+    const fileInput = details ? details.querySelector('.patch-audio-file') : null;
+    if (!fileInput || !fileInput.files.length) {
+        showToast('Chọn file audio trước.', 'error');
+        return;
+    }
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Đang tải lên…';
+    ACTIVE_TASKS.add(pid);
+    try {
+        const fd = new FormData();
+        fd.set('audio', fileInput.files[0]);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/upload-audio`, { method: 'POST', body: fd });
+        if (!res.ok) {
+            let d; try { d = await res.json(); } catch (_) {}
+            throw new Error((d && d.detail) || `HTTP ${res.status}`);
+        }
+        const statusCell = document.getElementById(`patch-status-${pid}`);
+        if (statusCell) statusCell.innerHTML = '<span class="badge badge-done">Hoàn tất</span>';
+        const videoCell = document.getElementById(`patch-video-${pid}`);
+        if (videoCell) {
+            videoCell.dataset.audioReady = '1';
+            let wrap = videoCell.querySelector('.pv-wrap');
+            if (!wrap) {
+                const muted = videoCell.querySelector('.pv-muted');
+                if (muted) muted.remove();
+                wrap = document.createElement('div');
+                wrap.className = 'pv-wrap';
+                videoCell.appendChild(wrap);
+            }
+            buildVideoCell(videoCell);
+        }
+        const checkbox = document.querySelector(`.batch-patch-checkbox[value="${pid}"]`);
+        if (checkbox) checkbox.disabled = false;
+        details.removeAttribute('open');
+        showToast(`Patch ${pid} — Hoàn tất`);
+    } catch (e) {
+        showToast('Upload audio lỗi: ' + (e.message || e), 'error');
+        btn.disabled = false;
+        btn.textContent = origText;
+    } finally {
+        ACTIVE_TASKS.delete(pid);
+    }
+}
+
+async function savePatchBackground(btn) {
+    const pid = parseInt(btn.dataset.patchId, 10);
+    const details = btn.closest('details.patch-inline-upload');
+    const sel = details ? details.querySelector('.patch-bg-select') : null;
+    if (!sel) return;
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu…';
+    try {
+        const fd = new FormData();
+        fd.set('background_path', sel.value);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/background`, { method: 'POST', body: fd });
+        if (!res.ok) {
+            let d; try { d = await res.json(); } catch (_) {}
+            throw new Error((d && d.detail) || `HTTP ${res.status}`);
+        }
+        refreshPatchThumb(pid);
+        details.removeAttribute('open');
+        showToast('Đã lưu background patch ' + pid);
+    } catch (e) {
+        showToast('Lưu nền lỗi: ' + (e.message || e), 'error');
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+}
+
+async function uploadPatchYouTube(pid, cell) {
+    try {
+        const fd = new FormData();
+        fd.set('privacy', getBatchPrivacy());
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/youtube-upload`, { method: 'POST', body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        showToast(`Đã xếp hàng upload YouTube: ${cell ? cell.dataset.patchName : pid}`);
+    } catch (e) {
+        showToast('YouTube lỗi: ' + (e.message || e), 'error');
+    }
+}
+
+// ---- Modals ----------------------------------------------------------
+function openPatchVideoModal(pid, name) {
+    const dlg = document.getElementById('patch-video-modal');
+    document.getElementById('pvm-title').textContent = name || ('Patch ' + pid);
+    const url = `/books/${BOOK_ID}/patches/${pid}/video?v=${Date.now()}`;
+    const v = document.getElementById('pvm-video');
+    v.src = url;
+    const dl = document.getElementById('pvm-download');
+    dl.href = url; dl.download = `patch-${pid}.mp4`;
+    const yt = document.getElementById('pvm-youtube');
+    yt.style.display = YOUTUBE_CONFIGURED ? '' : 'none';
+    yt.onclick = () => uploadPatchYouTube(pid, document.getElementById('patch-video-' + pid));
+    dlg.showModal();
+}
+
+function refreshPatchThumb(pid) {
+    const img = document.querySelector(`.patch-thumb-btn[data-patch-id="${pid}"] img`);
+    if (img) { img.classList.remove('thumb-error'); img.src = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`; }
+}
+
+async function updatePatchAnimation(pid, value) {
+    try {
+        const fd = new FormData(); fd.set('image_type', value);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/image-type`, { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast('Đã đổi animation');
+    } catch (e) { showToast('Lỗi đổi animation: ' + (e.message || e), 'error'); }
+}
+
+async function uploadPatchBackground(pid, form) {
+    const fileInput = form.querySelector('input[type=file]');
+    if (!fileInput || !fileInput.files.length) { showToast('Chọn ảnh/video nền trước.', 'error'); return; }
+    try {
+        const fd = new FormData(); fd.set('image', fileInput.files[0]);
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/image`, { method: 'POST', body: fd });
+        if (!res.ok) { let d; try { d = await res.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${res.status}`); }
+        refreshPatchThumb(pid);
+        const modalImg = document.getElementById('pi-image');
+        if (modalImg) modalImg.src = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`;
+        form.reset();
+        showToast('Đã cập nhật ảnh nền patch');
+    } catch (e) { showToast('Upload nền lỗi: ' + (e.message || e), 'error'); }
+}
+
+async function removePatchBackground(pid) {
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/image/delete`, { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        refreshPatchThumb(pid);
+        const modalImg = document.getElementById('pi-image');
+        if (modalImg) modalImg.src = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`;
+        showToast('Đã bỏ ảnh nền riêng');
+    } catch (e) { showToast('Lỗi bỏ nền: ' + (e.message || e), 'error'); }
+}
+
+function openPatchImageModal(pid, name, imageType) {
+    const dlg = document.getElementById('patch-image-modal');
+    document.getElementById('pi-title').textContent = name || ('Patch ' + pid);
+    const url = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`;
+    document.getElementById('pi-image').src = url;
+    const dl = document.getElementById('pi-download');
+    dl.href = url; dl.download = `patch-${pid}.png`;
+    const bgForm = document.getElementById('pi-bg-form');
+    bgForm.onsubmit = (e) => { e.preventDefault(); uploadPatchBackground(pid, bgForm); };
+    document.getElementById('pi-bg-remove').onclick = () => removePatchBackground(pid);
+    const anim = document.getElementById('pi-anim');
+    anim.value = imageType || 'static';
+    anim.onchange = () => updatePatchAnimation(pid, anim.value);
+    document.getElementById('pi-regen').onclick = () => {
+        refreshPatchThumb(pid);
+        document.getElementById('pi-image').src = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`;
+    };
+    dlg.showModal();
+}
+
+// ---- Batch actions ---------------------------------------------------
+async function genSelectedVideos() {
+    const btn = document.getElementById('btnGenSelectedVideos');
+    const ids = getSelectedPatchIds().filter(pid => {
+        const cell = document.getElementById('patch-video-' + pid);
+        return cell && cell.dataset.audioReady === '1';
+    });
+    if (!ids.length) { showToast('Không có patch nào đã xong TTS để tạo video.', 'error'); return; }
+    const autoBox = document.getElementById('batch-auto-youtube');
+    const uploadYoutube = !!(autoBox && autoBox.checked);
+    const privacy = getBatchPrivacy();
+    const orig = btn.textContent;
+    btn.disabled = true;
+    let done = 0, errors = 0, started = 0;
+    const CONCURRENCY = Math.min(2, ids.length);
+    let cursor = 0;
+    async function worker() {
+        while (cursor < ids.length) {
+            const pid = ids[cursor++];
+            const cell = document.getElementById('patch-video-' + pid);
+            started++;
+            btn.textContent = `Tạo video ${started}/${ids.length}…`;
+            const ok = await genPatchVideo(pid, cell, { uploadYoutube, privacy });
+            if (ok) done++; else errors++;
+        }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    btn.textContent = `${done} xong${errors ? ', ' + errors + ' lỗi' : ''}`;
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 4000);
+}
+
+async function genSelectedImages() {
+    const btn = document.getElementById('btnGenSelectedImages');
+    const ids = getSelectedPatchIds();
+    if (!ids.length) { showToast('Không có patch nào để tạo ảnh.', 'error'); return; }
+    const orig = btn.textContent;
+    btn.disabled = true;
+    let done = 0, errors = 0;
+    for (const pid of ids) {
+        btn.textContent = `Tạo ảnh ${done + errors + 1}/${ids.length}…`;
+        try {
+            const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`, { cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            refreshPatchThumb(pid);
+            done++;
+        } catch (e) { errors++; }
+    }
+    btn.textContent = `${done} ảnh${errors ? ', ' + errors + ' lỗi' : ''}`;
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 4000);
+}
+
+// ---- Wiring ----------------------------------------------------------
+(function () {
+    const tbody = patchesTbody();
+    if (tbody) {
+        tbody.addEventListener('click', (e) => {
+            const thumb = e.target.closest('.patch-thumb-btn');
+            if (thumb) { openPatchImageModal(parseInt(thumb.dataset.patchId, 10), thumb.dataset.patchName, thumb.dataset.imageType); return; }
+            const audioBtn = e.target.closest('.patch-audio-upload-btn');
+            if (audioBtn) { e.preventDefault(); uploadPatchAudio(audioBtn); return; }
+            const bgBtn = e.target.closest('.patch-bg-save-btn');
+            if (bgBtn) { e.preventDefault(); savePatchBackground(bgBtn); return; }
+            const cell = e.target.closest('.patch-video-cell');
+            if (!cell) return;
+            const pid = parseInt(cell.dataset.patchId, 10);
+            if (e.target.closest('.pv-gen')) { e.preventDefault(); genPatchVideo(pid, cell); }
+            else if (e.target.closest('.pv-preview')) { e.preventDefault(); openPatchVideoModal(pid, cell.dataset.patchName); }
+            else if (e.target.closest('.pv-yt')) { e.preventDefault(); uploadPatchYouTube(pid, cell); }
+        });
+        tbody.addEventListener('submit', (e) => {
+            const form = e.target.closest('.pv-upload-form');
+            if (!form) return;
+            e.preventDefault();
+            const cell = form.closest('.patch-video-cell');
+            uploadPatchMp4(parseInt(cell.dataset.patchId, 10), form, cell);
+        });
+    }
+
+    // Pause the player when the video modal closes.
+    const vmodal = document.getElementById('patch-video-modal');
+    if (vmodal) vmodal.addEventListener('close', () => {
+        const v = document.getElementById('pvm-video');
+        if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+    });
+
+    // Video-config: save + keep the batch auto-upload checkbox in sync.
+    document.getElementById('vc-save')?.addEventListener('click', async function () {
+        const btn = this; const orig = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Đang lưu…';
+        try {
+            const fd = new FormData(document.getElementById('video-config-form'));
+            const res = await fetch(`/books/${BOOK_ID}/video-settings`, { method: 'POST', body: fd });
+            if (!res.ok) { let d; try { d = await res.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${res.status}`); }
+            showToast('Đã lưu cấu hình video');
+        } catch (e) { showToast('Lưu lỗi: ' + (e.message || e), 'error'); }
+        finally { btn.disabled = false; btn.textContent = orig; }
+    });
+    const vcAuto = document.getElementById('vc-auto-youtube');
+    const batchAuto = document.getElementById('batch-auto-youtube');
+    if (vcAuto && batchAuto) vcAuto.addEventListener('change', () => { batchAuto.checked = vcAuto.checked; });
+
+    initVideoCells();
+})();
 </script>
 {% endblock %}
