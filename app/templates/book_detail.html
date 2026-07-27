@@ -148,70 +148,6 @@
                 <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
             </select>
         </div>
-    <details style="margin-top:var(--space-md)">
-        <summary style="cursor:pointer;font-weight:500;font-size:var(--font-size-sm)">Automation Pipeline Overrides</summary>
-        <div style="padding:var(--space-sm) 0">
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
-                <input type="checkbox" id="vc-auto-enabled" name="auto_enabled" {% if book.automation_config and book.automation_config.get('enabled') %}checked{% endif %}>
-                Bật automation (thumbnail &rarr; video &rarr; upload)
-            </label>
-            <div class="form-group" style="margin:var(--space-sm) 0 0 0">
-                <label for="vc-bg-duration">Background Duration (seconds)</label>
-                <input type="number" id="vc-bg-duration" name="auto_bg_duration" min="3" max="300" value="{{ auto_config.video.background_duration_seconds }}" style="max-width:120px">
-            </div>
-        </div>
-        <div style="padding:var(--space-sm) 0;border-top:1px solid var(--border-color)">
-            <h4 style="margin:0 0 var(--space-sm) 0;font-size:var(--font-size-sm);color:var(--text-muted)">Webcam PiP</h4>
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
-                <input type="checkbox" id="vc-webcam-enabled" name="auto_webcam_enabled" {% if auto_config.webcam.enabled %}checked{% endif %}>
-                Enable webcam overlay
-            </label>
-            <div class="form-row" style="margin-top:var(--space-sm)">
-                <div class="form-group" style="margin:0">
-                    <label for="vc-webcam-pos">Position</label>
-                    <select id="vc-webcam-pos" name="auto_webcam_pos">
-                        <option value="top-left" {% if auto_config.webcam.position == 'top-left' %}selected{% endif %}>Top Left</option>
-                        <option value="top-right" {% if auto_config.webcam.position == 'top-right' %}selected{% endif %}>Top Right</option>
-                        <option value="bottom-left" {% if auto_config.webcam.position == 'bottom-left' %}selected{% endif %}>Bottom Left</option>
-                        <option value="bottom-right" {% if auto_config.webcam.position == 'bottom-right' %}selected{% endif %}>Bottom Right</option>
-                    </select>
-                </div>
-                <div class="form-group" style="margin:0">
-                    <label for="vc-webcam-width">Width (%)</label>
-                    <input type="number" id="vc-webcam-width" name="auto_webcam_width" min="10" max="50" value="{{ auto_config.webcam.width_percent }}" style="max-width:80px">
-                </div>
-            </div>
-        </div>
-        <div style="padding:var(--space-sm) 0;border-top:1px solid var(--border-color)">
-            <h4 style="margin:0 0 var(--space-sm) 0;font-size:var(--font-size-sm);color:var(--text-muted)">YouTube Overrides</h4>
-            {% if youtube_configured %}
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
-                <input type="checkbox" id="vc-auto-youtube" name="auto_yt_upload" {% if auto_config.youtube_auto_upload or youtube_auto_upload %}checked{% endif %}>
-                Auto-upload YouTube after video
-            </label>
-            <div class="form-group" style="margin:var(--space-sm) 0 0 0;max-width:240px">
-                <label for="vc-privacy">Video Privacy</label>
-                <select id="vc-privacy" name="auto_yt_privacy">
-                    <option value="private" {% if auto_config.youtube.privacy == 'private' %}selected{% endif %}>Private</option>
-                    <option value="unlisted" {% if auto_config.youtube.privacy == 'unlisted' %}selected{% endif %}>Unlisted</option>
-                    <option value="public" {% if auto_config.youtube.privacy == 'public' %}selected{% endif %}>Public</option>
-                </select>
-            </div>
-            <div class="form-group" style="margin-top:var(--space-sm)">
-                <label for="vc-yt-playlist-mode">Playlist Mode</label>
-                <select id="vc-yt-playlist-mode" name="auto_yt_playlist_mode">
-                    <option value="none" {% if auto_config.youtube.playlist_mode == 'none' %}selected{% endif %}>None</option>
-                    <option value="existing" {% if auto_config.youtube.playlist_mode == 'existing' %}selected{% endif %}>Existing</option>
-                    <option value="auto-create" {% if auto_config.youtube.playlist_mode == 'auto-create' %}selected{% endif %}>Auto-create</option>
-                </select>
-            </div>
-            {% else %}
-            <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">
-                YouTube chưa được cấu hình. Vào <a href="/youtube" target="_blank">trang YouTube</a> để kết nối.
-            </p>
-            {% endif %}
-        </div>
-    </details>
     <div class="btn-group">
         <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
     </div>
@@ -548,6 +484,7 @@
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
 </style>
 
+{% if false %}
 <div class="card">
     <div class="card-header">
         <h3 style="margin:0">Automation Pipeline</h3>
@@ -594,34 +531,8 @@
     {% endif %}
 </div>
 
-<div class="card">
-    <div class="card-header">
-        <h3 style="margin:0">Background &amp; Webcam Media</h3>
-    </div>
-    <div class="form-group">
-        <label for="book-bg-media">Background (ordered loop)</label>
-        <select id="book-bg-media" multiple size="4" style="width:100%">
-            {% for m in all_media %}
-            <option value="{{ m.id }}" {% if m.id in auto_media.background|map(attribute='id') %}selected{% endif %}>
-                {{ m.filename }} ({{ m.media_type }})
-            </option>
-            {% endfor %}
-        </select>
-        <button type="button" class="btn-primary btn-sm" id="btn-save-bg-media" style="margin-top:var(--space-xs)">Save Background Order</button>
-    </div>
-    <div class="form-group">
-        <label for="book-webcam-media">Webcam (looped PiP)</label>
-        <select id="book-webcam-media" multiple size="4" style="width:100%">
-            {% for m in all_media %}
-            <option value="{{ m.id }}" {% if m.id in auto_media.webcam|map(attribute='id') %}selected{% endif %}>
-                {{ m.filename }} ({{ m.media_type }})
-            </option>
-            {% endfor %}
-        </select>
-        <button type="button" class="btn-primary btn-sm" id="btn-save-webcam-media" style="margin-top:var(--space-xs)">Save Webcam Order</button>
-    </div>
-</div>
-
+{% if book.final_audio_path %}
+{% endif %}
 {% if book.final_audio_path %}
 <div class="card">
     <div class="card-header">
@@ -953,6 +864,7 @@
 
 
 
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

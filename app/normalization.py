@@ -49,67 +49,6 @@ _CURRENCY_RE = re.compile(
     rf"(?![\w])"
 )
 
-# Date: DD/MM/YYYY or D/M/YYYY (also accepts - as separator).
-_DATE_RE = re.compile(
-    r"(?<![\d/])"
-    r"(?P<day>0?[1-9]|[12]\d|3[01])"
-    r"(?P<sep>[-/])"
-    r"(?P<month>0?[1-9]|1[0-2])"
-    r"(?P=sep)"
-    r"(?P<year>\d{4})"
-    r"(?![\d/])"
-)
-
-# Time: HH:MM or HH:MM:SS (24h).
-_TIME_RE = re.compile(
-    r"(?<![\d:])"
-    r"(?P<hour>[0-1]?\d|2[0-3])"
-    r":"
-    r"(?P<minute>[0-5]\d)"
-    r"(?::[0-5]\d)?"
-    r"(?![\d:])"
-)
-
-# Percentage: 50% or 12,5%.
-_PERCENT_RE = re.compile(
-    r"(?<![\d,.])"
-    r"(?P<value>[0-9]+(?:,[0-9]+)?)"
-    r"\s*%"
-    r"(?![\d])"
-)
-
-# Decimal using Vietnamese comma: 1,5 or 3,14.
-_DECIMAL_RE = re.compile(
-    r"(?<![\d,.])"
-    r"(?P<integer>\d+)"
-    r","
-    r"(?P<fraction>\d+)"
-    r"(?![\d])"
-)
-
-# Integer with dot thousands separators: 1.000.000.
-_DOT_INTEGER_RE = re.compile(
-    r"(?<![\d,.])"
-    r"(?P<num>\d{1,3}(?:\.\d{3})+)"
-    r"(?![\d])"
-)
-
-# Decimal with dot separator: 125.3, 3.14 etc.  (Placed after _DOT_INTEGER_RE so
-# thousand-separated numbers like 1.000 / 1.000.000 are consumed first.)
-_DOT_DECIMAL_RE = re.compile(
-    r"(?<![\d,.])"
-    r"(?P<integer>\d+)"
-    r"\."
-    r"(?P<fraction>\d+)"
-    r"(?![\d])"
-)
-
-# Plain integer.
-_INTEGER_RE = re.compile(
-    r"(?<![\d])"
-    r"(?P<num>\d+)"
-    r"(?![\d])"
-)
 
 # File extension: .wav, .mp3, .jpg etc.
 # Two patterns: one with a preceding filename (needs space separator),
@@ -143,49 +82,6 @@ def _digit_to_word(d: str) -> str:
     return _DIGIT_WORDS[int(d)]
 
 
-def _digits_to_words(num_str: str) -> str:
-    """Read a digit string in pairs from right to left, e.g. 038920842 ->
-    'không, ba tám, chín hai, không tám, bốn hai'.
-    """
-    groups: list[str] = []
-    i = len(num_str)
-    while i > 0:
-        start = max(0, i - 2)
-        groups.append(num_str[start:i])
-        i = start
-    groups.reverse()
-    return ", ".join(
-        " ".join(_digit_to_word(ch) for ch in group)
-        for group in groups
-    )
-
-
-def _read_two_digits(num_str: str) -> str:
-    """Read a 1-2 digit string purely as digits: 20 -> 'hai không', 24 -> 'hai tư'."""
-    return " ".join(_digit_to_word(ch) for ch in num_str)
-
-
-def _number_to_words(n: int | str) -> str:
-    """Convert a pure integer to Vietnamese words.
-
-    - < 5 digits: read as a whole number (e.g. 1000 -> 'một nghìn').
-    - >= 5 digits: read digit-by-digit in pairs from right to left.
-    Leading zeros are preserved for the digit-by-digit path.
-    """
-    s = str(n)
-    if len(s) < 5:
-        return num2words(int(s), lang="vi")
-    return _digits_to_words(s)
-
-
-def _year_to_words(year: int) -> str:
-    """Read a year, normally as two pairs: 2024 -> 'hai không hai tư'."""
-    s = str(year)
-    if len(s) == 4:
-        return " ".join(_read_two_digits(s[i : i + 2]) for i in range(0, 4, 2))
-    return _digits_to_words(s)
-
-
 def _currency_unit(match_text: str) -> str:
     text = match_text.lower()
     if "usd" in text or "$" in text:
@@ -202,57 +98,6 @@ def _replace_currency(m: re.Match) -> str:
     unit = _currency_unit(raw)
     # Currency always gets semantic reading regardless of digit count.
     return f"{num2words(n, lang='vi')} {unit}"
-
-
-def _replace_date(m: re.Match) -> str:
-    day = int(m.group("day"))
-    month = int(m.group("month"))
-    year = int(m.group("year"))
-    day_word = num2words(day, lang="vi")
-    month_word = num2words(month, lang="vi")
-    year_word = _year_to_words(year)
-    return f"{day_word} tháng {month_word} năm {year_word}"
-
-
-def _replace_time(m: re.Match) -> str:
-    hour = int(m.group("hour"))
-    minute = int(m.group("minute"))
-    hour_word = num2words(hour, lang="vi")
-    if minute == 0:
-        return f"{hour_word} giờ"
-    minute_word = num2words(minute, lang="vi")
-    return f"{hour_word} giờ {minute_word} phút"
-
-
-def _replace_percent(m: re.Match) -> str:
-    value_str = m.group("value")
-    if "," in value_str:
-        integer_str, fraction_str = value_str.split(",")
-        value_word = (
-            f"{num2words(int(integer_str), lang='vi')} phẩy "
-            f"{num2words(int(fraction_str), lang='vi')}"
-        )
-    else:
-        value_word = num2words(int(value_str), lang="vi")
-    return f"{value_word} phần trăm"
-
-
-def _replace_decimal(m: re.Match) -> str:
-    integer_str = m.group("integer")
-    fraction_str = m.group("fraction")
-    return (
-        f"{num2words(int(integer_str), lang='vi')} phẩy "
-        f"{num2words(int(fraction_str), lang='vi')}"
-    )
-
-
-def _replace_dot_integer(m: re.Match) -> str:
-    s = m.group("num").replace(".", "")
-    return _number_to_words(s)
-
-
-def _replace_integer(m: re.Match) -> str:
-    return _number_to_words(m.group("num"))
 
 
 def _read_extension(ext: str) -> str:

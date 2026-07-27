@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from app import repository
 from app.config import settings
 from app.deps import locked_conn
-from app.ffmpeg import get_ffprobe_path
+
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -26,7 +26,7 @@ _MIME_MAP = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m
 def _probe_duration(file_path: str) -> float | None:
     try:
         result = subprocess.run(
-            [get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
+            [settings.get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", file_path],
             capture_output=True, text=True, timeout=30,
         )

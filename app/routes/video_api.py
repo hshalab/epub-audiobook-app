@@ -80,25 +80,7 @@ def delete_video(request: Request, video_id: int):
     return JSONResponse({"status": "deleted"})
 
 
-@router.post("/video/api/videos/{video_id}/requeue")
-async def requeue_video(request: Request, video_id: int):
-    from app.upload_worker import upload_worker
-    if upload_worker is None:
-        raise HTTPException(status_code=503, detail="Upload worker unavailable")
-    with locked_conn(request) as conn:
-        video = video_repository.get_video(conn, video_id)
-        if not video:
-            raise HTTPException(status_code=404, detail="Video not found")
-        if video["upload_status"] not in ("failed", "local_only"):
-            raise HTTPException(status_code=400, detail="Video cannot be requeued")
-        upload_id = upload_worker.enqueue(
-            video_id,
-            title=video["title"] or video["filename"],
-            description=video["description"],
-            tags=video["tags"],
-            privacy=video["privacy"],
-        )
-    return JSONResponse({"status": "queued", "upload_id": upload_id})
+
 
 
 @router.post("/video/api/videos/bulk-delete")
@@ -112,29 +94,7 @@ async def bulk_delete(request: Request):
     return JSONResponse({"deleted": count})
 
 
-@router.post("/video/api/videos/bulk-upload")
-async def bulk_upload(request: Request):
-    from app.upload_worker import upload_worker
-    if upload_worker is None:
-        raise HTTPException(status_code=503, detail="Upload worker unavailable")
-    body = await request.json()
-    ids = body.get("ids", [])
-    if not ids:
-        raise HTTPException(status_code=400, detail="No IDs provided")
-    with locked_conn(request) as conn:
-        queued = 0
-        for vid in ids:
-            video = video_repository.get_video(conn, vid)
-            if video and video["upload_status"] in ("local_only", "failed"):
-                upload_worker.enqueue(
-                    vid,
-                    title=video["title"] or video["filename"],
-                    description=video["description"],
-                    tags=video["tags"],
-                    privacy=video["privacy"],
-                )
-                queued += 1
-    return JSONResponse({"queued": queued})
+
 
 
 @router.get("/video/api/upload-queue")
@@ -144,10 +104,4 @@ def list_upload_queue(request: Request):
     return JSONResponse({"uploads": pending})
 
 
-@router.post("/video/api/upload-queue/start")
-async def start_upload_queue():
-    from app.upload_worker import upload_worker
-    if upload_worker is None:
-        raise HTTPException(status_code=503, detail="Upload worker unavailable")
-    await upload_worker.start()
-    return JSONResponse({"status": "started"})
+

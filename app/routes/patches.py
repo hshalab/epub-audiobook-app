@@ -281,18 +281,6 @@ async def generate_patch_video(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = str(out_dir / f"{patch_id}.mp4")
 
-    marquee_p = image_overlay.get_marquee_path(book_id, patch_id)
-    marquee_m_p = image_overlay.get_marquee_meta_path(book_id, patch_id)
-    seg_marquee_path: str | None = None
-    seg_marquee_meta: dict | None = None
-    if marquee_p.exists() and marquee_m_p.exists():
-        try:
-            import json
-            seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
-            seg_marquee_path = str(marquee_p)
-        except Exception:
-            pass
-
     try:
         await asyncio.to_thread(
             video_gen.generate_segment,
@@ -301,8 +289,6 @@ async def generate_patch_video(
             resolution=resolution,
             fps=fps,
             use_nvenc=settings.use_nvenc,
-            marquee_path=seg_marquee_path,
-            marquee_meta=seg_marquee_meta,
         )
     except Exception as exc:
         if _wants_json(request, ajax):
@@ -679,7 +665,7 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                 book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
                 audio_path = str(book_dir / f"{patch_id}.wav")
                 chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-                audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+                audio_merge.concat_wavs(chunk_paths, audio_path)
                 # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
                 # the local synthesis path in worker.py - not auto-deleted after merge.
                 repository.mark_patch_done(conn, patch_id, audio_path)
@@ -821,7 +807,7 @@ async def import_patch_from_upload(
             book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
             audio_path = str(book_dir / f"{patch_id}.wav")
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-            audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+            audio_merge.concat_wavs(chunk_paths, audio_path)
             repository.mark_patch_done(conn, patch_id, audio_path)
         else:
             repository.update_patch_chunk_progress(conn, patch_id, imported)

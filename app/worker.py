@@ -41,29 +41,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class DisabledWorker:
-    """Sentinel used in place of PatchWorker when settings.enable_worker is False.
-
-    Reports itself as 'disabled' on /health and short-circuits any worker-side
-    operations. The DB recovery (requeue, backfill) and HTTP routes still run
-    normally — only the background claim/synthesize loop is suppressed, which
-    is what the user wants when uvicorn --reload is restarting the process on
-    every file save.
-    """
-
-    state: str = "disabled"
-    last_heartbeat_at: str = ""
-    current_patch_id: int | None = None
-    current_book_job_id: int | None = None
-    current_chunk_index: int = 0
-    current_chunk_count: int = 0
-
-    def stop(self) -> None:
-        pass
-
-    def log_shutdown_timeout(self) -> None:
-        pass
-
 
 class PatchWorker:
     def __init__(
@@ -326,7 +303,7 @@ class PatchWorker:
                     repository.update_patch_chunk_progress(self.conn, patch.id, i + 1)
 
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
-            audio_merge.merge_chunk_files_to_patch(chunk_paths, audio_path)
+            audio_merge.concat_wavs(chunk_paths, audio_path)
             self._log_event("chunk.merged", patch_id=patch.id)
             # Chunk files are intentionally left on disk after a successful merge (not
             # auto-deleted here) - a bad merge wouldn't necessarily raise, and deleting the
@@ -355,7 +332,7 @@ class PatchWorker:
         book_dir = self.data_root / "books" / str(book_id)
         book_dir.mkdir(parents=True, exist_ok=True)
         final_path = str(book_dir / "final.wav")
-        audio_merge.merge_patches_to_final(patch_wav_paths, final_path)
+        audio_merge.concat_wavs(patch_wav_paths, final_path)
         with self.db_lock:
             repository.set_book_final_audio(self.conn, book_id, final_path)
         self._log_event("book.finalized", book_id=book_id, final_audio_path=final_path)
@@ -509,17 +486,8 @@ class PatchWorker:
             return False
         return True
 
-    def _log_event(
-        self, event: str, *, level: int | None = None, **fields
-    ) -> None:
-        parts = [f"event={event}"]
-        for k, v in fields.items():
-            if isinstance(v, str) and (any(c.isspace() for c in v) or '"' in v):
-                escaped = v.replace("\\", "\\\\").replace('"', '\\"')
-                parts.append(f'{k}="{escaped}"')
-            else:
-                parts.append(f"{k}={v}")
-        msg = " ".join(parts)
+    def _log_event(self, event: str, *, level: int | None = None, **fields):
+        parts = [f"event={event}"] + [f"{k}={v}" for k, v in fields.items()]
         if level is None:
             if event.endswith(".failed"):
                 level = logging.ERROR
@@ -527,4 +495,4 @@ class PatchWorker:
                 level = logging.WARNING
             else:
                 level = logging.INFO
-        logger.log(level, msg)
+        logger.log(level, " ".join(parts))

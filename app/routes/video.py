@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Reque
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app import automation_repository, image_overlay, repository, video_gen
+from app import image_overlay, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 
@@ -707,16 +707,6 @@ def list_backgrounds(request: Request):
             items.append({"name": f.name, "path": str(safe_path), "is_default": False,
                           "is_video": video_gen.is_video_background(safe_path)})
 
-    with locked_conn(request) as conn:
-        for item in items:
-            path = _safe_background_path(item["path"])
-            if path is None:
-                continue
-            automation_repository.upsert_media_asset(
-                conn, str(path), path.name,
-                "video" if video_gen.is_video_background(path) else "image",
-            )
-
     return JSONResponse({"backgrounds": items})
 
 
@@ -770,12 +760,6 @@ async def upload_background(request: Request, file: UploadFile = File(...)):
     dest = _BACKGROUNDS_DIR / safe_name
     with open(dest, "wb") as out:
         shutil.copyfileobj(file.file, out)
-
-    with locked_conn(request) as conn:
-        automation_repository.upsert_media_asset(
-            conn, str(dest), safe_name,
-            "video" if video_gen.is_video_background(dest) else "image",
-        )
 
     return JSONResponse({"name": safe_name, "path": str(dest)})
 

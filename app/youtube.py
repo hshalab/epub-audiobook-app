@@ -226,8 +226,8 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
     Returns {youtube_video_id, status}.
     """
     _require_google_imports()
-    row = conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
-    if row is None:
+    row = dict(conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone() or {})
+    if not row:
         raise ValueError(f"upload {upload_id} not found")
     if row["status"] == "done":
         return {"youtube_video_id": row["youtube_video_id"], "status": "done"}
@@ -522,22 +522,11 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                 playlist_id = youtube_config.get("playlist_id") or ""
                 if playlist_mode == "auto-create" and channel_id:
                     book_id = _resolve_book_id(conn, upload_id)
-                    from app.automation_config import render_metadata_template
-                    template_ctx = {
-                        "book_title": row["title"] or "Audiobook",
-                        "patch_name": "",
-                        "patch_index": 0,
-                        "chapter_start": 0,
-                        "chapter_end": 0,
-                    }
-                    playlist_title = youtube_config.get("playlist_title_template", "{book_title}")
                     playlist_desc = youtube_config.get("playlist_description_template", "")
-                    rendered_title = render_metadata_template(playlist_title, template_ctx)
-                    rendered_desc = render_metadata_template(playlist_desc, template_ctx) if playlist_desc else ""
                     template_values = {
-                        "book_title": template_ctx["book_title"],
-                        "_playlist_title": rendered_title,
-                        "_playlist_description": rendered_desc,
+                        "book_title": row["title"] or "Audiobook",
+                        "_playlist_title": row["title"] or "Audiobook",
+                        "_playlist_description": playlist_desc,
                         "_playlist_privacy": youtube_config.get("playlist_privacy", "private"),
                     }
                     if book_id:

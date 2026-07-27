@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import threading
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
+
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -12,29 +13,22 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import db, repository, upload_worker as upload_worker_mod
-from app.automation_worker import AutomationWorker
+from app import db, repository
 from app.config import settings
-from app.routes import automation, books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
+from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, video, video_api, voices, youtube
 from app.tts_engine import VoxCPMEngine
-from app.worker import DisabledWorker, PatchWorker
+from app.worker import PatchWorker
 
-_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-_file_handler = RotatingFileHandler(
-    settings.log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.handlers.RotatingFileHandler(
+            settings.log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        ),
+        logging.StreamHandler(),
+    ],
 )
-_file_handler.setFormatter(_log_formatter)
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_log_formatter)
-
-_root = logging.getLogger()
-for h in list(_root.handlers):
-    _root.removeHandler(h)
-_root.setLevel(logging.INFO)
-_root.addHandler(_file_handler)
-_root.addHandler(_console_handler)
-# uvicorn dev-reload chatter — ³1 change detected² fires for every watched file
-# change (including generated audio output in data/). Mute it; WARNING+ still surface.
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
@@ -82,13 +76,7 @@ async def lifespan(app: FastAPI):
     db_lock = threading.Lock()
     app.state.conn = conn
     app.state.db_lock = db_lock
-    upload_worker_mod.init_worker(conn, db_lock)
-    if upload_worker_mod.upload_worker:
-        await upload_worker_mod.upload_worker.start()
-
     worker_task: asyncio.Task | None = None
-    automation_worker: AutomationWorker | None = None
-    automation_worker_task: asyncio.Task | None = None
     if settings.enable_worker:
         engine = VoxCPMEngine()
         worker = PatchWorker(
@@ -101,43 +89,17 @@ async def lifespan(app: FastAPI):
         )
         app.state.worker = worker
         worker_task = asyncio.create_task(worker.run_forever())
-        automation_worker = AutomationWorker(
-            conn, db_lock, settings.data_root, settings.worker_poll_interval
-        )
-        app.state.automation_worker = automation_worker
-        automation_worker_task = automation_worker.start()
         logging.info(
             "worker started (poll_interval=%s s, shutdown_timeout=%s s)",
             settings.worker_poll_interval,
             settings.worker_shutdown_timeout_seconds,
         )
     else:
-        app.state.worker = DisabledWorker()
-        app.state.automation_worker = None
-        logging.info(
-            "worker disabled by settings.enable_worker=false — background loop "
-            "suppressed + all processing patches/book_jobs requeued. "
-            "Set ENABLE_WORKER=true to enable."
-        )
+        app.state.worker = None
 
     try:
         yield
     finally:
-        if upload_worker_mod.upload_worker:
-            await upload_worker_mod.upload_worker.stop()
-        if automation_worker_task is not None:
-            automation_worker.stop()
-            try:
-                await asyncio.wait_for(
-                    automation_worker_task,
-                    timeout=settings.worker_shutdown_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                automation_worker_task.cancel()
-                try:
-                    await automation_worker_task
-                except asyncio.CancelledError:
-                    pass
         if worker_task is not None:
             worker.stop()
             try:
@@ -180,9 +142,7 @@ app.include_router(voices.router)
 app.include_router(youtube.router)
 app.include_router(drive.router)
 app.include_router(database_io.router)
-app.include_router(text_studio.router)
 app.include_router(effects.router)
-app.include_router(automation.router)
 
 
 @app.get("/")

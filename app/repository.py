@@ -32,28 +32,64 @@ def _delete_chunk_dir(book_id: int, patch_id: int) -> None:
     cleanup_chunk_dir(str(_chunk_dir_for(book_id, patch_id)))
 
 
-def _book_from_row(row: sqlite3.Row) -> Book:
-    return Book(**{k: row[k] for k in row.keys()})
+def _update_status(conn, table, id, *, status=None, **extra):
+    sets = []
+    values = []
+    if status is not None:
+        sets.append("status = ?")
+        values.append(status)
+    for k, v in extra.items():
+        sets.append(f"{k} = ?")
+        values.append(v)
+    sets.append("updated_at = ?")
+    values.append(_now())
+    values.append(id)
+    conn.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id = ?", values)
+    conn.commit()
 
 
-def _chapter_from_row(row: sqlite3.Row) -> Chapter:
+def _claim_next(conn, table, order_col="id"):
+    now = _now()
+    row = conn.execute(
+        f"UPDATE {table} SET status='processing', attempt_count=attempt_count+1, updated_at=? "
+        f"WHERE id=(SELECT id FROM {table} WHERE status='pending' ORDER BY {order_col} LIMIT 1) "
+        f"AND status='pending' RETURNING *",
+        (now,),
+    ).fetchone()
+    conn.commit()
+    return row
+
+
+def _update_patch_chunk(conn, patch_id, **cols):
+    sets = ", ".join(f"{k} = ?" for k in cols)
+    values = list(cols.values()) + [patch_id]
+    conn.execute(f"UPDATE patch SET {sets}, updated_at=? WHERE id=?", values + [_now()])
+    conn.commit()
+
+
+def _from_row(Model, row):
+    return Model(**{k: row[k] for k in row.keys()})
+
+
+def _book_from_row(row): return _from_row(Book, row)
+
+
+def _chapter_from_row(row):
     d = {k: row[k] for k in row.keys()}
     d["is_excluded"] = bool(d.get("is_excluded", False))
     return Chapter(**d)
 
 
-def _patch_from_row(row: sqlite3.Row) -> Patch:
-    return Patch(**{k: row[k] for k in row.keys()})
+def _patch_from_row(row): return _from_row(Patch, row)
 
 
-def _rule_from_row(row: sqlite3.Row) -> TextReplaceRule:
+def _rule_from_row(row):
     d = {k: row[k] for k in row.keys()}
     d["is_regex"] = bool(d["is_regex"])
     return TextReplaceRule(**d)
 
 
-def _bookjob_from_row(row: sqlite3.Row) -> BookJob:
-    return BookJob(**{k: row[k] for k in row.keys()})
+def _bookjob_from_row(row): return _from_row(BookJob, row)
 
 
 def create_book(
@@ -166,42 +202,16 @@ def get_patch(conn: sqlite3.Connection, patch_id: int) -> Patch | None:
 
 
 def claim_next_pending_patch(conn: sqlite3.Connection) -> Patch | None:
-    """Atomically claim the next pending patch (lowest book_id, then patch_index) by flipping
-    its status to 'processing'. Uses BEGIN IMMEDIATE to hold the write lock across the
-    select-then-update, avoiding a check-then-act race if more than one worker ever runs."""
-    conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute(
-        "SELECT id FROM patch WHERE status = 'pending' ORDER BY book_id, patch_index LIMIT 1"
-    ).fetchone()
-    if row is None:
-        conn.commit()
-        return None
-    conn.execute(
-        """UPDATE patch SET status = 'processing', updated_at = ?, attempt_count = attempt_count + 1
-           WHERE id = ?""",
-        (_now(), row["id"]),
-    )
-    conn.commit()
-    return get_patch(conn, row["id"])
+    row = _claim_next(conn, "patch", "patch_index")
+    return _patch_from_row(row) if row else None
 
 
 def mark_patch_done(conn: sqlite3.Connection, patch_id: int, audio_path: str) -> None:
-    conn.execute(
-        """UPDATE patch SET status = 'done', audio_path = ?, error_message = NULL, updated_at = ?
-           WHERE id = ?""",
-        (audio_path, _now(), patch_id),
-    )
-    conn.commit()
+    _update_status(conn, "patch", patch_id, status="done", audio_path=audio_path)
 
 
 def update_patch_chunk_count(conn: sqlite3.Connection, patch_id: int, chunk_count: int) -> None:
-    """Store the real (post-split) chunk count. All callers pass an actual
-    split length, so this also marks chunk_count as exact (no longer an estimate)."""
-    conn.execute(
-        "UPDATE patch SET chunk_count = ?, chunk_count_exact = 1, updated_at = ? WHERE id = ?",
-        (chunk_count, _now(), patch_id),
-    )
-    conn.commit()
+    _update_patch_chunk(conn, patch_id, chunk_count=chunk_count, chunk_count_exact=1)
 
 
 def list_stale_chunk_count_patch_ids(conn: sqlite3.Connection, book_id: int) -> list[int]:
@@ -219,14 +229,7 @@ def list_stale_chunk_count_patch_ids(conn: sqlite3.Connection, book_id: int) -> 
 def update_patch_chunk_progress(
     conn: sqlite3.Connection, patch_id: int, next_chunk_index: int
 ) -> None:
-    """Persist how many chunks of a patch have been written to disk so a worker
-    restart can resume from this index instead of redoing the patch from scratch.
-    next_chunk_index is 1-based: the count of completed chunks."""
-    conn.execute(
-        "UPDATE patch SET next_chunk_index = ?, updated_at = ? WHERE id = ?",
-        (next_chunk_index, _now(), patch_id),
-    )
-    conn.commit()
+    _update_patch_chunk(conn, patch_id, next_chunk_index=next_chunk_index)
 
 
 def set_patch_max_chars(conn: sqlite3.Connection, patch_id: int, max_chars: int | None) -> bool:
@@ -309,11 +312,7 @@ def get_patch_chunk_view(conn: sqlite3.Connection, patch: Patch, worker=None) ->
 
 
 def mark_patch_failed(conn: sqlite3.Connection, patch_id: int, error_message: str) -> None:
-    conn.execute(
-        "UPDATE patch SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
-        (error_message, _now(), patch_id),
-    )
-    conn.commit()
+    _update_status(conn, "patch", patch_id, status="failed", error_message=error_message)
 
 
 def requeue_stuck_processing(conn: sqlite3.Connection) -> int:
@@ -492,19 +491,11 @@ def update_book_normalization(
 
 
 def set_book_final_audio(conn: sqlite3.Connection, book_id: int, final_audio_path: str) -> None:
-    conn.execute(
-        """UPDATE book SET final_audio_path = ?, status = 'done', updated_at = ? WHERE id = ?""",
-        (final_audio_path, _now(), book_id),
-    )
-    conn.commit()
+    _update_status(conn, "book", book_id, status="done", final_audio_path=final_audio_path)
 
 
 def set_book_final_video(conn: sqlite3.Connection, book_id: int, final_video_path: str) -> None:
-    conn.execute(
-        "UPDATE book SET final_video_path = ?, updated_at = ? WHERE id = ?",
-        (final_video_path, _now(), book_id),
-    )
-    conn.commit()
+    _update_status(conn, "book", book_id, final_video_path=final_video_path)
 
 
 def delete_book(conn: sqlite3.Connection, book_id: int, data_root: str) -> bool:
@@ -1060,45 +1051,20 @@ def get_book_job(
 
 
 def claim_next_pending_book_job(conn: sqlite3.Connection) -> BookJob | None:
-    """Atomically claim the next pending book_job (lowest book_id, then id) by flipping
-    its status to 'processing' and bumping attempt_count. Mirrors claim_next_pending_patch."""
-    conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute(
-        "SELECT id FROM book_job WHERE status = 'pending' ORDER BY book_id, id LIMIT 1"
-    ).fetchone()
-    if row is None:
-        conn.commit()
-        return None
-    conn.execute(
-        """UPDATE book_job SET status = 'processing', updated_at = ?,
-           attempt_count = attempt_count + 1 WHERE id = ?""",
-        (_now(), row["id"]),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM book_job WHERE id = ?", (row["id"],)).fetchone()
+    row = _claim_next(conn, "book_job", "book_id, id")
     return _bookjob_from_row(row) if row else None
 
 
 def mark_book_job_done(
     conn: sqlite3.Connection, job_id: int, output_path: str
 ) -> None:
-    conn.execute(
-        """UPDATE book_job SET status = 'done', output_path = ?, error_message = NULL,
-           updated_at = ? WHERE id = ?""",
-        (output_path, _now(), job_id),
-    )
-    conn.commit()
+    _update_status(conn, "book_job", job_id, status="done", output_path=output_path)
 
 
 def mark_book_job_failed(
     conn: sqlite3.Connection, job_id: int, error_message: str
 ) -> None:
-    conn.execute(
-        """UPDATE book_job SET status = 'failed', error_message = ?, updated_at = ?
-           WHERE id = ?""",
-        (error_message, _now(), job_id),
-    )
-    conn.commit()
+    _update_status(conn, "book_job", job_id, status="failed", error_message=error_message)
 
 
 def enqueue_book_job(
@@ -1594,8 +1560,7 @@ def create_music(
 
 
 def list_music(conn: sqlite3.Connection) -> list[Music]:
-    rows = conn.execute("SELECT * FROM music ORDER BY created_at DESC").fetchall()
-    return [_music_from_row(r) for r in rows]
+    return [_music_from_row(r) for r in conn.execute("SELECT * FROM music ORDER BY created_at DESC").fetchall()]
 
 
 def list_music_paginated(conn: sqlite3.Connection, page: int = 1, per_page: int = 20) -> tuple[list[Music], int, int]:

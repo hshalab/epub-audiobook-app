@@ -42,40 +42,6 @@ class Book:
     text_box_radius: int = 12
     automation_config: str | None = None
 
-
-@dataclass
-class MediaAsset:
-    id: int
-    file_path: str
-    filename: str
-    media_type: str
-    created_at: str
-    updated_at: str
-
-
-@dataclass
-class PatchPipeline:
-    id: int
-    patch_id: int
-    stage: str
-    thumbnail_status: str
-    video_status: str
-    upload_status: str
-    playlist_status: str
-    attempt_count: int
-    last_error: str | None
-    next_retry_at: str | None
-    thumbnail_path: str | None
-    video_path: str | None
-    video_id: int | None
-    youtube_upload_id: int | None
-    config_snapshot: str
-    media_snapshot: str
-    schema_version: int
-    created_at: str
-    updated_at: str
-
-
 @dataclass
 class Chapter:
     id: int
@@ -141,27 +107,6 @@ class PatchExport:
     local_folder_path: str | None = None
     sync_target_name: str | None = None
     sync_target_email: str | None = None
-
-
-@dataclass
-class DriveSyncTarget:
-    id: int
-    name: str
-    account_email: str
-    folder_path: str
-    created_at: str
-    updated_at: str
-
-
-@dataclass
-class DriveOAuthClient:
-    id: int
-    name: str
-    client_id: str
-    client_secret: str
-    created_at: str
-    updated_at: str
-
 
 @dataclass
 class BookJob:

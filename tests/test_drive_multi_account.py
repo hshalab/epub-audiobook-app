@@ -78,7 +78,7 @@ def test_migration_adds_drive_account_id_column():
 # Client CRUD
 # ---------------------------------------------------------------------------
 
-from app.models import DriveOAuthClient
+
 
 
 def _add_client(conn, name="Client A", client_id="cid", client_secret="cs"):

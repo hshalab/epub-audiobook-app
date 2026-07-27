@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-from pathlib import Path
 from typing import Any
 
 from app.config import settings
@@ -17,21 +16,9 @@ _BACKENDS: dict[str, dict[str, Any]] = {
         "description": "Google Translate TTS (online, simple)",
         "default_voice": "vi",
     },
-    "piper": {
-        "description": "Piper TTS (local CPU, Vietnamese support)",
-        "default_voice": "vi_VN-vaisrex-medium",
-    },
 }
 
 _EDGE_VOICES_CACHE: list[dict[str, Any]] | None = None
-
-# Known rhasspy piper Vietnamese voices. The actual .onnx model is resolved from
-# settings.piper_voices_dir at synth time (see _resolve_piper_model).
-_PIPER_VOICES: list[dict[str, Any]] = [
-    {"id": "vi_VN-vais1000-medium", "label": "Tiếng Việt — vais1000 (medium)", "language": "vi"},
-    {"id": "vi_VN-vivos-x_low", "label": "Tiếng Việt — vivos (x_low)", "language": "vi"},
-    {"id": "vi_VN-25hours_single-low", "label": "Tiếng Việt — 25hours (low)", "language": "vi"},
-]
 
 
 def _check_backend(name: str) -> None:
@@ -46,11 +33,6 @@ def _check_backend(name: str) -> None:
             from gtts import gTTS  # noqa: F401
         except ImportError:
             raise RuntimeError("gTTS is not installed. pip install gTTS")
-    elif name == "piper":
-        try:
-            import piper  # noqa: F401
-        except ImportError:
-            raise RuntimeError("piper-tts is not installed. pip install piper-tts")
     else:
         raise RuntimeError(f"Unknown TTS backend: {name}")
 
@@ -82,34 +64,6 @@ def _gtts_synthesize(text: str, voice: str) -> tuple[bytes, int]:
     return _mp3_to_wav_bytes(mp3_bytes)
 
 
-def _resolve_piper_model(voice: str) -> str:
-    """Map a piper voice id to a model file under settings.piper_voices_dir,
-    falling back to the id as-is when unset or the file is absent."""
-    base = settings.piper_voices_dir
-    if base:
-        candidate = Path(base) / f"{voice}.onnx"
-        if candidate.exists():
-            return str(candidate)
-    return voice
-
-
-def _piper_synthesize(text: str, voice: str) -> tuple[bytes, int]:
-    """Synthesize text via piper-tts, return (wav_bytes, sample_rate)."""
-    from piper import PiperVoice
-    import wave
-
-    voice_model = PiperVoice.load(_resolve_piper_model(voice))
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wav_file:
-        voice_model.synthesize_wav(text, wav_file)
-    buf.seek(0)
-    import soundfile as sf
-    data, sr = sf.read(buf)
-    out_buf = io.BytesIO()
-    sf.write(out_buf, data, sr, format="WAV")
-    return out_buf.getvalue(), sr
-
-
 def _mp3_to_wav_bytes(mp3_bytes: bytes) -> tuple[bytes, int]:
     """Convert MP3 bytes to WAV bytes using soundfile."""
     import soundfile as sf
@@ -123,7 +77,6 @@ def _mp3_to_wav_bytes(mp3_bytes: bytes) -> tuple[bytes, int]:
 _BACKEND_SYNTH: dict[str, Any] = {
     "edge-tts": _edge_tts_synthesize,
     "gtts": _gtts_synthesize,
-    "piper": _piper_synthesize,
 }
 
 
@@ -177,8 +130,6 @@ def list_voices(backend: str) -> list[dict[str, Any]]:
                 {"id": code, "label": name, "language": code}
                 for code, name in sorted(_gtts_langs().items(), key=lambda kv: kv[1])
             ]
-        elif backend == "piper":
-            voices = list(_PIPER_VOICES)
         else:
             return _fallback_voice(backend)
         return voices or _fallback_voice(backend)

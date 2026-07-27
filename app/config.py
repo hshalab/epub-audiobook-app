@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +64,47 @@ class Settings(BaseSettings):
     piper_voices_dir: str = ""
     # How many times to attempt each LightTTS chunk before reporting it failed.
     light_tts_chunk_retries: int = 3
+
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def get_ffmpeg_path() -> str:
+        import shutil
+        from pathlib import Path
+        _PROJECT_BIN = Path(__file__).resolve().parent.parent / "assets" / "bin"
+        local = _PROJECT_BIN / "ffmpeg.exe"
+        if local.exists():
+            return str(local)
+        exe = shutil.which(Settings().ffmpeg_path)
+        if exe:
+            return exe
+        fallbacks = [
+            r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+            str(Path.home() / "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.2-full_build/bin/ffmpeg.exe"),
+        ]
+        for p in fallbacks:
+            if Path(p).exists():
+                return p
+        return Settings().ffmpeg_path
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def get_ffprobe_path() -> str:
+        import shutil
+        from pathlib import Path
+        _PROJECT_BIN = Path(__file__).resolve().parent.parent / "assets" / "bin"
+        local = _PROJECT_BIN / "ffprobe.exe"
+        if local.exists():
+            return str(local)
+        exe = shutil.which("ffprobe")
+        if exe:
+            return exe
+        ffmpeg_path = Settings.get_ffmpeg_path()
+        if ffmpeg_path != "ffmpeg":
+            candidate = str(Path(ffmpeg_path).parent / "ffprobe.exe")
+            if Path(candidate).exists():
+                return candidate
+        return "ffprobe"
 
 
 settings = Settings()

@@ -6,7 +6,7 @@ import logging
 import sqlite3
 import threading
 
-from app import automation_repository, youtube
+from app import youtube
 from app.video_repository import get_video, update_video
 
 logger = logging.getLogger(__name__)
@@ -104,15 +104,6 @@ class UploadWorker:
             # Post-process: set thumbnail and add to playlist
             if result.get("status") == "done":
                 await asyncio.to_thread(youtube.postprocess_upload, self.conn, upload_id)
-                with self.db_lock:
-                    pipeline = self.conn.execute(
-                        "SELECT id, stage FROM patch_pipeline WHERE youtube_upload_id=? AND stage='upload'",
-                        (upload_id,),
-                    ).fetchone()
-                    if pipeline:
-                        automation_repository.advance_pipeline_stage(self.conn, pipeline["id"], "upload", "playlist")
-                        self.conn.execute("UPDATE patch_pipeline SET playlist_status='done' WHERE id=?", (pipeline["id"],))
-                        self.conn.commit()
             logger.info("Upload %s done: %s", upload_id, result.get("youtube_video_id"))
         except Exception as e:
             logger.error("Upload %s failed: %s", upload_id, e)

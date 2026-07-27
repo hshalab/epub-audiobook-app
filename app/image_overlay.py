@@ -42,18 +42,7 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
         "padding_y": 12,
         "radius": 12,         # rounded corners in px
     },
-    "marquee": {
-        # Horizontal scrolling ticker bar rendered above the background.
-        # The image strip is 3× wider than the background and tiled with the
-        # same text three times — FFmpeg crops a sliding window to scroll it.
-        "enabled": False,
-        "height": 60,         # bar height in px
-        "bg_color": "#000000",
-        "bg_opacity": 70,     # 0–100
-        "text_color": "#FFFFFF",
-        "font_size": 32,
-        "speed_px_per_sec": 80,  # horizontal scroll speed
-    },
+
     "margin": 40,             # distance from image edge
     "offset_x": 0,            # px nudge applied after anchoring (drag-to-position)
     "offset_y": 0,
@@ -61,8 +50,8 @@ DEFAULT_OVERLAY_CONFIG: dict[str, Any] = {
 
 
 def get_default_overlay_config() -> dict[str, Any]:
-    """Fresh deep copy of the default config — safe to mutate per call."""
-    return json.loads(json.dumps(DEFAULT_OVERLAY_CONFIG))
+    from copy import deepcopy
+    return deepcopy(DEFAULT_OVERLAY_CONFIG)
 
 
 def parse_overlay_config(raw: str | None) -> dict[str, Any]:
@@ -84,10 +73,8 @@ def parse_overlay_config(raw: str | None) -> dict[str, Any]:
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    s = (hex_color or "#FFFFFF").lstrip("#")
-    if len(s) == 3:
-        s = "".join(c * 2 for c in s)
-    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    from PIL import ImageColor
+    return ImageColor.getrgb(hex_color or "#FFFFFF")[:3]
 
 
 def get_patch_overlay_path(book_id: int, patch_id: int) -> Path:
@@ -341,15 +328,6 @@ def overlay_cfg_from_values(values) -> dict:
         "padding_y": _int("box_padding_y", 12, 0, 200),
         "radius": _int("box_radius", 12, 0, 200),
     }
-    cfg["marquee"] = {
-        "enabled": values.get("marquee_enabled") in ("on", "1", "true", True),
-        "height": _int("marquee_height", 60, 20, 200),
-        "bg_color": values.get("marquee_bg_color") or "#000000",
-        "bg_opacity": _int("marquee_bg_opacity", 70, 0, 100),
-        "text_color": values.get("marquee_text_color") or "#FFFFFF",
-        "font_size": _int("marquee_font_size", 32, 12, 120),
-        "speed_px_per_sec": _int("marquee_speed", 80, 10, 500),
-    }
     return cfg
 
 
@@ -380,7 +358,6 @@ def render_overlay_with_rect(
     rect = _draw_text_block(image, draw, lines, cfg, text_color)
     return image, rect
 
-
 def render_overlay(
     image: "Image.Image",
     lines: list[str],
@@ -394,78 +371,11 @@ def render_overlay(
     return image
 
 
-def composite_marquee_preview(image: "Image.Image", text: str, marquee_cfg: dict) -> "Image.Image":
-    """Paste one visible window of the marquee band at the top of the image —
-    the same spot FFmpeg overlays it (overlay=0:0) — so the studio preview
-    matches the rendered video."""
-    band_h = int(marquee_cfg.get("height", 60))
-    band = _render_marquee_band(text, image.size[0], band_h, marquee_cfg)
-    window = band.crop((0, 0, image.size[0], band_h))
-    image.paste(window, (0, 0), window)
-    return image
-
-
-def _render_marquee_band(text: str, width: int, height: int, cfg: dict) -> "Image.Image":
-    """Render a horizontal scrolling-ticker bar.
-
-    The band is 3× wider than `width` and contains the text repeated three
-    times side-by-side with separators. FFmpeg's `crop` filter slides a
-    `width×height` window across it for the scrolling effect, so visually
-    the text appears to loop continuously.
-    """
-    from PIL import Image, ImageDraw, ImageFont
-    band_w = width * 3
-    bg_color = _hex_to_rgb(cfg.get("bg_color", "#000000"))
-    bg_opacity = max(0, min(100, int(cfg.get("bg_opacity", 70)))) / 100.0
-    text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
-    font_size = int(cfg.get("font_size", 32))
-    font = _load_font(cfg.get("font_path") or settings.default_font_path or None, font_size)
-
-    band = Image.new("RGBA", (band_w, height), (*bg_color, int(255 * bg_opacity)))
-    draw = ImageDraw.Draw(band)
-
-    sep = "   ★   "
-    unit = f"{text}{sep}"
-    try:
-        unit_w = int(draw.textlength(unit, font=font))
-    except AttributeError:
-        unit_w = draw.textbbox((0, 0), unit, font=font)[2]
-    if unit_w <= 0:
-        unit_w = 100
-
-    y = (height - font_size) // 2
-    x = 0
-    while x < band_w + unit_w:
-        draw.text((x, y), unit, font=font, fill=text_color)
-        x += unit_w
-    return band
-
-
-def get_marquee_path(book_id: int, patch_id: int) -> Path:
-    return Path(settings.data_root) / "books" / str(book_id) / "patch_overlays" / f"{patch_id}.marquee.png"
-
-
-def get_marquee_meta_path(book_id: int, patch_id: int) -> Path:
-    """JSON file holding marquee geometry + speed for the video pipeline.
-
-    Empty/old patches from before this feature don't have it — callers should
-    treat missing meta as "no marquee".
-    """
-    return Path(settings.data_root) / "books" / str(book_id) / "patch_overlays" / f"{patch_id}.marquee.json"
-
-
 def render_patch_overlay(
     book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
     background_path: str | None = None,
-    include_marquee: bool = True,
 ) -> None:
-    """Render background + (optional) separate marquee band.
-
-    Outputs:
-    - `<out_path>`              — the main PNG (same shape as background)
-    - `<patch_id>.marquee.png`  — ticker strip 3× wide (only when enabled)
-    - `<patch_id>.marquee.json` — geometry + speed metadata
-    """
+    """Render background + overlay text onto a PNG file."""
     cfg = cfg or parse_overlay_config(book.overlay_config)
     bg = _resolve_background(book, background_path)
     if bg is None:
@@ -479,7 +389,6 @@ def render_patch_overlay(
     from PIL import Image, ImageDraw
     img = Image.open(str(bg)).convert("RGB")
     draw = ImageDraw.Draw(img)
-    width = img.size[0]
 
     lines = build_overlay_lines(img, text, cfg)
     text_color = _hex_to_rgb(cfg.get("text_color", "#FFFFFF"))
@@ -488,27 +397,6 @@ def render_patch_overlay(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out), "PNG")
-
-    if not include_marquee:
-        return
-    marquee_cfg = cfg.get("marquee") or {}
-    if marquee_cfg.get("enabled"):
-        band_h = int(marquee_cfg.get("height", 60))
-        band = _render_marquee_band(text, width, band_h, marquee_cfg)
-        band_path = get_marquee_path(book.id, patch.id)
-        band.convert("RGB").save(str(band_path), "PNG")
-        meta = {
-            "marquee_height": band_h,
-            "speed_px_per_sec": int(marquee_cfg.get("speed_px_per_sec", 80)),
-            "scroll_unit_px": band.size[0] // 3,
-        }
-        meta_path = get_marquee_meta_path(book.id, patch.id)
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    else:
-        # Clean up stale marquee files when disabled
-        for stale in (get_marquee_path(book.id, patch.id),
-                      get_marquee_meta_path(book.id, patch.id)):
-            stale.unlink(missing_ok=True)
 
 
 def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
@@ -526,29 +414,17 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 def ensure_patch_overlay(
     book: Book, patch: Patch, font_path: str | None = None, *,
     background_path: str | None = None, out_path: str | None = None,
-    include_marquee: bool = True,
 ) -> str | None:
-    """Backwards-compatible wrapper — builds cfg from legacy font_path arg.
-
-    Forces a re-render when marquee is enabled but marquee files are missing
-    (e.g. user enabled marquee after the overlay was already generated).
-    """
+    """Build overlay config from legacy font_path arg and render if stale."""
     cfg = parse_overlay_config(book.overlay_config)
     if font_path and not cfg.get("font_path"):
         cfg["font_path"] = font_path
     if _resolve_background(book, background_path) is None:
         return None
     output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.id)
-    force = False
-    marquee_cfg = cfg.get("marquee") or {}
-    if marquee_cfg.get("enabled"):
-        if not get_marquee_path(book.id, patch.id).exists():
-            force = True
-    if force or background_path or needs_rerender(book, patch, output):
+    if background_path or needs_rerender(book, patch, output):
         try:
-            render_patch_overlay(
-                book, patch, cfg, str(output), background_path, include_marquee
-            )
+            render_patch_overlay(book, patch, cfg, str(output), background_path)
         except Exception as exc:
             logger.error("image_overlay: failed to render overlay for patch %s: %s", patch.id, exc)
             return None

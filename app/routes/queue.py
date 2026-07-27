@@ -12,7 +12,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from app import repository
 from app.deps import locked_conn
 from app.config import settings
-from app.worker import DisabledWorker
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ router = APIRouter()
 
 def _worker_snapshot(worker) -> dict:
     """Fields safe to expose on /health regardless of worker kind."""
-    if isinstance(worker, DisabledWorker):
+    if worker is None:
         return {
             "current_patch_id": None,
             "current_chunk_index": 0,
@@ -48,9 +47,7 @@ def health(request: Request):
     """Lightweight liveness probe. 200 when the worker has heartbeated recently,
     503 otherwise. Returns the worker's last known state for diagnostic context."""
     worker = request.app.state.worker
-    if isinstance(worker, DisabledWorker):
-        # Background loop is intentionally off (dev mode / uvicorn --reload). The
-        # server is up and serving HTTP; the queue is just not draining.
+    if worker is None:
         return {
             "status": "ok",
             "worker_state": "disabled",

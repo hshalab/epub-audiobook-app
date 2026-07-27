@@ -1,7 +1,6 @@
 """Video generation: static image, Ken Burns animated, multi-segment concat, standalone."""
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 import tempfile
@@ -9,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from app.ffmpeg import get_ffmpeg_path, get_ffprobe_path
+from app.config import settings
 from app.models import Book, Patch
 
 logger = logging.getLogger(__name__)
@@ -87,20 +86,18 @@ def generate_segment(
     music_path: str | None = None,
     music_volume: float = 0.15,
     marquee_path: str | None = None,
-    marquee_meta: dict | None = None,
+    marquee_meta: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a single video segment from image + audio.
 
     image_path may be a still image OR a looping video background (see
     VIDEO_BACKGROUND_EXTENSIONS). For a video background the clip is stream-looped
-    for the audio duration; image_type (Ken Burns) and marquee are ignored and the
-    video's own audio track is dropped (only narration + optional music are kept).
+    for the audio duration; image_type (Ken Burns) is ignored and the video's own
+    audio track is dropped (only narration + optional music are kept).
 
     image_type: 'none' (static), 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'
     music_path: optional background music file (looped, mixed at music_volume ratio)
-    marquee_path: optional ticker strip PNG (3× wide of video, scrolls horizontally)
-    marquee_meta: dict with marquee_height, speed_px_per_sec, scroll_unit_px
 
     on_progress: optional callback(event: str, fields: dict) for progress logging.
     Events: segment.start, segment.ffmpeg_start, segment.ffmpeg_done, segment.done,
@@ -108,8 +105,6 @@ def generate_segment(
     """
     if music_path is not None and not Path(music_path).exists():
         raise FileNotFoundError(f"music file not found: {music_path}")
-    if marquee_path is not None and not Path(marquee_path).exists():
-        raise FileNotFoundError(f"marquee band not found: {marquee_path}")
 
     video_codec = "h264_nvenc" if use_nvenc else "libx264"
     width, height = resolution
@@ -117,7 +112,7 @@ def generate_segment(
 
     _emit(on_progress, "segment.start", path=out_path, image_type=image_type,
           resolution=f"{width}x{height}", fps=fps, codec=video_codec,
-          has_marquee=bool(marquee_path), video_background=is_video_bg)
+          video_background=is_video_bg)
 
     if use_nvenc:
         quality_args = ["-cq", str(crf)]
@@ -141,16 +136,9 @@ def generate_segment(
         ]
     next_idx = 2
     music_idx: int | None = None
-    marquee_idx: int | None = None
     if music_path:
         inputs.extend(["-stream_loop", "-1", "-i", music_path])
         music_idx = next_idx
-        next_idx += 1
-    # A video background is a plain looping backdrop: no marquee ticker over it.
-    has_marquee = bool(marquee_path and marquee_meta) and not is_video_bg
-    if has_marquee:
-        inputs.extend(["-loop", "1", "-i", marquee_path])
-        marquee_idx = next_idx
         next_idx += 1
 
     if image_type == "none" or is_video_bg:
@@ -159,15 +147,9 @@ def generate_segment(
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
         )
     else:
-        if has_marquee:
-            logger.warning(
-                "video_gen: Ken Burns + marquee unsupported - disabling marquee for %s",
-                out_path,
-            )
-            has_marquee = False
         _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
         probe = subprocess.run(
-            [get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
+            [settings.get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
             capture_output=True, text=True,
         )
@@ -183,35 +165,12 @@ def generate_segment(
     else:
         audio_map_label = "1:a"
 
-    if has_marquee and marquee_idx is not None:
-        band_h = int(marquee_meta.get("marquee_height", 60))
-        speed = int(marquee_meta.get("speed_px_per_sec", 80))
-        scroll_unit = max(1, int(marquee_meta.get("scroll_unit_px", width)))
-        band_vf = f"crop={width}:{band_h}:x='(t*{speed})%{scroll_unit}':y=0"
-        bg_chain = f"[0:v]{base_vf}[bg]"
-        band_chain = f"[{marquee_idx}:v]{band_vf}[band]"
-        overlay_chain = "[bg][band]overlay=0:0[outv]"
-        chains = audio_chains + [bg_chain, band_chain, overlay_chain]
-        cmd = [
-            get_ffmpeg_path(), "-y",
-            *inputs,
-            "-filter_complex", ";".join(chains),
-            "-map", "[outv]",
-            "-map", audio_map_label,
-            "-c:v", video_codec,
-            *tune_args,
-            "-c:a", "aac", "-b:a", audio_bitrate,
-            "-pix_fmt", "yuv420p",
-            *quality_args,
-            "-shortest",
-            out_path,
-        ]
-    elif music_idx is not None:
+    if music_idx is not None:
         # Label the video chain: ffmpeg 5+ rejects mapping raw 0:v once it is
         # consumed by the complex filtergraph.
         chains = audio_chains + [f"[0:v]{base_vf}[vout]"]
         cmd = [
-            get_ffmpeg_path(), "-y",
+            settings.get_ffmpeg_path(), "-y",
             *inputs,
             "-filter_complex", ";".join(chains),
             "-map", "[vout]",
@@ -230,7 +189,7 @@ def generate_segment(
         # images have no audio, so default stream selection is fine there.
         map_args = ["-map", "0:v", "-map", "1:a"] if is_video_bg else []
         cmd = [
-            get_ffmpeg_path(), "-y",
+            settings.get_ffmpeg_path(), "-y",
             *inputs,
             "-vf", base_vf,
             *map_args,
@@ -285,7 +244,7 @@ def concat_segments(
         list_file.close()
 
         cmd = [
-            get_ffmpeg_path(), "-y",
+            settings.get_ffmpeg_path(), "-y",
             "-f", "concat", "-safe", "0",
             "-i", list_file.name,
             "-c", "copy",
@@ -331,9 +290,6 @@ def generate_full_video(
     music_path: str | None = None,
     music_volume: float = 0.15,
     font_path: str | None = None,
-    backgrounds: list[dict] | None = None,
-    webcam_sources: list[dict] | None = None,
-    automation_config=None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a full video by creating segments per patch and concatenating.
@@ -373,46 +329,19 @@ def generate_full_video(
                 _emit(on_progress, event, patch_index=_p.patch_index,
                       patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
-            if automation_config is not None and backgrounds is not None:
-                from app.video_compositor import render_composite
-                segment_paths.append(seg_path)
-                render_composite(
-                    patch.audio_path, backgrounds, webcam_sources or [], seg_path,
-                    automation_config, music_path=music_path,
-                )
-                _emit(on_progress, "video.segment_done",
-                      patch_index=patch.patch_index, patch_id=patch.id,
-                      segment_index=len(segment_paths),
-                      progress=f"{len(segment_paths)}/{len(eligible)}")
-                continue
-
             raw_bg = resolve_patch_image(patch, book, default_image)
             if not raw_bg:
                 _emit(on_progress, "video.segment_skipped",
                       patch_index=patch.patch_index, reason="no_image")
                 continue
 
-            seg_marquee_path: str | None = None
-            seg_marquee_meta: dict | None = None
             if is_video_background(raw_bg):
-                # Video background: plain looping backdrop, no text overlay,
-                # no Ken Burns animation, no marquee ticker.
                 image = raw_bg
                 anim = "none"
             else:
                 overlay = image_overlay.ensure_patch_overlay(book, patch, font_path)
                 image = overlay or raw_bg
                 anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
-
-                # Resolve marquee band + meta if they exist for this patch.
-                marquee_p = str(image_overlay.get_marquee_path(book.id, patch.id))
-                marquee_m_p = image_overlay.get_marquee_meta_path(book.id, patch.id)
-                if Path(marquee_p).exists() and marquee_m_p.exists():
-                    try:
-                        seg_marquee_meta = json.loads(marquee_m_p.read_text(encoding="utf-8"))
-                        seg_marquee_path = marquee_p
-                    except Exception as exc:
-                        logger.warning("video_gen: invalid marquee meta for patch %s: %s", patch.id, exc)
 
             segment_paths.append(seg_path)
             generate_segment(
@@ -423,8 +352,6 @@ def generate_full_video(
                 use_nvenc=use_nvenc,
                 music_path=music_path,
                 music_volume=music_volume,
-                marquee_path=seg_marquee_path,
-                marquee_meta=seg_marquee_meta,
                 on_progress=_seg_progress,
             )
             _emit(on_progress, "video.segment_done",
@@ -469,20 +396,9 @@ def generate_standalone_video(
     music_volume: float = 0.15,
     intro_audio: str | None = None,
     outro_audio: str | None = None,
-    backgrounds: list[dict] | None = None,
-    webcam_sources: list[dict] | None = None,
-    automation_config=None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a standalone video from a single audio + image (Video Creator page)."""
-    if automation_config is not None and backgrounds is not None:
-        from app.video_compositor import render_composite
-        render_composite(
-            audio_path, backgrounds, webcam_sources or [], out_path,
-            automation_config, music_path=music_path,
-        )
-        return
-
     w, h = resolution.split("x")
     res = (int(w), int(h))
     use_nvenc = codec == "h264_nvenc"

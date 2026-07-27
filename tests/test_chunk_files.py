@@ -54,7 +54,7 @@ def test_merge_chunk_files_to_patch(tmp_audio_dir):
     sf.write(p2, chunk2, sr)
 
     out_path = tmp_audio_dir + "/merged.wav"
-    audio_merge.merge_chunk_files_to_patch([p1, p2], out_path)
+    audio_merge.concat_wavs([p1, p2], out_path)
 
     merged, merged_sr = sf.read(out_path, dtype="float32")
     assert merged_sr == sr
@@ -69,7 +69,7 @@ def test_merge_chunk_files_single_chunk(tmp_audio_dir):
     p = tmp_audio_dir + "/chunk_000.wav"
     sf.write(p, chunk, sr)
     out_path = tmp_audio_dir + "/merged.wav"
-    audio_merge.merge_chunk_files_to_patch([p], out_path)
+    audio_merge.concat_wavs([p], out_path)
     merged, merged_sr = sf.read(out_path, dtype="float32")
     assert merged_sr == sr
     assert merged.shape[0] == chunk.shape[0]
@@ -77,8 +77,8 @@ def test_merge_chunk_files_single_chunk(tmp_audio_dir):
 
 
 def test_merge_chunk_files_empty_raises():
-    with pytest.raises(ValueError, match="no chunk paths"):
-        audio_merge.merge_chunk_files_to_patch([], "/nonexistent.wav")
+    with pytest.raises(ValueError, match="no input paths"):
+        audio_merge.concat_wavs([], "/nonexistent.wav")
 
 
 # ---------------------------------------------------------------------------
