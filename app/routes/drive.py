@@ -204,6 +204,31 @@ def sync_all(request: Request):
     return JSONResponse({"count": len(results), "results": results})
 
 
+@router.post("/drive/targets/bulk-sync")
+def bulk_sync_targets(request: Request, target_ids: list[int]):
+    """rclone copy selected targets that have rclone remotes."""
+    with locked_conn(request) as conn:
+        targets = [t for t in repository.list_drive_sync_targets(conn) if t.get("rclone_remote") and t["id"] in target_ids]
+        cid = repository.get_app_state(conn, _RCLONE_CLIENT_ID_KEY) or ""
+        cs = repository.get_app_state(conn, _RCLONE_CLIENT_SECRET_KEY) or ""
+    results = []
+    for t in targets:
+        result = _run_rclone_copy(t["folder_path"], t["rclone_remote"], cid, cs)
+        result["name"] = t["name"]
+        results.append(result)
+    synced = sum(1 for r in results if r["status"] == "ok")
+    return JSONResponse({"synced": synced, "total": len(results), "results": results})
+
+
+@router.post("/drive/targets/bulk-delete")
+def bulk_delete_targets(request: Request, target_ids: list[int]):
+    """Delete multiple sync targets. Exported files are kept."""
+    with locked_conn(request) as conn:
+        for tid in target_ids:
+            repository.delete_drive_sync_target(conn, tid)
+    return JSONResponse({"deleted": len(target_ids)})
+
+
 @router.get("/drive/connect")
 def drive_connect(request: Request, oauth_client_id: int | None = None):
     with locked_conn(request) as conn:

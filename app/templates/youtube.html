@@ -101,10 +101,16 @@
     <div class="card-header">
         <h3 style="margin:0">Lịch sử Upload</h3>
     </div>
+    <div class="yt-toolbar" id="yt-toolbar" style="display:none;margin:0 0 .75rem;padding:.75rem;background:var(--bg-secondary);border-radius:8px;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn-danger btn-sm" id="yt-bulk-delete" onclick="bulkDeleteUploads()" disabled>Delete Selected</button>
+        <button type="button" class="btn-outline btn-sm" id="yt-bulk-retry" onclick="bulkRetryFailed()" disabled>Retry Failed</button>
+        <span id="yt-selected-count" style="font-size:.85rem;color:var(--text-muted)"></span>
+    </div>
     <div class="table-wrap">
     <table class="yt-uploads-table data-table" data-table-key="youtube-uploads">
         <thead>
             <tr>
+                <th style="width:40px;text-align:center"><input type="checkbox" id="yt-select-all" title="Select all"></th>
                 <th>Title</th>
                 <th>Status</th>
                 <th>Privacy</th>
@@ -116,7 +122,8 @@
         </thead>
         <tbody>
         {% if uploads %}{% for u in uploads %}
-            <tr>
+            <tr data-id="{{ u.id }}" data-status="{{ u.status }}">
+                <td style="text-align:center"><input type="checkbox" class="yt-upload-checkbox" value="{{ u.id }}"></td>
                 <td>{{ u.title or '(no title)' }}</td>
                 <td>
                     {% if u.status == 'done' %}
@@ -158,7 +165,7 @@
                 <td>{{ u.uploaded_at or '&mdash;' }}</td>
             </tr>
             {% if u.error_message %}
-            <tr class="yt-error-row"><td colspan="7" class="yt-error-msg">{{ u.error_message }}</td></tr>
+            <tr class="yt-error-row"><td colspan="8" class="yt-error-msg">{{ u.error_message }}</td></tr>
             {% endif %}
         {% endfor %}
         </tbody>
@@ -271,5 +278,81 @@ async function copyYouTubeCreds() {
     }
     msg.style.display = 'block';
 }
+</script>
+
+<script>
+// YouTube Uploads Bulk Actions
+(function() {
+    const selectAll = document.getElementById('yt-select-all');
+    const checkboxes = () => Array.from(document.querySelectorAll('.yt-upload-checkbox'));
+    const toolbar = document.getElementById('yt-toolbar');
+    const deleteBtn = document.getElementById('yt-bulk-delete');
+    const retryBtn = document.getElementById('yt-bulk-retry');
+    const countEl = document.getElementById('yt-selected-count');
+
+    function updateToolbar() {
+        const checked = checkboxes().filter(cb => cb.checked);
+        const hasSelection = checked.length > 0;
+        const hasFailed = checked.some(cb => cb.closest('tr').dataset.status === 'failed');
+        toolbar.style.display = hasSelection ? 'flex' : 'none';
+        deleteBtn.disabled = !hasSelection;
+        retryBtn.disabled = !hasFailed;
+        countEl.textContent = hasSelection ? checked.length + ' selected' : '';
+    }
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            checkboxes().forEach(cb => cb.checked = this.checked);
+            updateToolbar();
+        });
+    }
+
+    document.querySelectorAll('.yt-upload-checkbox').forEach(cb => {
+        cb.addEventListener('change', updateToolbar);
+    });
+
+    async function bulkDeleteUploads() {
+        const ids = checkboxes().filter(cb => cb.checked).map(cb => cb.value);
+        if (!ids.length) return;
+        if (!confirm('Xóa ' + ids.length + ' video upload history? Video trên YouTube không bị xóa.')) return;
+
+        try {
+            const res = await fetch('/youtube/uploads/bulk-delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ids})
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Delete failed');
+            alert('Đã xóa ' + data.deleted + ' mục');
+            location.reload();
+        } catch (e) {
+            alert('Lỗi: ' + e.message);
+        }
+    }
+
+    async function bulkRetryFailed() {
+        const ids = checkboxes().filter(cb => cb.checked && cb.closest('tr').dataset.status === 'failed').map(cb => cb.value);
+        if (!ids.length) return;
+        if (!confirm('Thử lại upload cho ' + ids.length + ' video thất bại?')) return;
+
+        try {
+            const res = await fetch('/youtube/uploads/bulk-retry', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ids})
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Retry failed');
+            alert('Đã thêm ' + data.retried + ' video vào hàng đợi upload');
+            location.reload();
+        } catch (e) {
+            alert('Lỗi: ' + e.message);
+        }
+    }
+
+    window.bulkDeleteUploads = bulkDeleteUploads;
+    window.bulkRetryFailed = bulkRetryFailed;
+})();
 </script>
 {% endblock %}

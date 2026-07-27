@@ -349,6 +349,36 @@ def list_uploads(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def delete_upload(conn: sqlite3.Connection, upload_id: int) -> bool:
+    """Delete a youtube upload record. Returns True if deleted."""
+    cur = conn.execute("DELETE FROM youtube_uploads WHERE id=?", (upload_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_uploads(conn: sqlite3.Connection, upload_ids: list[int]) -> int:
+    """Delete multiple youtube upload records. Returns count deleted."""
+    if not upload_ids:
+        return 0
+    placeholders = ",".join("?" * len(upload_ids))
+    cur = conn.execute(f"DELETE FROM youtube_uploads WHERE id IN ({placeholders})", upload_ids)
+    conn.commit()
+    return cur.rowcount
+
+
+def reset_upload_status(conn: sqlite3.Connection, upload_ids: list[int]) -> int:
+    """Reset failed uploads to pending status for retry. Returns count reset."""
+    if not upload_ids:
+        return 0
+    placeholders = ",".join("?" * len(upload_ids))
+    cur = conn.execute(
+        f"UPDATE youtube_uploads SET status='pending', error_message=NULL WHERE id IN ({placeholders}) AND status='failed'",
+        upload_ids,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def get_pending_uploads(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM youtube_uploads WHERE status='pending' ORDER BY id"

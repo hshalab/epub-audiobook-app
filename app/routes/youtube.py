@@ -170,3 +170,28 @@ def youtube_kaggle_credentials(request: Request):
         "client_secret": settings.youtube_client_secret,
         "refresh_token": creds["refresh_token"],
     })
+
+
+@router.delete("/youtube/uploads/{upload_id}")
+def youtube_delete_upload(request: Request, upload_id: int):
+    """Delete a single upload history record."""
+    with locked_conn(request) as conn:
+        if not youtube.delete_upload(conn, upload_id):
+            raise HTTPException(status_code=404, detail="Upload not found")
+    return JSONResponse({"deleted": 1})
+
+
+@router.post("/youtube/uploads/bulk-delete")
+def youtube_bulk_delete_uploads(request: Request, ids: list[int]):
+    """Delete multiple upload history records."""
+    with locked_conn(request) as conn:
+        deleted = youtube.delete_uploads(conn, ids)
+    return JSONResponse({"deleted": deleted})
+
+
+@router.post("/youtube/uploads/bulk-retry")
+def youtube_bulk_retry_uploads(request: Request, ids: list[int]):
+    """Reset failed uploads to pending status for retry."""
+    with locked_conn(request) as conn:
+        retried = youtube.reset_upload_status(conn, ids)
+    return JSONResponse({"retried": retried})

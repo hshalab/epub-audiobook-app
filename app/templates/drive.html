@@ -57,10 +57,14 @@
 </section>
 
 <section class="drive-panel">
-    <div class="drive-panel-header"><div><h3>Đích đồng bộ của bạn</h3><p>Khi export patch hoặc batch, chọn đúng dòng theo email tài khoản.</p></div><button type="button" class="btn-primary btn-sm" id="sync-all-btn" onclick="syncAll(this)">Sync all folders</button></div>
-    <div id="sync-all-result"></div>
-    {% if targets %}<div class="table-wrap drive-table-wrap"><table class="drive-table data-table" data-table-key="drive-targets"><thead><tr><th>Tên</th><th>Tài khoản</th><th>Folder</th><th>rclone remote</th><th>Thao tác</th></tr></thead><tbody>
-    {% for t in targets %}<tr><form method="post" action="/drive/targets/{{ t.id }}/edit"><td><input name="name" value="{{ t.name }}" required></td><td><input name="account_email" type="email" value="{{ t.account_email }}" required></td><td><input name="folder_path" value="{{ t.folder_path }}" required style="min-width:300px"></td><td><input name="rclone_remote" value="{{ t.rclone_remote or '' }}" placeholder="codex5:EPUB Audiobook Exports" style="min-width:200px"></td><td style="white-space:nowrap"><button class="btn-outline btn-sm">Lưu</button></form> <button class="btn-outline btn-sm" onclick="openFolder(this.dataset.path)" data-path="{{ t.folder_path }}" title="Mở trong File Explorer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button> {% if t.rclone_remote %}<button class="btn-primary btn-sm" onclick="syncTarget({{ t.id }}, this)" title="rclone copy lên Drive">Sync</button>{% else %}<span class="drive-auto-label" title="Google Drive for Desktop tự đồng bộ">Tự đồng bộ</span>{% endif %} <form method="post" action="/drive/targets/{{ t.id }}/delete" style="display:inline" onsubmit="return confirm('Xóa cấu hình này? Lịch sử và file đã export vẫn được giữ.')"><button class="btn-danger btn-sm">Xóa</button></form><div class="drive-sync-msg" id="sync-msg-{{ t.id }}" hidden></div><pre class="drive-sync-log" id="sync-log-{{ t.id }}" hidden></pre></td></tr>{% endfor %}
+    <div class="drive-panel-header"><div><h3>Đích đồng bộ của bạn</h3><p>Khi export patch hoặc batch, chọn đúng dòng theo email tài khoản.</p></div></div>
+    <div class="drive-toolbar" id="drive-toolbar" style="display:none">
+        <button type="button" class="btn-primary btn-sm" id="bulk-sync-btn" onclick="bulkSyncSelected()" disabled>Sync Selected</button>
+        <button type="button" class="btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteSelected()" disabled>Delete Selected</button>
+        <span id="drive-selected-count" style="font-size:.85rem;color:var(--text-muted)"></span>
+    </div>
+    {% if targets %}<div class="table-wrap drive-table-wrap"><table class="drive-table data-table" data-table-key="drive-targets"><thead><tr><th><input type="checkbox" id="drive-select-all" title="Select all"></th><th>Tên</th><th>Tài khoản</th><th>Folder</th><th>rclone remote</th><th>Thao tác</th></tr></thead><tbody>
+    {% for t in targets %}<tr><form method="post" action="/drive/targets/{{ t.id }}/edit"><td><input type="checkbox" class="drive-target-checkbox" value="{{ t.id }}"></td><td><input name="name" value="{{ t.name }}" required></td><td><input name="account_email" type="email" value="{{ t.account_email }}" required></td><td><input name="folder_path" value="{{ t.folder_path }}" required style="min-width:300px"></td><td><input name="rclone_remote" value="{{ t.rclone_remote or '' }}" placeholder="codex5:EPUB Audiobook Exports" style="min-width:200px"></td><td style="white-space:nowrap"><button class="btn-outline btn-sm">Lưu</button></form> <button class="btn-outline btn-sm" onclick="openFolder(this.dataset.path)" data-path="{{ t.folder_path }}" title="Mở trong File Explorer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button> {% if t.rclone_remote %}<button class="btn-primary btn-sm" onclick="syncTarget({{ t.id }}, this)" title="rclone copy lên Drive">Sync</button>{% else %}<span class="drive-auto-label" title="Google Drive for Desktop tự đồng bộ">Tự đồng bộ</span>{% endif %} <form method="post" action="/drive/targets/{{ t.id }}/delete" style="display:inline" onsubmit="return confirm('Xóa cấu hình này? Lịch sử và file đã export vẫn được giữ.')"><button class="btn-danger btn-sm">Xóa</button></form><div class="drive-sync-msg" id="sync-msg-{{ t.id }}" hidden></div><pre class="drive-sync-log" id="sync-log-{{ t.id }}" hidden></pre></td></tr>{% endfor %}
     </tbody></table></div>{% else %}<div class="drive-empty">Chưa có đích nào. Hãy thêm folder đầu tiên ở trên.</div>{% endif %}
 </section>
 
@@ -162,5 +166,73 @@ async function syncAll(btn) {
         }
     } catch (error) { box.innerHTML = '<div class="drive-sync-msg err">' + error.message + '</div>'; }
     finally { btn.classList.remove('btn-spin'); btn.textContent = original; }
+}
+
+function updateDriveToolbar() {
+    const checkboxes = document.querySelectorAll('.drive-target-checkbox:checked');
+    const count = checkboxes.length;
+    const toolbar = document.getElementById('drive-toolbar');
+    const countEl = document.getElementById('drive-selected-count');
+    const syncBtn = document.getElementById('bulk-sync-btn');
+    const deleteBtn = document.getElementById('bulk-delete-btn');
+    if (count > 0) {
+        toolbar.style.display = 'flex';
+        countEl.textContent = count + ' selected';
+        syncBtn.disabled = false;
+        deleteBtn.disabled = false;
+    } else {
+        toolbar.style.display = 'none';
+        syncBtn.disabled = true;
+        deleteBtn.disabled = true;
+    }
+}
+
+document.getElementById('drive-select-all')?.addEventListener('change', function(e) {
+    document.querySelectorAll('.drive-target-checkbox').forEach(cb => cb.checked = e.target.checked);
+    updateDriveToolbar();
+});
+
+document.querySelectorAll('.drive-target-checkbox').forEach(cb => cb.addEventListener('change', updateDriveToolbar));
+
+async function bulkSyncSelected() {
+    const ids = [...document.querySelectorAll('.drive-target-checkbox:checked')].map(cb => cb.value);
+    if (!ids.length) return;
+    const btn = document.getElementById('bulk-sync-btn');
+    const original = btn.textContent;
+    btn.classList.add('btn-spin');
+    btn.textContent = 'Syncing...';
+    try {
+        const res = await fetch('/drive/targets/bulk-sync', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({target_ids: ids})
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Bulk sync failed');
+        alert('Synced ' + data.synced + ' of ' + data.total + ' targets');
+    } catch (e) {
+        alert('Bulk sync failed: ' + e.message);
+    } finally {
+        btn.classList.remove('btn-spin');
+        btn.textContent = original;
+    }
+}
+
+async function bulkDeleteSelected() {
+    const ids = [...document.querySelectorAll('.drive-target-checkbox:checked')].map(cb => cb.value);
+    if (!ids.length) return;
+    if (!confirm('Delete ' + ids.length + ' selected sync targets? Exported files are kept.')) return;
+    try {
+        const res = await fetch('/drive/targets/bulk-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({target_ids: ids})
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Bulk delete failed');
+        location.reload();
+    } catch (e) {
+        alert('Bulk delete failed: ' + e.message);
+    }
 }
 </script>{% endblock %}
