@@ -288,10 +288,16 @@
     <div class="patch-search">
         <input type="text" id="patch-search-input" placeholder="Tìm patch theo tên..." oninput="filterAndPaginate()">
         <span id="patch-filter-count" style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
+        <select id="patch-per-page" onchange="filterAndPaginate()" aria-label="Số patch mỗi trang">
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="Infinity">Tất cả</option>
+        </select>
     </div>
      <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
     <div class="table-wrap">
-    <table>
+    <table data-table-key="patch-table">
         <thead>
             <tr>
                 <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
@@ -514,9 +520,10 @@
         .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); white-space:nowrap; overflow-x:auto; }
         .patch-bottom-nav.visible { display:flex; }
         body.has-bottom-nav { padding-bottom:64px; }
-        .patch-search { display:flex; gap:var(--space-sm); align-items:center; margin-bottom:var(--space-sm); }
-        .patch-search input { flex:1; max-width:320px; }
-        .patch-pagination { display:flex; gap:var(--space-xs); align-items:center; justify-content:center; margin-top:var(--space-sm); flex-wrap:wrap; }
+         .patch-search { display:flex; gap:var(--space-sm); align-items:center; margin-bottom:var(--space-sm); }
+         .patch-search input { flex:1; max-width:320px; }
+         .patch-search select { padding:0.35rem 0.5rem; border:1px solid var(--border-color); border-radius:var(--border-radius-sm); background:var(--bg-card); color:var(--text-primary); font:inherit; font-size:var(--font-size-sm); }
+         .patch-pagination { display:flex; gap:var(--space-xs); align-items:center; justify-content:center; margin-top:var(--space-sm); flex-wrap:wrap; }
         .patch-pagination button { padding:var(--space-xs) var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font:inherit; font-size:var(--font-size-sm); }
         .patch-pagination button:hover:not(:disabled) { background:var(--border-color); }
         .patch-pagination button:disabled { opacity:.4; cursor:default; }
@@ -888,6 +895,16 @@ const YOUTUBE_DEFAULT_PRIVACY = "{{ youtube_default_privacy }}";
 
 const PATCHES_PER_PAGE = 20;
 let currentPage = 1;
+const PATCH_STORAGE_KEY = 'data-table-state:' + location.pathname + ':patch-table';
+function getPatchState() {
+    try {
+        var raw = JSON.parse(localStorage.getItem(PATCH_STORAGE_KEY) || '{}');
+        return (raw && typeof raw.search === 'string') ? raw.search : '';
+    } catch (_) { return ''; }
+}
+function savePatchState(search) {
+    try { localStorage.setItem(PATCH_STORAGE_KEY, JSON.stringify({search: search})); } catch (_) {}
+}
 
 // The patches table is NOT the first table in #patches-card (the auto-build
 // preview table comes first). Resolve the real patches <tbody> via the
@@ -900,6 +917,7 @@ function patchesTbody() {
 function filterAndPaginate() {
     const searchInput = document.getElementById('patch-search-input');
     const filterCount = document.getElementById('patch-filter-count');
+    const perPageSelect = document.getElementById('patch-per-page');
     const tbody = patchesTbody();
     if (!tbody) return;
     const rows = Array.from(tbody.querySelectorAll('tr'));
@@ -918,16 +936,20 @@ function filterAndPaginate() {
 
     // paginate
     const totalVisible = rows.filter(r => r.style.display !== 'none').length;
-    const totalPages = Math.max(1, Math.ceil(totalVisible / PATCHES_PER_PAGE));
+    const perPage = perPageSelect ? Number(perPageSelect.value) : 25;
+    const totalPages = Math.max(1, Math.ceil(totalVisible / perPage));
     if (currentPage > totalPages) currentPage = totalPages;
 
     let idx = 0;
     rows.forEach(row => {
         if (row.style.display === 'none') return;
-        const page = Math.floor(idx / PATCHES_PER_PAGE) + 1;
+        const page = Math.floor(idx / perPage) + 1;
         row.style.display = (page === currentPage) ? '' : 'none';
         idx++;
     });
+
+    if (query) savePatchState(query);
+    else { try { localStorage.removeItem(PATCH_STORAGE_KEY); } catch (_) {} }
 
     // render pagination controls
     const container = document.getElementById('patch-pagination');
@@ -960,7 +982,15 @@ function filterAndPaginate() {
 }
 
 // init pagination on load
-filterAndPaginate();
+(function() {
+    var saved = getPatchState();
+    var input = document.getElementById('patch-search-input');
+    if (saved && input) {
+        input.value = saved;
+    }
+    currentPage = 1;
+    filterAndPaginate();
+})();
 
 (function() {
     const BOOK_ID = {{ book.id }};
