@@ -76,6 +76,7 @@ class Patch:
     clean_text: str | None = None
     clean_text_hash: str | None = None
     text_fingerprint: str | None = None
+    youtube_override: str | None = None
 
 
 @dataclass

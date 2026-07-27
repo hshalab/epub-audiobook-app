@@ -6,7 +6,8 @@ import logging
 import sqlite3
 import threading
 
-from app import youtube
+from app import db, youtube
+from app.patch_publishing import sync_pipeline_from_upload
 from app.video_repository import get_video, update_video
 
 logger = logging.getLogger(__name__)
@@ -90,12 +91,23 @@ class UploadWorker:
                 if video_id:
                     update_video(self.conn, video_id, upload_status="uploading")
 
-            result = await asyncio.to_thread(
-                youtube.process_upload, self.conn, upload_id,
-            )
+            execution_conn = self._execution_connection()
+            if execution_conn is None:
+                with self.db_lock:
+                    if video_id:
+                        update_video(self.conn, video_id, upload_status="failed", error_message="in-memory database cannot run network uploads")
+                    youtube.mark_upload_failed(self.conn, upload_id, "in-memory database cannot run network uploads")
+                return
+            try:
+                result = await asyncio.to_thread(youtube.process_upload, execution_conn, upload_id)
+                if result.get("status") == "done":
+                    postprocess_result = await asyncio.to_thread(youtube.publish_completed_upload, execution_conn, upload_id)
+            finally:
+                if execution_conn is not self.conn:
+                    execution_conn.close()
 
             with self.db_lock:
-                if video_id:
+                if video_id and result.get("status") == "done":
                     update_video(
                         self.conn, video_id,
                         upload_status="uploaded",
@@ -103,7 +115,16 @@ class UploadWorker:
                     )
             # Post-process: set thumbnail and add to playlist
             if result.get("status") == "done":
-                await asyncio.to_thread(youtube.postprocess_upload, self.conn, upload_id)
+                with self.db_lock:
+                    sync_pipeline_from_upload(self.conn, upload_id)
+                if postprocess_result and postprocess_result.get("status") not in (None, "published", "done"):
+                    with self.db_lock:
+                        conn_row = self.conn.execute("SELECT error_message FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+                        if conn_row and not conn_row[0]:
+                            self.conn.execute("UPDATE youtube_uploads SET error_message=? WHERE id=?", (postprocess_result.get("error") or postprocess_result["status"], upload_id)); self.conn.commit()
+            else:
+                with self.db_lock:
+                    youtube.mark_upload_failed(self.conn, upload_id, result.get("error") or result.get("status") or "upload failed")
             logger.info("Upload %s done: %s", upload_id, result.get("youtube_video_id"))
         except Exception as e:
             logger.error("Upload %s failed: %s", upload_id, e)
@@ -111,6 +132,12 @@ class UploadWorker:
                 if video_id:
                     update_video(self.conn, video_id, upload_status="failed", error_message=str(e))
                 youtube.mark_upload_failed(self.conn, upload_id, str(e))
+
+    def _execution_connection(self) -> sqlite3.Connection | None:
+        database = self.conn.execute("PRAGMA database_list").fetchone()[2]
+        if not database or database == ":memory:":
+            return None
+        return db.connect(database)
 
 
 # Singleton instance - set via init_worker()

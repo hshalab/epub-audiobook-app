@@ -6,16 +6,20 @@ import shutil
 import time
 import uuid
 import zipfile
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository
+from app import audio_merge, drive_export, google_drive, image_overlay, repository, video_gen, video_repository, youtube
+from app import db as app_db
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
+from app.patch_publishing import enqueue_patch_publish, on_patch_audio_ready, retry_patch_publish
+from app.youtube_metadata import get_patch_youtube_override, resolve_patch_youtube_metadata, save_patch_youtube_override
 
 logger = logging.getLogger(__name__)
 
@@ -209,38 +213,6 @@ def _register_patch_video(conn, book, patch, video_path: Path) -> int:
     return rec["id"]
 
 
-def _enqueue_patch_youtube(
-    request: Request, book, patch, video_db_id: int, video_path: Path, privacy: str,
-) -> dict:
-    """Queue a patch video for YouTube upload. Never raises — returns a status
-    dict the frontend can surface per row. MUST be called outside locked_conn:
-    the upload worker shares app.state.db_lock (non-reentrant)."""
-    from app import youtube
-    if not youtube.is_configured():
-        return {"queued": False, "reason": "not_configured"}
-    with locked_conn(request) as conn:
-        connected = youtube.get_creds_from_db(conn) is not None
-    if not connected:
-        return {"queued": False, "reason": "not_connected"}
-    from app.upload_worker import upload_worker
-    if upload_worker is None:
-        return {"queued": False, "reason": "worker_unavailable"}
-    priv = privacy if privacy in {"private", "unlisted", "public"} else settings.youtube_default_privacy
-    try:
-        upload_worker.enqueue(
-            video_id=video_db_id,
-            title=_patch_video_title(book, patch),
-            description="",
-            tags=settings.youtube_default_tags,
-            privacy=priv,
-            video_path=str(video_path),
-        )
-        return {"queued": True, "privacy": priv}
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("patch %s youtube enqueue failed: %s", patch.id, exc)
-        return {"queued": False, "reason": str(exc)[:120]}
-
-
 def _wants_json(request: Request, ajax: int) -> bool:
     return bool(ajax) or "application/json" in (request.headers.get("accept") or "")
 
@@ -261,6 +233,11 @@ async def generate_patch_video(
         book = repository.get_book(conn, book_id)
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
+        music_path = None
+        if book.music_id is not None:
+            music = repository.get_music(conn, book.music_id)
+            if music and Path(music.file_path).exists():
+                music_path = music.file_path
 
     raw_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     if not raw_bg:
@@ -289,6 +266,8 @@ async def generate_patch_video(
             resolution=resolution,
             fps=fps,
             use_nvenc=settings.use_nvenc,
+            music_path=music_path,
+            music_volume=book.music_volume,
         )
     except Exception as exc:
         if _wants_json(request, ajax):
@@ -301,9 +280,10 @@ async def generate_patch_video(
 
     youtube_status: dict | None = None
     if upload_youtube:
-        youtube_status = _enqueue_patch_youtube(
-            request, book, patch, video_db_id, video_path, privacy
-        )
+        with locked_conn(request) as conn:
+            from app.patch_publishing import seed_patch_video
+            seed_patch_video(conn, patch_id, video_db_id, str(video_path))
+            youtube_status = retry_patch_publish(conn, patch_id)
 
     if _wants_json(request, ajax):
         return JSONResponse({
@@ -333,16 +313,11 @@ def upload_patch_video_to_youtube(
             raise HTTPException(status_code=404, detail="book not found")
         video_db_id = _register_patch_video(conn, book, patch, video_path)
 
-    status = _enqueue_patch_youtube(request, book, patch, video_db_id, video_path, privacy)
-    if not status.get("queued"):
-        reason = status.get("reason", "unknown")
-        msg = {
-            "not_configured": "YouTube chưa được cấu hình (thiếu client id/secret).",
-            "not_connected": "YouTube chưa được kết nối. Vào trang /youtube để kết nối.",
-            "worker_unavailable": "Upload worker chưa sẵn sàng.",
-        }.get(reason, f"Không thể xếp hàng upload: {reason}")
-        raise HTTPException(status_code=400, detail=msg)
-    return JSONResponse({"status": "queued", "youtube": status})
+    with locked_conn(request) as conn:
+        from app.patch_publishing import seed_patch_video
+        seed_patch_video(conn, patch_id, video_db_id, str(video_path))
+        status = retry_patch_publish(conn, patch_id)
+    return JSONResponse({"status": "queued", "pipeline": status})
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/overlay-image")
@@ -669,6 +644,7 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
                 # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
                 # the local synthesis path in worker.py - not auto-deleted after merge.
                 repository.mark_patch_done(conn, patch_id, audio_path)
+                on_patch_audio_ready(conn, patch_id)
                 repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=imported)
             else:
                 repository.update_patch_chunk_progress(conn, patch_id, imported)
@@ -728,8 +704,84 @@ async def upload_patch_audio(
 
     with locked_conn(request) as conn:
         repository.mark_patch_done(conn, patch_id, str(audio_path))
+        on_patch_audio_ready(conn, patch_id)
 
     return JSONResponse({"ok": True, "patch_id": patch_id})
+
+
+def _youtube_patch(conn, book_id, patch_id):
+    book = repository.get_book(conn, book_id)
+    patch = repository.get_patch(conn, patch_id)
+    if not book or not patch or patch.book_id != book_id:
+        raise HTTPException(404, "patch not found")
+    return book, patch
+
+
+@router.get("/books/{book_id}/youtube-metadata-preview")
+def youtube_metadata_preview(request: Request, book_id: int, patch_id: int | None = None):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        patch = repository.get_patch(conn, patch_id) if patch_id else next(iter(repository.list_patches(conn, book_id)), None)
+        if not book or not patch or patch.book_id != book_id:
+            raise HTTPException(404, "patch not found")
+        return resolve_patch_youtube_metadata(book, patch, get_patch_youtube_override(conn, patch.id))
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/youtube-metadata")
+def get_youtube_metadata(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        book, patch = _youtube_patch(conn, book_id, patch_id)
+        override = get_patch_youtube_override(conn, patch_id)
+        pipeline = conn.execute("SELECT stage,last_error,thumbnail_path,video_path,thumbnail_status,video_status,upload_status,playlist_status FROM patch_pipeline WHERE patch_id = ?", (patch_id,)).fetchone()
+        return {"metadata": resolve_patch_youtube_metadata(book, patch, override), "override": override, "pipeline": dict(pipeline) if pipeline else {}}
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/youtube-metadata")
+async def save_youtube_metadata(request: Request, book_id: int, patch_id: int):
+    data = await request.json()
+    with locked_conn(request) as conn:
+        book, patch = _youtube_patch(conn, book_id, patch_id)
+        try:
+            save_patch_youtube_override(conn, patch_id, data)
+            return resolve_patch_youtube_metadata(book, patch, data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/publish")
+async def publish_patch(request: Request, book_id: int, patch_id: int):
+    data = await request.json()
+    with locked_conn(request) as conn:
+        book, patch = _youtube_patch(conn, book_id, patch_id)
+        if not youtube.is_configured() or not youtube.get_creds_from_db(conn):
+            raise HTTPException(400, "YouTube connection is required")
+        from app.upload_worker import upload_worker
+        worker = upload_worker
+        if worker is None or not worker.get_status().get("running"):
+            raise HTTPException(503, "Upload worker is unavailable")
+        override = {k: v for k, v in data.items() if k != "force_new"}
+        if any(k in {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"} for k in override):
+            save_patch_youtube_override(conn, patch_id, override)
+        effective_override = get_patch_youtube_override(conn, patch_id)
+        metadata = resolve_patch_youtube_metadata(book, patch, effective_override)
+        pipeline = enqueue_patch_publish(conn, patch_id, force_new=bool(data.get("force_new")))
+    return {"metadata": metadata, "pipeline": pipeline}
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/publish/retry")
+def retry_publish_patch(request: Request, book_id: int, patch_id: int, force_new: bool = False):
+    conn = request.app.state.conn
+    with request.app.state.db_lock:
+        _youtube_patch(conn, book_id, patch_id)
+        database = conn.execute("PRAGMA database_list").fetchone()[2]
+    if not database or database == ":memory:":
+        with request.app.state.db_lock:
+            return enqueue_patch_publish(conn, patch_id, force_new=True) if force_new else retry_patch_publish(conn, patch_id)
+    retry_conn = app_db.connect(database)
+    try:
+        return enqueue_patch_publish(retry_conn, patch_id, force_new=True) if force_new else retry_patch_publish(retry_conn, patch_id)
+    finally:
+        retry_conn.close()
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/import-local")
@@ -809,6 +861,7 @@ async def import_patch_from_upload(
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
             audio_merge.concat_wavs(chunk_paths, audio_path)
             repository.mark_patch_done(conn, patch_id, audio_path)
+            on_patch_audio_ready(conn, patch_id)
         else:
             repository.update_patch_chunk_progress(conn, patch_id, imported)
 

@@ -5,6 +5,9 @@ import json
 import logging
 import os
 import sqlite3
+import time
+import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,14 +23,59 @@ try:
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import Flow
     from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaFileUpload
     _GOOGLE_IMPORTS_OK = True
 except ModuleNotFoundError:
     _GOOGLE_IMPORTS_OK = False
 
+try:
+    from google.auth.exceptions import RefreshError
+    from googleapiclient.errors import HttpError
+except ModuleNotFoundError:
+    RefreshError = ()
+    HttpError = ()
+
 from app.config import settings
+from app import db
 
 logger = logging.getLogger(__name__)
+
+PLAYLIST_LEASE_SECONDS = 300
+PLAYLIST_HEARTBEAT_SECONDS = 30
+_MEMORY_PLAYLIST_LOCKS = {}
+_MEMORY_PLAYLIST_LOCKS_GUARD = threading.Lock()
+
+
+class _PlaylistHeartbeat:
+    def __init__(self, stop_event, thread, conn):
+        self._stop_event, self._thread, self._conn = stop_event, thread, conn
+        self.error = None
+    def stop(self): self._stop_event.set()
+    def join(self):
+        if self._thread: self._thread.join()
+    def close(self):
+        if self._conn: self._conn.close()
+
+
+def _start_playlist_heartbeat(conn, book_id, channel_id, owner):
+    database = conn.execute("PRAGMA database_list").fetchone()[2]
+    if not database or database == ":memory:":
+        return _PlaylistHeartbeat(threading.Event(), None, None)
+    heartbeat_conn = db.connect(database)
+    stop_event = threading.Event()
+    def heartbeat():
+        try:
+            while not stop_event.is_set():
+                heartbeat_conn.execute("UPDATE youtube_playlist_map SET updated_at=? WHERE book_id=? AND channel_id=? AND playlist_id='__creating__' AND mode=?", (_now_iso(), book_id, channel_id, f"auto-create:{owner}")); heartbeat_conn.commit()
+                if stop_event.wait(PLAYLIST_HEARTBEAT_SECONDS): break
+        except Exception as exc:
+            handle.error = exc
+    handle = _PlaylistHeartbeat(stop_event, None, heartbeat_conn)
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    handle._thread = thread
+    thread.start()
+    return handle
 
 _SCOPES = [
     "https://www.googleapis.com/auth/youtube",
@@ -419,8 +467,21 @@ def list_playlists(conn: sqlite3.Connection, max_results: int = 50) -> list[dict
     """List the authenticated user's playlists."""
     _require_google_imports()
     service = get_youtube_service(conn)
-    resp = service.playlists().list(part="snippet", mine=True, maxResults=max_results).execute()
-    return resp.get("items", [])
+    items = []
+    page_token = None
+    while True:
+        params = {"part": "snippet", "mine": True, "maxResults": max_results}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = service.playlists().list(**params).execute()
+        for item in resp.get("items", []):
+            snippet = item.get("snippet") or {}
+            item["title"] = snippet.get("title", "")
+            item["description"] = snippet.get("description", "")
+            items.append(item)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return items
 
 
 def create_playlist(
@@ -471,30 +532,101 @@ def add_video_to_playlist(conn: sqlite3.Connection, playlist_id: str, youtube_vi
     return service.playlistItems().insert(part="snippet", body=body).execute()
 
 
+def _playlist_marker(book_id: int) -> str:
+    return f"[epub-audiobook-app book:{book_id}]"
+
+
 def resolve_book_playlist(
     conn: sqlite3.Connection,
     book_id: int,
     channel_id: str,
     template_values: dict[str, object],
+    _depth: int = 0,
 ) -> str:
     """Find or create a playlist for a book. Returns playlist_id."""
-    existing = conn.execute(
-        "SELECT playlist_id FROM youtube_playlist_map WHERE book_id=? AND channel_id=?",
-        (book_id, channel_id),
-    ).fetchone()
-    if existing:
-        return existing["playlist_id"]
-    title = template_values.get("_playlist_title", template_values.get("book_title", "Audiobook"))
-    description = template_values.get("_playlist_description", "")
-    privacy = template_values.get("_playlist_privacy", "private")
-    playlist = create_playlist(conn, title, description, privacy)
-    playlist_id = playlist["id"]
-    conn.execute(
-        "INSERT INTO youtube_playlist_map (book_id,channel_id,playlist_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-        (book_id, channel_id, playlist_id, "auto-create", _now_iso(), _now_iso()),
-    )
-    conn.commit()
-    return playlist_id
+    memory_lock = None
+    if conn.execute("PRAGMA database_list").fetchone()[2] == ":memory:":
+        with _MEMORY_PLAYLIST_LOCKS_GUARD:
+            memory_lock = _MEMORY_PLAYLIST_LOCKS.setdefault(id(conn), threading.Lock())
+        memory_lock.acquire()
+    reclaimed = False
+    for _ in range(20):
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute("SELECT playlist_id, updated_at FROM youtube_playlist_map WHERE book_id=? AND channel_id=?", (book_id, channel_id)).fetchone()
+        if existing and existing["playlist_id"] != "__creating__":
+            conn.commit(); return existing["playlist_id"]
+        try:
+            lease_time = datetime.fromisoformat(existing["updated_at"]) if existing and existing["updated_at"] else None
+            if lease_time and lease_time.tzinfo is None:
+                lease_time = lease_time.replace(tzinfo=timezone.utc)
+            stale = existing and (not lease_time or (datetime.now(timezone.utc) - lease_time).total_seconds() > PLAYLIST_LEASE_SECONDS)
+        except (ValueError, TypeError):
+            stale = True
+        if existing and not stale:
+            conn.rollback(); time.sleep(0.05); continue
+        owner = uuid.uuid4().hex
+        if existing:
+            conn.execute("DELETE FROM youtube_playlist_map WHERE book_id=? AND channel_id=?", (book_id, channel_id))
+            reclaimed = True
+        conn.execute("INSERT INTO youtube_playlist_map (book_id,channel_id,playlist_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?)", (book_id, channel_id, "__creating__", f"auto-create:{owner}", _now_iso(), _now_iso()))
+        conn.commit(); break
+    else:
+        raise RuntimeError("playlist resolution timed out")
+    heartbeat = _start_playlist_heartbeat(conn, book_id, channel_id, owner)
+    try:
+        heartbeat_error = getattr(heartbeat, "error", None)
+        if heartbeat_error:
+            raise RuntimeError("playlist heartbeat failed") from heartbeat_error
+        title = template_values.get("_playlist_title_template", "{book_title}").format(**template_values)
+        description = template_values.get("_playlist_description_template", "").format(**template_values)
+        marker = _playlist_marker(book_id)
+        if reclaimed:
+            for playlist in list_playlists(conn):
+                if marker in playlist.get("snippet", {}).get("description", "").replace("\r\n", "\n").split("\n"):
+                    playlist_id = playlist.get("id")
+                    adopted = conn.execute("UPDATE youtube_playlist_map SET playlist_id=?, updated_at=? WHERE book_id=? AND channel_id=? AND playlist_id='__creating__' AND mode=?", (playlist_id, _now_iso(), book_id, channel_id, f"auto-create:{owner}")).rowcount
+                    if adopted:
+                        conn.commit(); return playlist_id
+                    winner = conn.execute("SELECT playlist_id FROM youtube_playlist_map WHERE book_id=? AND channel_id=?", (book_id, channel_id)).fetchone()
+                    if winner and winner["playlist_id"] != "__creating__":
+                        conn.commit(); return winner["playlist_id"]
+                    conn.rollback(); continue
+        if marker not in description:
+            description = f"{description}\n{marker}" if description else marker
+        if not 1 <= len(title) <= 150 or len(description) > 5000:
+            conn.execute("DELETE FROM youtube_playlist_map WHERE book_id=? AND channel_id=? AND playlist_id='__creating__' AND mode=?", (book_id, channel_id, f"auto-create:{owner}")); conn.commit()
+            raise ValueError("invalid playlist metadata length")
+        privacy = template_values.get("_playlist_privacy", "private")
+        try:
+            playlist = create_playlist(conn, title, description, privacy)
+        except Exception:
+            conn.execute("DELETE FROM youtube_playlist_map WHERE book_id=? AND channel_id=? AND playlist_id='__creating__' AND mode=?", (book_id, channel_id, f"auto-create:{owner}")); conn.commit()
+            raise
+        playlist_id = playlist["id"]
+        heartbeat_error = getattr(heartbeat, "error", None)
+        if heartbeat_error:
+            raise RuntimeError("playlist heartbeat failed") from heartbeat_error
+        updated = conn.execute("UPDATE youtube_playlist_map SET playlist_id=?, updated_at=? WHERE book_id=? AND channel_id=? AND mode=? AND playlist_id='__creating__'", (playlist_id, _now_iso(), book_id, channel_id, f"auto-create:{owner}")).rowcount
+        if not updated:
+            winner = conn.execute("SELECT playlist_id FROM youtube_playlist_map WHERE book_id=? AND channel_id=?", (book_id, channel_id)).fetchone()
+            if winner and winner["playlist_id"] != "__creating__":
+                conn.commit(); return winner["playlist_id"]
+            for remote in list_playlists(conn):
+                if marker in remote.get("snippet", {}).get("description", "").replace("\r\n", "\n").split("\n"):
+                    adopted = conn.execute("UPDATE youtube_playlist_map SET playlist_id=?, updated_at=? WHERE book_id=? AND channel_id=? AND playlist_id='__creating__' AND mode=?", (remote["id"], _now_iso(), book_id, channel_id, f"auto-create:{owner}")).rowcount
+                    if adopted:
+                        conn.commit(); return remote["id"]
+                    winner = conn.execute("SELECT playlist_id FROM youtube_playlist_map WHERE book_id=? AND channel_id=?", (book_id, channel_id)).fetchone()
+                    if winner and winner["playlist_id"] != "__creating__":
+                        conn.commit(); return winner["playlist_id"]
+                    conn.rollback(); raise RuntimeError("playlist claim ownership lost")
+            raise RuntimeError("playlist claim ownership lost")
+        conn.commit()
+        return playlist_id
+    finally:
+        heartbeat.stop(); heartbeat.join(); heartbeat.close()
+        if memory_lock:
+            memory_lock.release()
 
 
 def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
@@ -515,6 +647,10 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
         youtube_video_id = row["youtube_video_id"]
         metadata = json.loads(row["metadata_snapshot"]) if row["metadata_snapshot"] else {}
         youtube_config = metadata.get("automation", {}).get("youtube", {})
+        if "mode" in youtube_config:
+            youtube_config = {**youtube_config, "playlist_mode": youtube_config["mode"], "playlist_id": youtube_config.get("playlist_id", "")}
+        if youtube_config.get("playlist_mode") == "create":
+            youtube_config = {**youtube_config, "playlist_mode": "auto-create", "playlist_id": ""}
 
         if row["thumbnail_status"] != "done":
             thumbnail_path = None
@@ -528,7 +664,7 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                 fallback = metadata.get("background_fallback")
                 if fallback and Path(fallback).is_file():
                     thumbnail_path = fallback
-            if thumbnail_path:
+            if thumbnail_path and Path(thumbnail_path).is_file():
                 try:
                     set_thumbnail(conn, youtube_video_id, thumbnail_path)
                 except Exception:
@@ -538,6 +674,8 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                     )
                     conn.commit()
                     raise
+            elif thumbnail_path:
+                raise FileNotFoundError(f"Thumbnail file not found: {thumbnail_path}")
             conn.execute(
                 "UPDATE youtube_uploads SET thumbnail_status='done' WHERE id=?",
                 (upload_id,),
@@ -552,12 +690,21 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
                 playlist_id = youtube_config.get("playlist_id") or ""
                 if playlist_mode == "auto-create" and channel_id:
                     book_id = _resolve_book_id(conn, upload_id)
-                    playlist_desc = youtube_config.get("playlist_description_template", "")
+                    snapshot = conn.execute("SELECT config_snapshot FROM patch_pipeline WHERE youtube_upload_id=?", (upload_id,)).fetchone()
+                    frozen = json.loads(snapshot["config_snapshot"]).get("playlist_template_values", {}) if snapshot else {}
+                    book_title = frozen.get("book_title") or "Audiobook"
+                    playlist_title_tpl = youtube_config.get("title_template", "{book_title}")
+                    playlist_desc_tpl = youtube_config.get("description_template", "")
                     template_values = {
-                        "book_title": row["title"] or "Audiobook",
-                        "_playlist_title": row["title"] or "Audiobook",
-                        "_playlist_description": playlist_desc,
-                        "_playlist_privacy": youtube_config.get("playlist_privacy", "private"),
+                        "book_title": book_title,
+                        "episode_number": frozen.get("episode_number", 1),
+                        "chapter_start": frozen.get("chapter_start", ""),
+                        "chapter_end": frozen.get("chapter_end", ""),
+                        "patch_name": frozen.get("patch_name", ""),
+                        "genre_tags": frozen.get("genre_tags", ""),
+                        "_playlist_title_template": playlist_title_tpl or "{book_title}",
+                        "_playlist_description_template": playlist_desc_tpl or "",
+                        "_playlist_privacy": metadata.get("privacy_status", "private"),
                     }
                     if book_id:
                         playlist_id = resolve_book_playlist(conn, book_id, channel_id, template_values)
@@ -584,9 +731,36 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
 
         return {"status": "published", "youtube_video_id": youtube_video_id}
 
-    except Exception:
+    except Exception as exc:
         logger.exception("postprocess_upload %s failed", upload_id)
-        return {"status": "failed", "youtube_video_id": row["youtube_video_id"]}
+        status_code = getattr(getattr(exc, "resp", None), "status", None)
+        if isinstance(exc, RefreshError) or (isinstance(exc, HttpError) and status_code == 401):
+            auth_label = "auth_required"
+        elif isinstance(exc, HttpError) and status_code == 403:
+            reason = ""
+            try:
+                body = json.loads(exc.content) if hasattr(exc, 'content') and exc.content else {}
+                reason = body.get("error", {}).get("errors", [{}])[0].get("reason", "")
+            except (ValueError, TypeError, IndexError, AttributeError):
+                pass
+            if reason in ("quotaExceeded", "rateLimitExceeded", "dailyLimitExceeded", "userRateLimitExceeded"):
+                auth_label = "failed"
+            elif reason in ("authError", "forbidden", "insufficientPermissions", "youtubeSignupRequired"):
+                auth_label = "auth_required"
+            else:
+                auth_label = "failed"
+        else:
+            auth_label = None
+        if auth_label:
+            conn.execute("UPDATE youtube_uploads SET error_message=? WHERE id=?", (f"{auth_label}: " + str(exc)[:1900], upload_id))
+            conn.commit()
+            return {"status": auth_label, "youtube_video_id": row["youtube_video_id"]}
+        return {"status": "failed", "youtube_video_id": row["youtube_video_id"], "error": str(exc)}
+
+
+def publish_completed_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
+    """Resume thumbnail and playlist work for an already uploaded video."""
+    return postprocess_upload(conn, upload_id)
 
 
 def _exception_safe() -> str:

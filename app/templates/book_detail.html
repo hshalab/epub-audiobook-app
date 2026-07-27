@@ -33,10 +33,43 @@
             <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
             <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
             <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
+            <button type="button" data-open-dialog="youtube-settings-modal">YouTube settings</button>
             <button type="button" data-open-dialog="rules-modal">Replace rules</button>
         </div>
     </details>
 </nav>
+
+<dialog id="youtube-settings-modal" class="book-modal">
+    <div class="card-header"><h3 style="margin:0">YouTube settings</h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
+    <form id="youtube-settings-form" class="form-grid">
+        <label><input type="checkbox" name="auto_upload" {% if youtube_config.auto_upload %}checked{% endif %}> Auto-upload</label>
+        <label>Privacy <select name="privacy_status"><option value="private" {% if youtube_config.privacy_status == 'private' %}selected{% endif %}>Private</option><option value="unlisted" {% if youtube_config.privacy_status == 'unlisted' %}selected{% endif %}>Unlisted</option><option value="public" {% if youtube_config.privacy_status == 'public' %}selected{% endif %}>Public</option></select></label>
+        <label>Genre tags <input name="genre_tags" value="{{ youtube_config.genre_tags }}"></label>
+        <label>Title template <input name="title_template" value="{{ youtube_config.title_template }}"></label>
+        <label>Description template <textarea name="description_template">{{ youtube_config.description }}</textarea></label>
+        <label>Playlist mode <select name="playlist_mode"><option value="none" {% if youtube_config.playlist.mode == 'none' %}selected{% endif %}>None</option><option value="existing" {% if youtube_config.playlist.mode == 'existing' %}selected{% endif %}>Existing</option><option value="create" {% if youtube_config.playlist.mode == 'create' %}selected{% endif %}>Create</option></select></label>
+        <label>Existing playlist <select name="playlist_id"><option value="">Select playlist</option>{% for playlist in youtube_playlists %}<option value="{{ playlist.id }}" {% if youtube_config.playlist.playlist_id == playlist.id %}selected{% endif %}>{{ playlist.title }}</option>{% endfor %}</select></label>
+        <label>Auto-create playlist title <input name="playlist_title_template" value="{{ youtube_config.playlist.title_template }}"></label>
+        <label>Auto-create playlist description <textarea name="playlist_description_template">{{ youtube_config.playlist.description_template }}</textarea></label>
+        <div id="youtube-connection-state">{% if youtube_connected %}Connected: {{ youtube_channel_name }}{% else %}YouTube not connected{% endif %}</div>
+        <label>Patch preview <select id="youtube-preview"><option value="">Select patch</option>{% for patch in patches %}<option value="{{ patch.id }}">{{ patch.name or patch.patch_index }}</option>{% endfor %}</select></label>
+        <pre id="youtube-preview-output" style="white-space:pre-wrap"></pre>
+        <div id="yts-preview-error" class="error-block" hidden></div>
+        <span id="youtube-settings-error" class="error-block" hidden></span>
+        <div class="btn-group"><button type="submit" class="btn-primary btn-sm">Save</button><button type="button" class="btn-outline btn-sm" id="youtube-refresh">Refresh</button></div>
+    </form>
+</dialog>
+
+<dialog id="patch-youtube-modal" class="book-modal">
+    <div class="card-header"><h3 style="margin:0">Publish patch <span id="pym-title"></span></h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
+    <div id="pym-body"><p>Audio, thumbnail, video and effective YouTube metadata are managed here.</p>
+        <audio id="pym-audio" controls></audio><img id="pym-thumbnail" alt="Patch thumbnail"><video id="pym-video" controls></video>
+        <div id="pym-stage"></div><div id="pym-error"></div>
+        {% for field in ('title', 'description', 'genre_tags', 'privacy_status') %}<label>{{ field }} <input id="patch-{{ field }}" data-patch-field="{{ field }}"><button type="button" data-use-book-default="{{ field }}">Use book default</button></label>{% endfor %}
+        <label>Playlist <select id="patch-playlist" data-patch-field="playlist"><option value="none">None</option><option value="existing">Existing</option><option value="create">Create</option></select></label><button type="button" data-use-book-default="playlist">Use book default</button>
+    </div>
+    <div class="btn-group"><button type="button" class="btn-primary btn-sm" data-patch-publish-action="save">Save</button><button type="button" class="btn-primary btn-sm" data-patch-publish-action="publish">Save &amp; Upload</button><button type="button" class="btn-outline btn-sm" data-patch-publish-action="retry">Retry</button><button type="button" class="btn-outline btn-sm" data-patch-publish-action="new" hidden>Upload again as new video</button></div>
+</dialog>
 
 <dialog id="normalization-modal" class="book-modal">
     <div class="card-header">
@@ -301,14 +334,11 @@
         <thead>
             <tr>
                 <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
-                <th>STT</th>
                 <th>Patch</th>
                 <th>Chapters</th>
-                <th>Ảnh</th>
-                <th>Progress</th>
+                <th>Audio</th><th>Thumbnail</th>
+                <th>Video/YouTube</th>
                 <th>Status</th>
-                <th>Video</th>
-                <th>Error</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -317,15 +347,11 @@
             <tr>
                 <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
                            form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
-                <td class="patch-stt-cell">{{ "%03d"|format(patch.patch_index) }}</td>
                 <td class="patch-name-cell">
                     <strong>{{ patch.name or patch.patch_index }}</strong>
-                    {% if patch.status == "done" and patch.audio_path %}
-                    <br>
-                    <audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>
-                    {% endif %}
                 </td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
+                <td>{% if patch.audio_path %}<audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>{% else %}&mdash;{% endif %}</td>
                 <td class="patch-image-cell">
                     <button type="button" class="patch-thumb-btn" data-patch-id="{{ patch.id }}"
                             data-patch-name="{{ patch.name or patch.patch_index }}"
@@ -351,7 +377,9 @@
                     {% endif %}
                 </td>
                 <td id="patch-status-{{ patch.id }}">
-                    {% if patch.status == 'done' %}
+                    {% set pipeline = pipeline_rows.get(patch.id) %}
+                    {% if pipeline and pipeline.stage == 'published' %}<span class="badge badge-done">Published</span>
+                    {% elif patch.status == 'done' %}
                         <span class="badge badge-done">Hoàn tất</span>
                     {% elif patch.status == 'processing' %}
                         <span class="badge badge-processing">Đang xử lý</span>
@@ -361,6 +389,7 @@
                         <span class="badge badge-pending">{{ patch.status }}</span>
                     {% endif %}
                 </td>
+                <td id="patch-pipeline-{{ patch.id }}" class="patch-pipeline-state">{{ pipeline_rows.get(patch.id, {}).get('stage', '') }} {{ pipeline_rows.get(patch.id, {}).get('last_error', '') }}</td>
                 <td class="patch-video-cell" id="patch-video-{{ patch.id }}"
                     data-patch-id="{{ patch.id }}"
                     data-patch-name="{{ patch.name or patch.patch_index }}"
@@ -368,13 +397,13 @@
                     data-audio-ready="{% if patch.status == 'done' and patch.audio_path %}1{% else %}0{% endif %}"
                     data-updated="{{ patch.updated_at }}"
                     data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}">
+                    <span class="pv-pipeline-state"></span>
                     {% if patch.status == 'done' and patch.audio_path %}
                         <div class="pv-wrap"></div>
                     {% else %}
                         <span class="pv-muted" title="Cần chạy TTS xong mới tạo được video">&mdash;</span>
                     {% endif %}
                 </td>
-                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
                 <td class="patch-actions">
                     <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" class="btn-outline btn-sm">Preview</a>
                     <button type="button" class="btn-outline btn-sm" onclick="openChunksModal({{ patch.id }})">&#9654; Chunks</button>
@@ -387,9 +416,10 @@
                         <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
                     {% endif %}
-                    <button type="button" class="btn-outline btn-sm patch-media-btn"
+                     <button type="button" class="btn-outline btn-sm patch-media-btn"
                             data-patch-id="{{ patch.id }}" data-patch-name="{{ patch.name or patch.patch_index }}"
-                            data-patch-status="{{ patch.status }}" data-bg-path="{{ patch.image_path or '' }}">More</button>
+                             data-patch-status="{{ patch.status }}" data-bg-path="{{ patch.image_path or '' }}">More</button>
+                     <button type="button" class="btn-outline btn-sm" data-patch-youtube-id="{{ patch.id }}">Publish</button>
                 </td>
             </tr>
         {% endfor %}
@@ -487,17 +517,6 @@
 .btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
 </style>
-
-{% if book.final_audio_path %}
-<div class="card">
-    <div class="card-header">
-        <h3 style="margin:0">Audio</h3>
-        <a href="/books/{{ book.id }}/download/audio" class="btn-success btn-sm">Download .wav</a>
-    </div>
-    <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">Final audio is ready for download.</p>
-</div>
-
-{% endif %}
 
 <dialog id="studio-modal" class="book-modal" style="width:min(960px,calc(100% - 2rem))">
     <style>
@@ -817,6 +836,139 @@ const YOUTUBE_DEFAULT_PRIVACY = "{{ youtube_default_privacy }}";
     });
 })();
 
+document.addEventListener('click', event => {
+    const button = event.target.closest('[data-patch-youtube-id]');
+    if (!button) return;
+    const modal = document.getElementById('patch-youtube-modal');
+    modal.dataset.patchId = button.dataset.patchYoutubeId;
+    const actions = modal.querySelectorAll('[data-patch-publish-action]');
+    actions.forEach(action => action.disabled = true);
+    ['title', 'description', 'genre_tags', 'privacy_status'].forEach(field => document.getElementById(`patch-${field}`).value = '');
+    document.getElementById('patch-playlist').value = 'none';
+    document.getElementById('pym-stage').textContent = 'Loading...';
+    document.getElementById('pym-error').textContent = '';
+    document.getElementById('pym-title').textContent = button.closest('tr')?.querySelector('.patch-name-cell')?.textContent.trim() || '';
+    modal.showModal();
+    loadPatchMetadata(button.dataset.patchYoutubeId).then(loaded => { if (loaded) actions.forEach(action => action.disabled = false); });
+});
+
+async function loadPatchMetadata(patchId) {
+    try {
+    const response = await fetch(`/books/${BOOK_ID}/patches/${patchId}/youtube-metadata`);
+    if (!response.ok) { const detail = (await response.json().catch(() => ({}))).detail || 'Metadata load failed'; throw new Error(detail); }
+    const data = await response.json();
+    const metadata = data.metadata || {}, override = data.override || {};
+    window.PATCH_INHERITED = new Set(['title', 'description', 'genre_tags', 'privacy_status', 'playlist'].filter(field => !(field in override)));
+    for (const field of ['title', 'description', 'genre_tags', 'privacy_status']) document.getElementById(`patch-${field}`).value = override[field] ?? metadata[field] ?? (field === 'genre_tags' ? (metadata.tags || []).join(', ') : '');
+    document.getElementById('patch-playlist').value = (override.playlist || metadata.youtube || {}).mode || 'none';
+    document.getElementById('pym-stage').textContent = `${data.pipeline?.stage || ''} ${data.pipeline?.thumbnail_status || ''} ${data.pipeline?.video_status || ''} ${data.pipeline?.upload_status || ''} ${data.pipeline?.playlist_status || ''}`;
+    document.getElementById('pym-error').textContent = data.pipeline?.last_error || '';
+    document.getElementById('pym-thumbnail').src = data.pipeline?.thumbnail_path ? `/books/${BOOK_ID}/patches/${patchId}/overlay-image` : '';
+    document.getElementById('pym-video').src = data.pipeline?.video_path ? `/books/${BOOK_ID}/patches/${patchId}/video` : '';
+    document.getElementById('pym-audio').src = `/books/${BOOK_ID}/patches/${patchId}/audio`;
+    document.querySelector('[data-patch-publish-action="new"]').hidden = data.pipeline?.stage !== 'published';
+    return true;
+    } catch (error) { document.getElementById('pym-error').textContent = error.message || 'Metadata load failed'; showToast(error.message || 'Metadata load failed', 'error'); return false; }
+}
+
+async function refreshYoutubeSettings() {
+    try {
+    const response = await fetch(`/books/${BOOK_ID}/youtube-settings`);
+    if (!response.ok) throw new Error('Could not refresh YouTube settings');
+    const data = await response.json();
+    document.getElementById('youtube-connection-state').textContent = data.connected ? `Connected: ${data.channel_name || ''}` : 'YouTube not connected';
+    const settingsForm = document.getElementById('youtube-settings-form');
+    settingsForm.auto_upload.checked = !!data.config.auto_upload;
+    settingsForm.privacy_status.value = data.config.privacy_status;
+    settingsForm.genre_tags.value = data.config.genre_tags || '';
+    settingsForm.title_template.value = data.config.title_template || '';
+    settingsForm.description_template.value = data.config.description || '';
+    settingsForm.playlist_mode.value = data.config.playlist.mode;
+    settingsForm.playlist_id.value = data.config.playlist.playlist_id || '';
+    settingsForm.playlist_title_template.value = data.config.playlist.title_template || '';
+    settingsForm.playlist_description_template.value = data.config.playlist.description_template || '';
+    const select = document.querySelector('[name="playlist_id"]'); select.innerHTML = '<option value="">Select playlist</option>';
+    (data.playlists || []).forEach(item => select.add(new Option(item.title, item.id)));
+    select.value = data.config.playlist.playlist_id || '';
+    } catch (error) { const el = document.getElementById('youtube-settings-error'); el.textContent = error.message; el.hidden = false; showToast(error.message, 'error'); }
+}
+document.getElementById('youtube-refresh')?.addEventListener('click', refreshYoutubeSettings);
+document.getElementById('youtube-preview')?.addEventListener('change', async event => {
+    if (!event.target.value) return;
+    try {
+        const response = await fetch(`/books/${BOOK_ID}/youtube-metadata-preview?patch_id=${event.target.value}`);
+        if (!response.ok) throw new Error('Preview failed');
+        const data = await response.json();
+        document.getElementById('youtube-preview-output').textContent = JSON.stringify(data, null, 2);
+        document.getElementById('yts-preview-error').hidden = true;
+    } catch (error) {
+        const message = error.message || 'Preview failed';
+        const errorEl = document.getElementById('yts-preview-error');
+        errorEl.textContent = message; errorEl.hidden = false; showToast(message, 'error');
+    }
+});
+
+document.getElementById('youtube-settings-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    data.auto_upload = form.auto_upload.checked;
+    data.genre_tags = String(data.genre_tags || '').split(',').map(s => s.trim()).filter(Boolean).join(', ');
+    data.playlist = {mode: data.playlist_mode, id: data.playlist_id, title_template: data.playlist_title_template, description_template: data.playlist_description_template};
+    delete data.playlist_mode; delete data.playlist_id; delete data.playlist_title_template; delete data.playlist_description_template;
+    try {
+        const response = await fetch(`/books/${BOOK_ID}/youtube-settings`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+        if (!response.ok) throw new Error((await response.json()).detail || 'Save failed');
+        showToast('YouTube settings saved', 'success');
+    } catch (error) { const el = document.getElementById('youtube-settings-error'); el.textContent = error.message; el.hidden = false; }
+});
+
+document.getElementById('patch-youtube-modal')?.addEventListener('click', async event => {
+    const action = event.target.closest('[data-patch-publish-action]')?.dataset.patchPublishAction;
+    const clickedAction = event.target.closest('[data-patch-publish-action]');
+    const patchId = event.currentTarget.dataset.patchId;
+    if (!action || !patchId) return;
+    clickedAction.disabled = true;
+    try {
+    const fields = {};
+    for (const field of ['title', 'description', 'genre_tags', 'privacy_status']) if (!window.PATCH_INHERITED?.has(field)) fields[field] = document.getElementById(`patch-${field}`).value;
+    fields.playlist = {mode: document.getElementById('patch-playlist').value};
+    if (window.PATCH_INHERITED?.has('playlist')) delete fields.playlist;
+    let response;
+    response = await fetch(`/books/${BOOK_ID}/patches/${patchId}/youtube-metadata`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(fields)});
+    if (!response.ok) { showToast((await response.json().catch(() => ({}))).detail || 'Save failed', 'error'); return; }
+    if (action === 'save') { showToast('Metadata saved', 'success'); await loadPatchMetadata(patchId); return; }
+    const url = action === 'retry' ? `/books/${BOOK_ID}/patches/${patchId}/publish/retry` : `/books/${BOOK_ID}/patches/${patchId}/publish`;
+    response = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(action === 'retry' ? {} : {force_new: action === 'new'})});
+    if (!response.ok) { showToast((await response.json().catch(() => ({}))).detail || 'Publish failed', 'error'); return; }
+    showToast('Patch publishing queued', 'success'); await loadPatchMetadata(patchId);
+    try {
+        const statusResponse = await fetch(`/books/${BOOK_ID}/status`);
+        if (!statusResponse.ok) throw new Error('Status refresh failed');
+        updatePatchRow(patchId, await statusResponse.json());
+    } catch (_) { showToast('Patch queued; status refresh failed', 'warning'); }
+    } catch (error) {
+        const message = error.message || 'Patch action failed';
+        document.getElementById('pym-error').textContent = message;
+        showToast(message, 'error');
+    } finally {
+        clickedAction.disabled = false;
+    }
+});
+
+document.addEventListener('click', event => { const field = event.target.closest('[data-use-book-default]'); if (field) { const name = field.dataset.useBookDefault; window.PATCH_INHERITED = window.PATCH_INHERITED || new Set(); window.PATCH_INHERITED.add(name); const input = document.getElementById(`patch-${name}`); if (input) input.value = ''; } });
+
+function updatePatchRow(patchId, data) {
+    const patch = (data.patches || []).find(item => item.id === Number(patchId));
+    const pipeline = data.pipelines?.[patchId];
+    const cell = document.getElementById(`patch-status-${patchId}`);
+    if (cell && (pipeline || patch)) cell.innerHTML = pipeline?.stage === 'published' ? '<span class="badge badge-done">Published</span>' : (pipeline?.stage || patch?.status || '');
+    const pipelineCell = document.getElementById(`patch-pipeline-${patchId}`);
+    if (pipelineCell) pipelineCell.textContent = [pipeline?.stage, pipeline?.thumbnail_status, pipeline?.video_status, pipeline?.upload_status, pipeline?.playlist_status, pipeline?.last_error].filter(Boolean).join(' | ');
+    const video = document.getElementById(`patch-video-${patchId}`);
+    if (video && pipeline) { video.dataset.pipelineStage = pipeline.stage || ''; video.dataset.pipelineError = pipeline.last_error || ''; const state = video.querySelector('.pv-pipeline-state'); if (state) state.textContent = [pipeline.stage, pipeline.last_error].filter(Boolean).join(' | '); }
+}
+
 (function() {
     // Batch export: select-all checkbox + enable the export buttons only when
     // at least one patch is selected (the server validates too).
@@ -1023,7 +1175,8 @@ function filterAndPaginate() {
                 if (ACTIVE_TASKS.has(p.id)) continue;
 
                 const el = document.getElementById(`patch-status-${p.id}`);
-                if (el) el.innerHTML = badgeFor(p.status);
+                const pipe = data.pipelines && data.pipelines[p.id];
+                if (el) el.innerHTML = pipe?.stage === 'published' ? '<span class="badge badge-done">Published</span>' : badgeFor(p.status);
 
                 const progEl = document.getElementById(`patch-progress-${p.id}`);
                 if (progEl) {
@@ -1039,7 +1192,6 @@ function filterAndPaginate() {
                     }
                 }
                 // Update pipeline status cells
-                const pipe = data.pipelines && data.pipelines[p.id];
                 if (pipe) {
                     const stageEl = document.getElementById(`auto-stage-${p.id}`);
                     if (stageEl) stageEl.textContent = pipe.stage;
@@ -1617,36 +1769,6 @@ async function runPatchToCompletion(patchId, onChunk, onRetry) {
     throw lastError || new Error('LightTTS lỗi');
 }
 
-async function runLightTTSPatch(patchId, btn) {
-    const origText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '0/…';
-    setPatchStatus(patchId, '<span class="badge badge-processing">Đang xử lý</span>');
-    try {
-        const res = await runPatchToCompletion(patchId, (done, total, failed) => {
-            btn.textContent = `${done}/${total}`;
-            setPatchProgress(patchId, done, total, failed);
-        }, (nextPass) => {
-            btn.textContent = `↻ thử lại (lượt ${nextPass})…`;
-        });
-        if (res.complete) {
-            setPatchStatus(patchId, '<span class="badge badge-done">Hoàn tất</span>');
-            btn.textContent = '✓ Done';
-        } else {
-            // Progress is saved server-side; another run resumes at the missing chunks.
-            setPatchStatus(patchId, '<span class="badge badge-failed">Còn lỗi</span>');
-            showToast(`Còn ${res.failed} chunk lỗi — bấm Run để chạy tiếp các chunk thiếu`, 'error');
-            btn.disabled = false;
-            btn.textContent = `↻ Còn ${res.failed} chunk`;
-        }
-    } catch (e) {
-        setPatchStatus(patchId, '<span class="badge badge-failed">Thất bại</span>');
-        showToast('LightTTS lỗi: ' + (e.message || e), 'error');
-        btn.disabled = false;
-        btn.textContent = origText;
-    }
-}
-
 async function runAllLightTTS() {
     const btn = document.getElementById('btnRunSelectedLightTTS');
     const origText = btn.textContent;
@@ -1801,8 +1923,7 @@ function ytReason(r) {
 }
 
 function getBatchPrivacy() {
-    const sel = document.getElementById('vc-privacy');
-    return (sel && sel.value) || YOUTUBE_DEFAULT_PRIVACY || 'private';
+    return YOUTUBE_DEFAULT_PRIVACY || 'private';
 }
 
 // Selected patch ids (checked ones, or every enabled patch when none checked).
@@ -2208,10 +2329,6 @@ async function genSelectedImages() {
         } catch (e) { showToast('Lưu lỗi: ' + (e.message || e), 'error'); }
         finally { btn.disabled = false; btn.textContent = orig; }
     });
-    const vcAuto = document.getElementById('vc-auto-youtube');
-    const batchAuto = document.getElementById('batch-auto-youtube');
-    if (vcAuto && batchAuto) vcAuto.addEventListener('change', () => { batchAuto.checked = vcAuto.checked; });
-
     initVideoCells();
 
 })();

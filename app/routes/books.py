@@ -16,6 +16,9 @@ from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
 from app.normalization import NormalizationOptions, normalize_text
+from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
+from app import youtube
+from app import db as app_db
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 # Book backgrounds may be a still image or a looping video clip.
@@ -24,6 +27,14 @@ ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKG
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
+
+
+def _list_youtube_playlists():
+    api_conn = app_db.connect(settings.db_path)
+    try:
+        return youtube.list_playlists(api_conn)
+    finally:
+        api_conn.close()
 
 
 @router.get("/books", response_class=HTMLResponse)
@@ -140,6 +151,8 @@ async def upload_book(
 def book_detail(request: Request, book_id: int):
     with locked_conn(request) as conn:
         book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(404, "Book not found")
         patch_list = repository.list_patches(conn, book_id)
         rules = repository.list_replace_rules(conn, book_id)
         chapters = repository.list_chapters(conn, book_id)
@@ -148,6 +161,22 @@ def book_detail(request: Request, book_id: int):
         drive_accounts = google_drive.list_accounts(conn)
         music_list = repository.list_music(conn)
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
+        youtube_config = get_book_youtube_config(conn, book_id)
+        youtube_creds = youtube.get_creds_from_db(conn)
+        pipeline_rows = {
+            row["patch_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT * FROM patch_pipeline WHERE patch_id IN ({})".format(
+                    ",".join("?" for _ in patch_list)
+                ), [p.id for p in patch_list]
+            )
+        } if patch_list else {}
+    youtube_playlists = []
+    if youtube_creds:
+        try:
+            youtube_playlists = _list_youtube_playlists()
+        except Exception:
+            youtube_playlists = []
     has_active_patches = any(p.status in ("pending", "processing") for p in patch_list)
 
     # Which patches already have a rendered MP4 on disk (server-side or uploaded
@@ -158,7 +187,6 @@ def book_detail(request: Request, book_id: int):
         if (patch_videos_dir / f"{p.id}.mp4").exists()
     }
 
-    from app import youtube
     youtube_configured = youtube.is_configured()
 
     from app import image_overlay
@@ -192,6 +220,11 @@ def book_detail(request: Request, book_id: int):
             "youtube_configured": youtube_configured,
             "youtube_auto_upload": settings.youtube_auto_upload,
             "youtube_default_privacy": settings.youtube_default_privacy,
+            "youtube_config": youtube_config,
+            "youtube_connected": bool(youtube_creds),
+            "youtube_channel_name": youtube_creds.get("channel_name") if youtube_creds else None,
+            "youtube_playlists": youtube_playlists,
+            "pipeline_rows": pipeline_rows,
         }
     )
 
@@ -232,6 +265,65 @@ def update_video_settings(
         "video_resolution": res or (book.video_resolution or "1920x1080"),
         "video_fps": fps or (book.video_fps or 30),
     })
+
+
+@router.post("/books/{book_id}/youtube-settings")
+async def update_youtube_settings(request: Request, book_id: int):
+    data = await request.json()
+    if "description_template" in data:
+        data["description"] = data.pop("description_template")
+    playlist = data.get("playlist") or {}
+    if "id" in playlist:
+        playlist["playlist_id"] = playlist.pop("id")
+    data["playlist"] = playlist
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        try:
+            normalized = {**get_book_youtube_config(conn, book_id), **data}
+            if normalized.get("auto_upload"):
+                playlist = normalized["playlist"]
+                if not youtube.is_configured() or youtube.get_creds_from_db(conn) is None:
+                    raise ValueError("YouTube must be connected before enabling auto upload")
+                if playlist["mode"] == "none":
+                    raise ValueError("auto upload requires a playlist")
+                if playlist["mode"] == "existing":
+                    if not playlist["playlist_id"]:
+                        raise ValueError("playlist was not found")
+                if playlist["mode"] == "create" and not playlist.get("title_template", "").strip():
+                    raise ValueError("playlist title template is required")
+            save_book_youtube_config(conn, book_id, data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        result = get_book_youtube_config(conn, book_id)
+    if result.get("auto_upload") and result["playlist"]["mode"] == "existing":
+        try:
+            if not any(p.get("id") == result["playlist"]["playlist_id"] for p in _list_youtube_playlists()):
+                raise HTTPException(400, "playlist was not found")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(400, "YouTube playlist access could not be verified") from exc
+    if result.get("auto_upload") and result["playlist"]["mode"] == "create":
+        try:
+            _list_youtube_playlists()
+        except Exception as exc:
+            raise HTTPException(400, "YouTube playlist access could not be verified") from exc
+    return result
+
+
+@router.get("/books/{book_id}/youtube-settings")
+def youtube_settings(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(404, "book not found")
+        creds = youtube.get_creds_from_db(conn)
+        result = {"config": get_book_youtube_config(conn, book_id), "connected": bool(creds), "channel_name": creds.get("channel_name") if creds else None}
+    try:
+        result["playlists"] = _list_youtube_playlists() if result["connected"] else []
+    except Exception:
+        result["playlists"] = []
+    return result
 
 
 

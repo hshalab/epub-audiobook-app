@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS patch (
     status          TEXT NOT NULL DEFAULT 'pending',
     audio_path      TEXT,
     error_message   TEXT,
+    youtube_override TEXT,
     attempt_count   INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
@@ -328,6 +329,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX idx_patch_pipeline_claim ON patch_pipeline("
         "stage, next_retry_at, id)"
     )
+    duplicates = conn.execute("SELECT book_id, channel_id, MIN(id) AS keep_id FROM youtube_playlist_map GROUP BY book_id, channel_id HAVING COUNT(*) > 1").fetchall()
+    for duplicate in duplicates:
+        conn.execute("DELETE FROM youtube_playlist_map WHERE book_id=? AND channel_id=? AND id<>?", (duplicate["book_id"], duplicate["channel_id"], duplicate["keep_id"]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_playlist_map_book_channel ON youtube_playlist_map(book_id, channel_id)")
+    pipeline_existing = {row["name"] for row in conn.execute("PRAGMA table_info(patch_pipeline)")}
+    for name, definition in {
+        "thumbnail_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "video_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "upload_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "playlist_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "config_snapshot": "TEXT NOT NULL DEFAULT '{}'",
+        "media_snapshot": "TEXT NOT NULL DEFAULT '{}'",
+    }.items():
+        if name not in pipeline_existing:
+            conn.execute(f"ALTER TABLE patch_pipeline ADD COLUMN {name} {definition}")
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(book)")}
     if "voice_clip_path" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
@@ -368,6 +384,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE patch ADD COLUMN clean_text_hash TEXT")
     if "text_fingerprint" not in patch_existing:
         conn.execute("ALTER TABLE patch ADD COLUMN text_fingerprint TEXT")
+    if "youtube_override" not in patch_existing:
+        conn.execute("ALTER TABLE patch ADD COLUMN youtube_override TEXT")
     if "normalize_numbers_enabled" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN normalize_numbers_enabled INTEGER NOT NULL DEFAULT 1")
     if "normalize_junk_enabled" not in existing:

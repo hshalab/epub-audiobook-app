@@ -197,6 +197,8 @@ class PatchWorker:
             audio_path = await asyncio.to_thread(self._synthesize, patch)
             with self.db_lock:
                 repository.mark_patch_done(self.conn, patch.id, audio_path)
+                from app.patch_publishing import on_patch_audio_ready
+                on_patch_audio_ready(self.conn, patch.id)
             self._log_event(
                 "patch.done",
                 patch_id=patch.id,
