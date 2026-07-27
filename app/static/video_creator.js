@@ -8,6 +8,19 @@
     let sort = 'created_at';
     let order = 'desc';
     let selectedIds = new Set();
+    const VIDEO_STORAGE_KEY = 'data-table-state:' + location.pathname + ':video-library';
+    function restoreVideoState() {
+        try {
+            var raw = JSON.parse(localStorage.getItem(VIDEO_STORAGE_KEY) || '{}');
+            if (raw && typeof raw === 'object') {
+                if (typeof raw.search === 'string' && raw.search) search = raw.search;
+                if (typeof raw.statusFilter === 'string' && raw.statusFilter) statusFilter = raw.statusFilter;
+            }
+        } catch (_) {}
+    }
+    function saveVideoState() {
+        try { localStorage.setItem(VIDEO_STORAGE_KEY, JSON.stringify({search: search, statusFilter: statusFilter})); } catch (_) {}
+    }
 
     async function loadVideos() {
         const params = new URLSearchParams({
@@ -23,6 +36,7 @@
         renderTable(data);
         renderPagination(data);
         updateBulkButtons();
+        saveVideoState();
     }
 
     function renderTable(data) {
@@ -236,7 +250,15 @@
 
     // Loaded lazily the first time the Video Library tab is activated
     // (see the tab-switcher IIFE below), not unconditionally on page load.
-    window.__videoLibraryLoad = loadVideos;
+    window.__videoLibraryLoad = function() {
+        restoreVideoState();
+        var searchInput = document.getElementById('filter-search');
+        if (searchInput && search) searchInput.value = search;
+        var statusSelect = document.getElementById('filter-status');
+        if (statusSelect && statusFilter) statusSelect.value = statusFilter;
+        currentPage = 1;
+        loadVideos();
+    };
 })();
 
 (function() {
