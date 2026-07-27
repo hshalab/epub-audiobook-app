@@ -39,7 +39,7 @@
         if (!kids.length) return false;
         for (var i = 0; i < kids.length; i++) {
             var t = kids[i].tagName;
-            if (t !== 'FORM' && t !== 'BUTTON' && t !== 'INPUT' && t !== 'SELECT') return false;
+            if (t !== 'FORM' && t !== 'BUTTON') return false;
         }
         return true;
     }
@@ -47,7 +47,7 @@
     function isActionColumn(table, index, header) {
         var heading = text(header);
         if (!heading || ACTION_TEXT.test(heading)) return true;
-        var rows = table._dataRows.slice(0, 20);
+        var rows = table._dataRows.length > 50 ? table._dataRows.slice(0, 50) : table._dataRows;
         if (!rows.length) return false;
         return rows.every(function (row) {
             var cell = row.cells[index];
@@ -71,9 +71,10 @@
 
     function filterColumns(table) {
         var rows = table._dataRows;
+        var sample = rows.length > 200 ? rows.slice(0, 200) : rows;
         return Array.from(table.tHead ? table.tHead.rows[0].cells : []).map(function (header, index) {
             if (isActionColumn(table, index, header) || isLinkColumn(rows, index)) return null;
-            var raw = rows.slice(0, 20).map(function (row) { return text(row.cells[index]); });
+            var raw = sample.map(function (row) { return text(row.cells[index]); });
             var distinct = [];
             raw.forEach(function (v) { if (distinct.indexOf(v) === -1) distinct.push(v); });
             var totalLen = 0; raw.forEach(function (v) { totalLen += v.length; });

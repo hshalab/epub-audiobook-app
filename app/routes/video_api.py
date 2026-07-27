@@ -25,8 +25,8 @@ def list_videos(
 ):
     if page < 1:
         raise HTTPException(status_code=400, detail="page must be >= 1")
-    if per_page < 1 or per_page > 100:
-        raise HTTPException(status_code=400, detail="per_page must be 1-100")
+    if per_page < 1 or per_page > 9999:
+        raise HTTPException(status_code=400, detail="per_page must be 1-9999")
     valid_sorts = {"created_at", "filename", "file_size_bytes", "upload_status"}
     if sort not in valid_sorts:
         raise HTTPException(status_code=400, detail=f"sort must be one of {valid_sorts}")

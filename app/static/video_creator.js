@@ -2,7 +2,7 @@
 (function() {
     const API = '/video/api/videos';
     let currentPage = 1;
-    let perPage = 20;
+    let perPage = 25;
     let search = '';
     let statusFilter = '';
     let sort = 'created_at';
