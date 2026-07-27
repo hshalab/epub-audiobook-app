@@ -189,7 +189,7 @@ def test_book_detail_page_renders_studio(client, tmp_path):
     _seed_book(client, tmp_path)
     resp = client.get("/books/1")
     assert resp.status_code == 200
-    assert 'id="studio-card"' in resp.text
+    assert 'id="studio-modal"' in resp.text
     assert 'id="drag-rect"' in resp.text
     assert 'id="mix-play"' in resp.text
 

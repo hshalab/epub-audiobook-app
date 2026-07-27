@@ -30,11 +30,9 @@
     <details class="book-tools">
         <summary>Tools</summary>
         <div class="book-tools-menu">
-            <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
             <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
             <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
             <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
-            <button type="button" onclick="window.location.href='/books/{{ book.id }}/automation/enqueue'">Enqueue Automation</button>
             <button type="button" data-open-dialog="rules-modal">Replace rules</button>
         </div>
     </details>
@@ -372,7 +370,7 @@
                 </td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ patch.error_message or "" }}</td>
                 <td class="patch-actions">
-                    <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm">Preview</a>
+                    <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" class="btn-outline btn-sm">Preview</a>
                     <button type="button" class="btn-outline btn-sm" onclick="openChunksModal({{ patch.id }})">&#9654; Chunks</button>
                     {% if patch.status != "processing" %}
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
@@ -484,55 +482,6 @@
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
 </style>
 
-{% if false %}
-<div class="card">
-    <div class="card-header">
-        <h3 style="margin:0">Automation Pipeline</h3>
-        <div style="display:flex;gap:var(--space-xs)">
-            <a href="/books/{{ book.id }}/automation/enqueue" class="btn-primary btn-sm">Enqueue All</a>
-        </div>
-    </div>
-    <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
-        Per-patch flow: audio &rarr; thumbnail &rarr; video &rarr; YouTube upload &rarr; playlist
-    </p>
-    {% if patches %}
-    <div class="table-wrap">
-    <table>
-        <thead><tr><th>Patch</th><th>Pipeline Stage</th><th>Thumbnail</th><th>Video</th><th>Upload</th><th>Playlist</th><th></th></tr></thead>
-        <tbody>
-        {% for p in patches %}
-        <tr>
-            <td><strong>{{ p.name or p.patch_index }}</strong></td>
-            <td id="auto-stage-{{ p.id }}">
-                {% if p.id in patch_pipeline_ids %}
-                    {{ pipeline_stages.get(p.id, '—') }}
-                {% else %}
-                    <span style="color:var(--text-muted)">not enqueued</span>
-                {% endif %}
-            </td>
-            <td id="auto-thumb-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['thumbnail_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
-            <td id="auto-video-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['video_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
-            <td id="auto-upload-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['upload_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
-            <td id="auto-playlist-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['playlist_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
-            <td>
-                {% if p.id in patch_pipeline_ids %}
-                <form data-guard action="/books/{{ book.id }}/automation/retry/{{ p.id }}" method="post" style="display:inline">
-                    <button type="submit" class="btn-outline btn-sm">Retry</button>
-                </form>
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-    {% else %}
-    <p style="margin:0;color:var(--text-muted)">No patches yet. Build patches to start automation.</p>
-    {% endif %}
-</div>
-
-{% if book.final_audio_path %}
-{% endif %}
 {% if book.final_audio_path %}
 <div class="card">
     <div class="card-header">
@@ -757,40 +706,6 @@
                     </div>
                 </details>
 
-                <details style="margin-bottom:0">
-                    <summary style="cursor:pointer;font-weight:500">Marquee (chạy chữ ngang)</summary>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
-                        <label style="display:flex;align-items:center;gap:var(--space-xs)">
-                            <input type="checkbox" name="marquee_enabled" {% if overlay_cfg.marquee.enabled %}checked{% endif %}>
-                            Bật marquee
-                        </label>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-height">Chiều cao bar (px)</label>
-                            <input type="number" name="marquee_height" id="mq-height" min="20" max="200" value="{{ overlay_cfg.marquee.height }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-font-size">Cỡ chữ (px)</label>
-                            <input type="number" name="marquee_font_size" id="mq-font-size" min="12" max="120" value="{{ overlay_cfg.marquee.font_size }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-text-color">Màu chữ</label>
-                            <input type="color" name="marquee_text_color" id="mq-text-color" value="{{ overlay_cfg.marquee.text_color }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-bg-color">Màu nền bar</label>
-                            <input type="color" name="marquee_bg_color" id="mq-bg-color" value="{{ overlay_cfg.marquee.bg_color }}">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-bg-opacity">Độ mờ nền: <span id="mq-opacity-label">{{ overlay_cfg.marquee.bg_opacity }}%</span></label>
-                            <input type="range" name="marquee_bg_opacity" id="mq-bg-opacity" min="0" max="100" value="{{ overlay_cfg.marquee.bg_opacity }}"
-                                   oninput="document.getElementById('mq-opacity-label').textContent=this.value+'%'">
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="mq-speed">Tốc độ (px/s)</label>
-                            <input type="number" name="marquee_speed" id="mq-speed" min="10" max="500" value="{{ overlay_cfg.marquee.speed_px_per_sec }}">
-                        </div>
-                    </div>
-                </details>
                 </dialog>
             </form>
 
@@ -864,7 +779,6 @@
 
 
 
-{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -2260,13 +2174,6 @@ async function genSelectedImages() {
             const fd = new FormData(form);
             const res = await fetch(`/books/${BOOK_ID}/video-settings`, { method: 'POST', body: fd });
             if (!res.ok) { let d; try { d = await res.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${res.status}`); }
-            // Save automation overrides
-            const autoFd = new FormData();
-            ['auto_enabled','auto_bg_duration','auto_webcam_enabled','auto_webcam_pos','auto_webcam_width','auto_yt_upload','auto_yt_privacy','auto_yt_playlist_mode'].forEach(function(k) {
-                var el = form.querySelector('[name="'+k+'"]');
-                if (el) autoFd.set(k, el.type === 'checkbox' ? (el.checked ? 'on' : '') : el.value);
-            });
-            await fetch(`/books/${BOOK_ID}/automation-config`, { method: 'POST', body: autoFd });
             showToast('Đã lưu cấu hình video');
         } catch (e) { showToast('Lưu lỗi: ' + (e.message || e), 'error'); }
         finally { btn.disabled = false; btn.textContent = orig; }
@@ -2277,33 +2184,6 @@ async function genSelectedImages() {
 
     initVideoCells();
 
-    // Background and webcam media save handlers
-    document.getElementById('btn-save-bg-media')?.addEventListener('click', async function() {
-        var sel = document.getElementById('book-bg-media');
-        var ids = Array.from(sel.selectedOptions).map(function(o) { return parseInt(o.value, 10); });
-        try {
-            var res = await fetch('/books/' + BOOK_ID + '/automation/media/background', {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({asset_ids: ids}),
-            });
-            if (res.ok) { showToast('Background order saved'); }
-            else { showToast('Failed to save background order', 'error'); }
-        } catch(e) { showToast('Error: ' + e.message, 'error'); }
-    });
-    document.getElementById('btn-save-webcam-media')?.addEventListener('click', async function() {
-        var sel = document.getElementById('book-webcam-media');
-        var ids = Array.from(sel.selectedOptions).map(function(o) { return parseInt(o.value, 10); });
-        try {
-            var res = await fetch('/books/' + BOOK_ID + '/automation/media/webcam', {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({asset_ids: ids}),
-            });
-            if (res.ok) { showToast('Webcam order saved'); }
-            else { showToast('Failed to save webcam order', 'error'); }
-        } catch(e) { showToast('Error: ' + e.message, 'error'); }
-    });
 })();
 </script>
 {% endblock %}

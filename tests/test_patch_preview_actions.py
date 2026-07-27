@@ -103,7 +103,12 @@ def test_invalid_regex_rejected(client, tmp_path):
 
 def test_patch_text_endpoint(client, tmp_path):
     book_id = _upload_book(client, tmp_path)
-    resp = client.get(f"/books/{book_id}/patches/1/text")
+    client.post(f"/books/{book_id}/patches/auto-build", data={"start_chapter": "0", "patch_size": "5"})
+    from app import db
+    conn = db.connect(__import__("app.config", fromlist=["settings"]).settings.db_path)
+    patch_id = conn.execute("SELECT id FROM patch WHERE book_id = ? ORDER BY id LIMIT 1", (book_id,)).fetchone()[0]
+    conn.close()
+    resp = client.get(f"/books/{book_id}/patches/{patch_id}/text")
     assert resp.status_code == 200
     assert "Chapter" in resp.text
 
@@ -118,7 +123,7 @@ def test_patch_builder_page(client, tmp_path):
     book_id = _upload_book(client, tmp_path)
     resp = client.get(f"/books/{book_id}/patches/build")
     assert resp.status_code == 200
-    assert "Patch builder" in resp.text
+    assert "Patch Builder" in resp.text
     assert "Chapter" in resp.text
 
 
@@ -126,9 +131,9 @@ def test_book_detail_shows_preview_link(client, tmp_path):
     book_id = _upload_book(client, tmp_path)
     resp = client.get(f"/books/{book_id}")
     assert resp.status_code == 200
-    assert "Preview text" in resp.text
-    assert "Patch builder" in resp.text
-    assert "Text replace rules" in resp.text
+    assert ">Preview<" in resp.text
+    assert "Auto-build Patches" in resp.text
+    assert "Text Replace Rules" in resp.text
     assert "Auto-build" in resp.text
 
 

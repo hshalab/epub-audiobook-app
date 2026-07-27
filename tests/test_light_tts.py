@@ -16,18 +16,12 @@ class TestLightTTSEngine:
         assert "edge-tts" in names
         assert "gtts" in names
 
-    def test_kokoro_removed(self):
+    def test_only_supported_backends_are_listed(self):
         from app.light_tts import _BACKENDS, _BACKEND_SYNTH
 
         assert "kokoro" not in _BACKENDS
         assert "kokoro" not in _BACKEND_SYNTH
-        assert set(_BACKENDS) == {"edge-tts", "gtts", "piper"}
-
-    def test_piper_voices_dir_setting_default(self):
-        # Assert the code-level default, independent of any local .env override.
-        from app.config import Settings
-
-        assert Settings.model_fields["piper_voices_dir"].default == ""
+        assert set(_BACKENDS) == {"edge-tts", "gtts"}
 
     def test_synthesize_unavailable_backend(self):
         from app.light_tts import _check_backend
@@ -73,14 +67,6 @@ class TestListVoices:
         vi = next(v for v in voices if v["id"] == "vi")
         assert vi["label"] == "Vietnamese"
 
-    def test_piper_constant_list(self):
-        import app.light_tts as lt
-
-        voices = lt.list_voices("piper")
-        assert len(voices) >= 1
-        assert all("id" in v and "label" in v for v in voices)
-        assert any(v["id"].startswith("vi_VN") for v in voices)
-
     def test_fallback_on_enumeration_error(self, monkeypatch):
         import app.light_tts as lt
 
@@ -97,57 +83,3 @@ class TestListVoices:
         }]
 
 
-class TestPiperResolve:
-    def test_returns_id_when_no_dir(self, monkeypatch):
-        import app.light_tts as lt
-        from app.config import settings
-
-        monkeypatch.setattr(settings, "piper_voices_dir", "")
-        assert lt._resolve_piper_model("vi_VN-vais1000-medium") == "vi_VN-vais1000-medium"
-
-    def test_resolves_to_onnx_path(self, monkeypatch, tmp_path):
-        import app.light_tts as lt
-        from app.config import settings
-
-        model = tmp_path / "vi_VN-vais1000-medium.onnx"
-        model.write_bytes(b"fake")
-        monkeypatch.setattr(settings, "piper_voices_dir", str(tmp_path))
-        assert lt._resolve_piper_model("vi_VN-vais1000-medium") == str(model)
-
-    def test_returns_id_when_file_missing(self, monkeypatch, tmp_path):
-        import app.light_tts as lt
-        from app.config import settings
-
-        monkeypatch.setattr(settings, "piper_voices_dir", str(tmp_path))
-        assert lt._resolve_piper_model("vi_VN-missing") == "vi_VN-missing"
-
-    def test_synthesize_uses_synthesize_wav_api(self, monkeypatch):
-        """piper>=1.3 dropped synthesize(text, wav_file); the WAV-writing method
-        is synthesize_wav. Lock that in so the API can't silently regress."""
-        import sys
-        import types
-        import app.light_tts as lt
-
-        used = {}
-
-        class FakeVoice:
-            def synthesize(self, *a, **k):
-                used["synthesize"] = True
-
-            def synthesize_wav(self, text, wav_file, **k):
-                used["synthesize_wav"] = text
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(22050)
-                wav_file.writeframes(b"\x00\x00" * 100)
-
-        class FakePiperVoice:
-            @staticmethod
-            def load(path):
-                return FakeVoice()
-
-        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(PiperVoice=FakePiperVoice))
-        wav, sr = lt._piper_synthesize("Xin chào", "vi_VN-vais1000-medium")
-        assert used.get("synthesize_wav") == "Xin chào"
-        assert "synthesize" not in used
-        assert len(wav) > 44 and sr == 22050

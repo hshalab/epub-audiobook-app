@@ -137,7 +137,7 @@ def test_reset_all_on_startup_flag(tmp_path, monkeypatch):
     with TestClient(app) as c:
         # The lifespan should have run and produced no errors (empty DB is fine).
         worker = c.app.state.worker
-        assert worker.state == "disabled"
+        assert worker is None
 
         resp = c.get("/queue/stats")
         assert resp.status_code == 200
