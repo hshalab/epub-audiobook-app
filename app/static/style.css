@@ -1730,8 +1730,8 @@ kbd {
 .data-table-count { color: var(--text-muted); font-size: var(--font-size-sm); margin-left: auto; }
 .data-table-pagination { margin: 0; padding: 0; }
 th[data-sort] { cursor: pointer; user-select: none; }
-th[data-sort="asc"]::after { content: " ▲"; }
-th[data-sort="desc"]::after { content: " ▼"; }
+th[data-sort="asc"]::after { content: " \25B2"; }
+th[data-sort="desc"]::after { content: " \25BC"; }
 .data-table-pagination button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 640px) { .data-table-count { margin-left: 0; width: 100%; } .data-table-toolbar input, .data-table-toolbar select { min-width: 0; flex: 1 1 8rem; } }
 
