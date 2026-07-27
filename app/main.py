@@ -13,8 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import db, repository, upload_worker as upload_worker_mod
+from app.automation_worker import AutomationWorker
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
+from app.routes import automation, books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
 from app.tts_engine import VoxCPMEngine
 from app.worker import DisabledWorker, PatchWorker
 
@@ -82,8 +83,12 @@ async def lifespan(app: FastAPI):
     app.state.conn = conn
     app.state.db_lock = db_lock
     upload_worker_mod.init_worker(conn, db_lock)
+    if upload_worker_mod.upload_worker:
+        await upload_worker_mod.upload_worker.start()
 
     worker_task: asyncio.Task | None = None
+    automation_worker: AutomationWorker | None = None
+    automation_worker_task: asyncio.Task | None = None
     if settings.enable_worker:
         engine = VoxCPMEngine()
         worker = PatchWorker(
@@ -96,6 +101,11 @@ async def lifespan(app: FastAPI):
         )
         app.state.worker = worker
         worker_task = asyncio.create_task(worker.run_forever())
+        automation_worker = AutomationWorker(
+            conn, db_lock, settings.data_root, settings.worker_poll_interval
+        )
+        app.state.automation_worker = automation_worker
+        automation_worker_task = automation_worker.start()
         logging.info(
             "worker started (poll_interval=%s s, shutdown_timeout=%s s)",
             settings.worker_poll_interval,
@@ -103,6 +113,7 @@ async def lifespan(app: FastAPI):
         )
     else:
         app.state.worker = DisabledWorker()
+        app.state.automation_worker = None
         logging.info(
             "worker disabled by settings.enable_worker=false — background loop "
             "suppressed + all processing patches/book_jobs requeued. "
@@ -114,6 +125,19 @@ async def lifespan(app: FastAPI):
     finally:
         if upload_worker_mod.upload_worker:
             await upload_worker_mod.upload_worker.stop()
+        if automation_worker_task is not None:
+            automation_worker.stop()
+            try:
+                await asyncio.wait_for(
+                    automation_worker_task,
+                    timeout=settings.worker_shutdown_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                automation_worker_task.cancel()
+                try:
+                    await automation_worker_task
+                except asyncio.CancelledError:
+                    pass
         if worker_task is not None:
             worker.stop()
             try:
@@ -158,6 +182,7 @@ app.include_router(drive.router)
 app.include_router(database_io.router)
 app.include_router(text_studio.router)
 app.include_router(effects.router)
+app.include_router(automation.router)
 
 
 @app.get("/")

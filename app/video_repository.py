@@ -43,6 +43,34 @@ def insert_video(
     return get_video(conn, cur.lastrowid)
 
 
+def upsert_patch_video(
+    conn: sqlite3.Connection, *, book_id: int, patch_id: int,
+    file_path: str, resolution: str, file_size_bytes: int | None = None,
+) -> dict[str, Any]:
+    path = Path(file_path)
+    size = path.stat().st_size if file_size_bytes is None else file_size_bytes
+    now = _now_iso()
+    row = conn.execute(
+        """INSERT INTO videos
+           (filename,original_name,file_path,file_size_bytes,resolution,source_audio,
+            background_path,upload_status,book_id,patch_id,created_at,updated_at)
+           SELECT ?,?,?,?, ?,p.audio_path,NULL,'local_only',?,?,?,?
+           FROM patch p WHERE p.id=?
+           ON CONFLICT(patch_id) WHERE patch_id IS NOT NULL DO UPDATE SET
+             filename=excluded.filename,original_name=excluded.original_name,
+             file_path=excluded.file_path,file_size_bytes=excluded.file_size_bytes,
+             resolution=excluded.resolution,book_id=excluded.book_id,
+             source_audio=excluded.source_audio,updated_at=excluded.updated_at
+           RETURNING *""",
+        (path.name, path.name, str(path), size, resolution,
+         book_id, patch_id, now, now, patch_id),
+    ).fetchone()
+    conn.commit()
+    if row is None:
+        raise ValueError(f"patch {patch_id} not found")
+    return dict(row)
+
+
 def get_video(conn: sqlite3.Connection, video_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
     return dict(row) if row else None

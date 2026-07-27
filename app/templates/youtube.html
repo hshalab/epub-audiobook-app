@@ -101,7 +101,6 @@
     <div class="card-header">
         <h3 style="margin:0">Lịch sử Upload</h3>
     </div>
-    {% if uploads %}
     <div class="table-wrap">
     <table class="yt-uploads-table">
         <thead>
@@ -109,12 +108,14 @@
                 <th>Title</th>
                 <th>Status</th>
                 <th>Privacy</th>
+                <th>Thumbnail</th>
+                <th>Playlist</th>
                 <th>YouTube ID</th>
                 <th>Uploaded</th>
             </tr>
         </thead>
         <tbody>
-        {% for u in uploads %}
+        {% if uploads %}{% for u in uploads %}
             <tr>
                 <td>{{ u.title or '(no title)' }}</td>
                 <td>
@@ -130,6 +131,24 @@
                 </td>
                 <td>{{ u.privacy_status }}</td>
                 <td>
+                    {% if u.thumbnail_status == 'done' %}
+                        &#x2705;
+                    {% elif u.thumbnail_status == 'failed' %}
+                        &#x274C;
+                    {% else %}
+                        &mdash;
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.playlist_status == 'done' %}
+                        &#x2705;
+                    {% elif u.playlist_status == 'failed' %}
+                        &#x274C;
+                    {% else %}
+                        &mdash;
+                    {% endif %}
+                </td>
+                <td>
                     {% if u.youtube_video_id %}
                         <a href="https://youtube.com/watch?v={{ u.youtube_video_id }}" target="_blank">{{ u.youtube_video_id }}</a>
                     {% else %}
@@ -139,7 +158,7 @@
                 <td>{{ u.uploaded_at or '&mdash;' }}</td>
             </tr>
             {% if u.error_message %}
-            <tr class="yt-error-row"><td colspan="5" class="yt-error-msg">{{ u.error_message }}</td></tr>
+            <tr class="yt-error-row"><td colspan="7" class="yt-error-msg">{{ u.error_message }}</td></tr>
             {% endif %}
         {% endfor %}
         </tbody>

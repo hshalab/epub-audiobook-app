@@ -6,7 +6,6 @@ from fastapi.responses import JSONResponse
 
 from app import video_repository, youtube
 from app.deps import locked_conn
-from app.upload_worker import upload_worker
 
 router = APIRouter()
 
@@ -83,6 +82,9 @@ def delete_video(request: Request, video_id: int):
 
 @router.post("/video/api/videos/{video_id}/requeue")
 async def requeue_video(request: Request, video_id: int):
+    from app.upload_worker import upload_worker
+    if upload_worker is None:
+        raise HTTPException(status_code=503, detail="Upload worker unavailable")
     with locked_conn(request) as conn:
         video = video_repository.get_video(conn, video_id)
         if not video:
@@ -112,6 +114,9 @@ async def bulk_delete(request: Request):
 
 @router.post("/video/api/videos/bulk-upload")
 async def bulk_upload(request: Request):
+    from app.upload_worker import upload_worker
+    if upload_worker is None:
+        raise HTTPException(status_code=503, detail="Upload worker unavailable")
     body = await request.json()
     ids = body.get("ids", [])
     if not ids:
@@ -141,5 +146,8 @@ def list_upload_queue(request: Request):
 
 @router.post("/video/api/upload-queue/start")
 async def start_upload_queue():
+    from app.upload_worker import upload_worker
+    if upload_worker is None:
+        raise HTTPException(status_code=503, detail="Upload worker unavailable")
     await upload_worker.start()
     return JSONResponse({"status": "started"})

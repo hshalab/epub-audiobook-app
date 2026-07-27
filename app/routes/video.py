@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Reque
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app import image_overlay, repository, video_gen
+from app import automation_repository, image_overlay, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 
@@ -690,20 +690,32 @@ def serve_batch_audio(batch_id: str, index: int):
 # ---------------------------------------------------------------------------
 
 @router.get("/video/backgrounds")
-def list_backgrounds():
+def list_backgrounds(request: Request):
     """List available background images (user-uploaded + default)."""
     _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
     items: list[dict] = []
 
     default = settings.default_background_image
-    if Path(default).exists():
+    safe_default = _safe_background_path(default)
+    if safe_default:
         items.append({"name": "__default__", "path": default, "is_default": True,
-                      "is_video": video_gen.is_video_background(default)})
+                      "is_video": video_gen.is_video_background(safe_default)})
 
     for f in sorted(_BACKGROUNDS_DIR.iterdir()):
-        if f.suffix.lower() in ALLOWED_BACKGROUND_EXTENSIONS:
-            items.append({"name": f.name, "path": str(f), "is_default": False,
-                          "is_video": video_gen.is_video_background(f)})
+        safe_path = _safe_background_path(str(f))
+        if safe_path and safe_path.suffix.lower() in ALLOWED_BACKGROUND_EXTENSIONS:
+            items.append({"name": f.name, "path": str(safe_path), "is_default": False,
+                          "is_video": video_gen.is_video_background(safe_path)})
+
+    with locked_conn(request) as conn:
+        for item in items:
+            path = _safe_background_path(item["path"])
+            if path is None:
+                continue
+            automation_repository.upsert_media_asset(
+                conn, str(path), path.name,
+                "video" if video_gen.is_video_background(path) else "image",
+            )
 
     return JSONResponse({"backgrounds": items})
 
@@ -719,12 +731,12 @@ def _safe_background_path(path: str) -> Path | None:
         p = (Path(settings.data_root) / path).resolve()
 
     default = Path(settings.default_background_image).resolve()
-    allowed_roots = [default, _BACKGROUNDS_DIR.resolve()]
+    backgrounds = _BACKGROUNDS_DIR.resolve()
     try:
         p_resolved = p.resolve()
     except OSError:
         return None
-    if not any(p_resolved == root or root in p_resolved.parents for root in allowed_roots):
+    if p_resolved != default and backgrounds not in p_resolved.parents:
         return None
     if not p_resolved.exists() or not p_resolved.is_file():
         return None
@@ -747,7 +759,7 @@ def preview_background(path: str = ""):
 
 
 @router.post("/video/upload-background")
-async def upload_background(file: UploadFile = File(...)):
+async def upload_background(request: Request, file: UploadFile = File(...)):
     """Upload a new background (image or looping video) to the backgrounds directory."""
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_BACKGROUND_EXTENSIONS:
@@ -758,6 +770,12 @@ async def upload_background(file: UploadFile = File(...)):
     dest = _BACKGROUNDS_DIR / safe_name
     with open(dest, "wb") as out:
         shutil.copyfileobj(file.file, out)
+
+    with locked_conn(request) as conn:
+        automation_repository.upsert_media_asset(
+            conn, str(dest), safe_name,
+            "video" if video_gen.is_video_background(dest) else "image",
+        )
 
     return JSONResponse({"name": safe_name, "path": str(dest)})
 

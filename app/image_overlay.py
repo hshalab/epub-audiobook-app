@@ -94,7 +94,9 @@ def get_patch_overlay_path(book_id: int, patch_id: int) -> Path:
     return Path(settings.data_root) / "books" / str(book_id) / "patch_overlays" / f"{patch_id}.png"
 
 
-def _resolve_background(book: Book) -> Path | None:
+def _resolve_background(book: Book, background_path: str | None = None) -> Path | None:
+    if background_path and Path(background_path).exists():
+        return Path(background_path)
     if book.background_image_path and Path(book.background_image_path).exists():
         return Path(book.background_image_path)
     default = Path(settings.default_background_image)
@@ -454,6 +456,8 @@ def get_marquee_meta_path(book_id: int, patch_id: int) -> Path:
 
 def render_patch_overlay(
     book: Book, patch: Patch, cfg: dict | None = None, out_path: str | None = None,
+    background_path: str | None = None,
+    include_marquee: bool = True,
 ) -> None:
     """Render background + (optional) separate marquee band.
 
@@ -463,7 +467,7 @@ def render_patch_overlay(
     - `<patch_id>.marquee.json` — geometry + speed metadata
     """
     cfg = cfg or parse_overlay_config(book.overlay_config)
-    bg = _resolve_background(book)
+    bg = _resolve_background(book, background_path)
     if bg is None:
         raise ValueError(f"no background image available for book {book.id}")
     if out_path is None:
@@ -485,6 +489,8 @@ def render_patch_overlay(
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out), "PNG")
 
+    if not include_marquee:
+        return
     marquee_cfg = cfg.get("marquee") or {}
     if marquee_cfg.get("enabled"):
         band_h = int(marquee_cfg.get("height", 60))
@@ -518,7 +524,9 @@ def needs_rerender(book: Book, patch: Patch, out_path: Path) -> bool:
 
 
 def ensure_patch_overlay(
-    book: Book, patch: Patch, font_path: str | None = None,
+    book: Book, patch: Patch, font_path: str | None = None, *,
+    background_path: str | None = None, out_path: str | None = None,
+    include_marquee: bool = True,
 ) -> str | None:
     """Backwards-compatible wrapper — builds cfg from legacy font_path arg.
 
@@ -528,18 +536,20 @@ def ensure_patch_overlay(
     cfg = parse_overlay_config(book.overlay_config)
     if font_path and not cfg.get("font_path"):
         cfg["font_path"] = font_path
-    if _resolve_background(book) is None:
+    if _resolve_background(book, background_path) is None:
         return None
-    out_path = get_patch_overlay_path(book.id, patch.id)
+    output = Path(out_path) if out_path else get_patch_overlay_path(book.id, patch.id)
     force = False
     marquee_cfg = cfg.get("marquee") or {}
     if marquee_cfg.get("enabled"):
         if not get_marquee_path(book.id, patch.id).exists():
             force = True
-    if force or needs_rerender(book, patch, out_path):
+    if force or background_path or needs_rerender(book, patch, output):
         try:
-            render_patch_overlay(book, patch, cfg, str(out_path))
+            render_patch_overlay(
+                book, patch, cfg, str(output), background_path, include_marquee
+            )
         except Exception as exc:
             logger.error("image_overlay: failed to render overlay for patch %s: %s", patch.id, exc)
             return None
-    return str(out_path)
+    return str(output)

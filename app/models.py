@@ -40,6 +40,40 @@ class Book:
     text_box_opacity: float = 0.6
     text_box_padding: int = 12
     text_box_radius: int = 12
+    automation_config: str | None = None
+
+
+@dataclass
+class MediaAsset:
+    id: int
+    file_path: str
+    filename: str
+    media_type: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class PatchPipeline:
+    id: int
+    patch_id: int
+    stage: str
+    thumbnail_status: str
+    video_status: str
+    upload_status: str
+    playlist_status: str
+    attempt_count: int
+    last_error: str | None
+    next_retry_at: str | None
+    thumbnail_path: str | None
+    video_path: str | None
+    video_id: int | None
+    youtube_upload_id: int | None
+    config_snapshot: str
+    media_snapshot: str
+    schema_version: int
+    created_at: str
+    updated_at: str
 
 
 @dataclass

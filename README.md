@@ -10,6 +10,8 @@ Upload `.epub` files, automatically split into chapters and patches, synthesize 
 - **Audio Merge** — Combine patches into full audiobook files
 - **Video Generation** — Create videos with custom backgrounds per patch/chapter
 - **YouTube Upload** — Auto-upload generated videos to YouTube
+- **Automated Patch Pipeline** — Per-patch automation: overlay thumbnail → multi-source video (looping backgrounds + webcam PiP) → YouTube upload (thumbnail + playlist), with idempotent retry per stage
+- **Automation Settings** — Validated FFmpeg presets, webcam config, and YouTube playlist defaults with system-wide defaults and per-book JSON overrides
 - **Modern UI** — Dark mode, drag-and-drop upload, image preview
 - **Batch Processing** — Upload multiple books, generate videos in bulk
 - **Background Worker** — Non-blocking queue processing with admin controls
@@ -84,38 +86,45 @@ Open http://localhost:8000
 ### Pages
 
 - `/books` — Upload EPUBs, view library
-- `/books/{id}` — Book details, chapter management, patch controls
+- `/books/{id}` — Book details, chapter management, patch controls, automation enqueue/retry
 - `/queue` — Real-time processing queue monitor
 - `/video` — Standalone video creator (upload audio + background)
-- `/youtube` — YouTube upload management
+- `/youtube` — YouTube upload management with thumbnail and playlist status
+- `/automation/settings-page` — System automation settings (FFmpeg presets, webcam, YouTube defaults)
 - `/logs` — Application logs
 
 ## Architecture
 
 ```
 app/
-├── main.py           # FastAPI app, routes, lifespan
-├── config.py         # Pydantic settings
-├── models.py         # SQLAlchemy models
-├── db.py             # Database setup
-├── repository.py     # Data access layer
-├── epub_parser.py    # EPUB extraction
-├── chunker.py        # Text chunking & patch building
-├── tts_engine.py     # VoxCPM2 TTS wrapper
-├── audio_merge.py    # Patch/chunk merging
-├── video_gen.py      # ffmpeg video generation
-├── ffmpeg.py         # ffmpeg/ffprobe utilities
-├── youtube.py        # YouTube API client
-├── worker.py         # Background queue processor
+├── main.py                   # FastAPI app, routes, lifespan
+├── config.py                 # Pydantic settings
+├── models.py                 # SQLAlchemy models
+├── db.py                     # Database setup
+├── repository.py             # Data access layer
+├── epub_parser.py            # EPUB extraction
+├── chunker.py                # Text chunking & patch building
+├── tts_engine.py             # VoxCPM2 TTS wrapper
+├── audio_merge.py            # Patch/chunk merging
+├── video_gen.py              # ffmpeg video generation (delegates to compositor for automation)
+├── ffmpeg.py                 # ffmpeg/ffprobe utilities
+├── youtube.py                # YouTube API client (upload, thumbnail, playlist, OAuth)
+├── worker.py                 # Background queue processor
+├── automation_config.py      # Validated Pydantic settings (VideoConfig, WebcamConfig, YouTubeConfig)
+├── automation_repository.py  # Settings, media selection, pipeline, playlist-map persistence
+├── automation_worker.py      # Pipeline worker — claims and runs thumbnail/video stages
+├── video_compositor.py       # Multi-source FFmpeg compositor with looping backgrounds + webcam PiP
+├── upload_worker.py          # YouTube upload queue worker (upload + post-process)
 ├── routes/           # API endpoints
-│   ├── books.py      # Book CRUD & upload
+│   ├── books.py      # Book CRUD & upload, automation enqueue hook
 │   ├── patches.py    # Patch management
 │   ├── queue.py      # Queue status & controls
-│   ├── video.py      # Video generation
+│   ├── video.py      # Video generation, legacy background endpoints
 │   ├── downloads.py  # File downloads
-│   ├── youtube.py    # YouTube upload
+│   ├── youtube.py    # YouTube upload and OAuth
+│   ├── automation.py # Automation settings, media selection, enqueue/retry
 │   └── logs.py       # Log streaming
-├── templates/        # Jinja2 HTML
+├── templates/        # Jinja2 HTML (automation_settings.html, youtube.html, book_detail.html)
 └── static/           # CSS, JS, images
 ```
 
@@ -136,6 +145,12 @@ app/
 | `POST` | `/api/queue/resume` | Resume worker |
 | `POST` | `/api/video/generate` | Generate video from audio |
 | `POST` | `/api/youtube/upload/{book_id}` | Upload to YouTube |
+| `GET` | `/automation/settings` | Get system automation config |
+| `PUT` | `/automation/settings` | Save system automation config (validated) |
+| `GET` | `/automation/media` | List media assets |
+| `PUT` | `/books/{id}/automation/media/{role}` | Set ordered media for background/webcam |
+| `POST` | `/books/{id}/automation/enqueue` | Enqueue all patches for automation pipeline |
+| `POST` | `/books/{id}/automation/retry/{patch_id}` | Retry failed pipeline stage |
 
 ## CLI Scripts
 
@@ -170,9 +185,19 @@ python scripts/test_worker.py
 | `YOUTUBE_DEFAULT_PRIVACY` | `private` | Video privacy |
 | `RESET_ALL_JOBS_ON_STARTUP` | `false` | Dev-only DB reset |
 
+## YouTube OAuth
+
+YouTube upload and post-processing require OAuth 2.0 credentials. The scopes requested are:
+- `youtube.upload` — Upload videos
+- `youtube` — Set thumbnails, manage playlists
+- `youtube.force-ssl` — Required by YouTube Data API v3
+
+If you reconnect after a scope change, the app will detect missing scopes and redirect you through re-authorization. Playlist mapping is persisted per book/channel to avoid duplicates on retry.
+
 ## Known Limitations
 
 - `TTS_MAX_CHARS=400` is untested — adjust after real-model testing
 - Progress tracked per-patch, not per-chunk
 - Single chapter across multiple spine files appears as multiple chapters
 - Video generation requires ffmpeg in PATH or `assets/bin/`
+- NVENC preset `h264_nvenc` must be available at pipeline start; no automatic fallback to CPU

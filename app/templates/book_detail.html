@@ -34,6 +34,7 @@
             <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
             <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
             <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
+            <button type="button" onclick="window.location.href='/books/{{ book.id }}/automation/enqueue'">Enqueue Automation</button>
             <button type="button" data-open-dialog="rules-modal">Replace rules</button>
         </div>
     </details>
@@ -147,32 +148,74 @@
                 <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
             </select>
         </div>
-    </form>
-    <div class="studio-section" style="margin-bottom:var(--space-md)">
-        <h4>Tự động upload YouTube</h4>
-        {% if youtube_configured %}
-        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
-            <input type="checkbox" id="vc-auto-youtube" {% if youtube_auto_upload %}checked{% endif %}>
-            Bật mặc định khi tạo video (có thể ghi đè theo từng lượt ở thanh dưới)
-        </label>
-        <div class="form-group" style="margin:var(--space-sm) 0 0 0;max-width:240px">
-            <label for="vc-privacy">Chế độ hiển thị</label>
-            <select id="vc-privacy" name="privacy">
-                <option value="private" {% if youtube_default_privacy == 'private' %}selected{% endif %}>Private</option>
-                <option value="unlisted" {% if youtube_default_privacy == 'unlisted' %}selected{% endif %}>Unlisted</option>
-                <option value="public" {% if youtube_default_privacy == 'public' %}selected{% endif %}>Public</option>
-            </select>
+    <details style="margin-top:var(--space-md)">
+        <summary style="cursor:pointer;font-weight:500;font-size:var(--font-size-sm)">Automation Pipeline Overrides</summary>
+        <div style="padding:var(--space-sm) 0">
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" id="vc-auto-enabled" name="auto_enabled" {% if book.automation_config and book.automation_config.get('enabled') %}checked{% endif %}>
+                Bật automation (thumbnail &rarr; video &rarr; upload)
+            </label>
+            <div class="form-group" style="margin:var(--space-sm) 0 0 0">
+                <label for="vc-bg-duration">Background Duration (seconds)</label>
+                <input type="number" id="vc-bg-duration" name="auto_bg_duration" min="3" max="300" value="{{ auto_config.video.background_duration_seconds }}" style="max-width:120px">
+            </div>
         </div>
-        {% else %}
-        <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">
-            YouTube chưa được cấu hình. Vào <a href="/youtube" target="_blank">trang YouTube</a> để kết nối,
-            sau đó tùy chọn upload sẽ xuất hiện ở đây.
-        </p>
-        {% endif %}
-    </div>
+        <div style="padding:var(--space-sm) 0;border-top:1px solid var(--border-color)">
+            <h4 style="margin:0 0 var(--space-sm) 0;font-size:var(--font-size-sm);color:var(--text-muted)">Webcam PiP</h4>
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" id="vc-webcam-enabled" name="auto_webcam_enabled" {% if auto_config.webcam.enabled %}checked{% endif %}>
+                Enable webcam overlay
+            </label>
+            <div class="form-row" style="margin-top:var(--space-sm)">
+                <div class="form-group" style="margin:0">
+                    <label for="vc-webcam-pos">Position</label>
+                    <select id="vc-webcam-pos" name="auto_webcam_pos">
+                        <option value="top-left" {% if auto_config.webcam.position == 'top-left' %}selected{% endif %}>Top Left</option>
+                        <option value="top-right" {% if auto_config.webcam.position == 'top-right' %}selected{% endif %}>Top Right</option>
+                        <option value="bottom-left" {% if auto_config.webcam.position == 'bottom-left' %}selected{% endif %}>Bottom Left</option>
+                        <option value="bottom-right" {% if auto_config.webcam.position == 'bottom-right' %}selected{% endif %}>Bottom Right</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label for="vc-webcam-width">Width (%)</label>
+                    <input type="number" id="vc-webcam-width" name="auto_webcam_width" min="10" max="50" value="{{ auto_config.webcam.width_percent }}" style="max-width:80px">
+                </div>
+            </div>
+        </div>
+        <div style="padding:var(--space-sm) 0;border-top:1px solid var(--border-color)">
+            <h4 style="margin:0 0 var(--space-sm) 0;font-size:var(--font-size-sm);color:var(--text-muted)">YouTube Overrides</h4>
+            {% if youtube_configured %}
+            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+                <input type="checkbox" id="vc-auto-youtube" name="auto_yt_upload" {% if auto_config.youtube_auto_upload or youtube_auto_upload %}checked{% endif %}>
+                Auto-upload YouTube after video
+            </label>
+            <div class="form-group" style="margin:var(--space-sm) 0 0 0;max-width:240px">
+                <label for="vc-privacy">Video Privacy</label>
+                <select id="vc-privacy" name="auto_yt_privacy">
+                    <option value="private" {% if auto_config.youtube.privacy == 'private' %}selected{% endif %}>Private</option>
+                    <option value="unlisted" {% if auto_config.youtube.privacy == 'unlisted' %}selected{% endif %}>Unlisted</option>
+                    <option value="public" {% if auto_config.youtube.privacy == 'public' %}selected{% endif %}>Public</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin-top:var(--space-sm)">
+                <label for="vc-yt-playlist-mode">Playlist Mode</label>
+                <select id="vc-yt-playlist-mode" name="auto_yt_playlist_mode">
+                    <option value="none" {% if auto_config.youtube.playlist_mode == 'none' %}selected{% endif %}>None</option>
+                    <option value="existing" {% if auto_config.youtube.playlist_mode == 'existing' %}selected{% endif %}>Existing</option>
+                    <option value="auto-create" {% if auto_config.youtube.playlist_mode == 'auto-create' %}selected{% endif %}>Auto-create</option>
+                </select>
+            </div>
+            {% else %}
+            <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)">
+                YouTube chưa được cấu hình. Vào <a href="/youtube" target="_blank">trang YouTube</a> để kết nối.
+            </p>
+            {% endif %}
+        </div>
+    </details>
     <div class="btn-group">
         <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
     </div>
+    </form>
 </dialog>
 
 <dialog id="patch-image-modal" class="book-modal" style="width:min(900px,calc(100% - 2rem))">
@@ -504,6 +547,80 @@
 .btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
 </style>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Automation Pipeline</h3>
+        <div style="display:flex;gap:var(--space-xs)">
+            <a href="/books/{{ book.id }}/automation/enqueue" class="btn-primary btn-sm">Enqueue All</a>
+        </div>
+    </div>
+    <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+        Per-patch flow: audio &rarr; thumbnail &rarr; video &rarr; YouTube upload &rarr; playlist
+    </p>
+    {% if patches %}
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Patch</th><th>Pipeline Stage</th><th>Thumbnail</th><th>Video</th><th>Upload</th><th>Playlist</th><th></th></tr></thead>
+        <tbody>
+        {% for p in patches %}
+        <tr>
+            <td><strong>{{ p.name or p.patch_index }}</strong></td>
+            <td id="auto-stage-{{ p.id }}">
+                {% if p.id in patch_pipeline_ids %}
+                    {{ pipeline_stages.get(p.id, '—') }}
+                {% else %}
+                    <span style="color:var(--text-muted)">not enqueued</span>
+                {% endif %}
+            </td>
+            <td id="auto-thumb-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['thumbnail_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
+            <td id="auto-video-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['video_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
+            <td id="auto-upload-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['upload_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
+            <td id="auto-playlist-{{ p.id }}">{% if p.id in patch_pipeline_ids and patch_pipeline_ids[p.id]['playlist_status'] == 'done' %}&#x2705;{% else %}&mdash;{% endif %}</td>
+            <td>
+                {% if p.id in patch_pipeline_ids %}
+                <form data-guard action="/books/{{ book.id }}/automation/retry/{{ p.id }}" method="post" style="display:inline">
+                    <button type="submit" class="btn-outline btn-sm">Retry</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p style="margin:0;color:var(--text-muted)">No patches yet. Build patches to start automation.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 style="margin:0">Background &amp; Webcam Media</h3>
+    </div>
+    <div class="form-group">
+        <label for="book-bg-media">Background (ordered loop)</label>
+        <select id="book-bg-media" multiple size="4" style="width:100%">
+            {% for m in all_media %}
+            <option value="{{ m.id }}" {% if m.id in auto_media.background|map(attribute='id') %}selected{% endif %}>
+                {{ m.filename }} ({{ m.media_type }})
+            </option>
+            {% endfor %}
+        </select>
+        <button type="button" class="btn-primary btn-sm" id="btn-save-bg-media" style="margin-top:var(--space-xs)">Save Background Order</button>
+    </div>
+    <div class="form-group">
+        <label for="book-webcam-media">Webcam (looped PiP)</label>
+        <select id="book-webcam-media" multiple size="4" style="width:100%">
+            {% for m in all_media %}
+            <option value="{{ m.id }}" {% if m.id in auto_media.webcam|map(attribute='id') %}selected{% endif %}>
+                {{ m.filename }} ({{ m.media_type }})
+            </option>
+            {% endfor %}
+        </select>
+        <button type="button" class="btn-primary btn-sm" id="btn-save-webcam-media" style="margin-top:var(--space-xs)">Save Webcam Order</button>
+    </div>
+</div>
 
 {% if book.final_audio_path %}
 <div class="card">
@@ -1064,6 +1181,23 @@ filterAndPaginate();
                     } else {
                         progEl.innerHTML = '<span style="color:var(--text-muted)">&mdash;</span>';
                     }
+                }
+                // Update pipeline status cells
+                const pipe = data.pipelines && data.pipelines[p.id];
+                if (pipe) {
+                    const stageEl = document.getElementById(`auto-stage-${p.id}`);
+                    if (stageEl) stageEl.textContent = pipe.stage;
+                    const statusMap = {thumbnail:'thumbnail_status', video:'video_status', upload:'upload_status', playlist:'playlist_status'};
+                    Object.keys(statusMap).forEach(function(s) {
+                        const cell = document.getElementById(`auto-${s}-${p.id}`);
+                        if (!cell) return;
+                        const st = pipe[statusMap[s]];
+                        if (st === 'done') cell.innerHTML = '&#x2705;';
+                        else if (st === 'failed') cell.innerHTML = '&#x274C;';
+                        else if (st === 'processing') cell.innerHTML = '&#x23F3;';
+                        else if (st === 'pending' || st === 'waiting_for_audio' || st === 'waiting_for_media') cell.innerHTML = '&#x23F3;';
+                        else cell.innerHTML = '&mdash;';
+                    });
                 }
             }
 
@@ -2210,9 +2344,17 @@ async function genSelectedImages() {
         const btn = this; const orig = btn.textContent;
         btn.disabled = true; btn.textContent = 'Đang lưu…';
         try {
-            const fd = new FormData(document.getElementById('video-config-form'));
+            const form = document.getElementById('video-config-form');
+            const fd = new FormData(form);
             const res = await fetch(`/books/${BOOK_ID}/video-settings`, { method: 'POST', body: fd });
             if (!res.ok) { let d; try { d = await res.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${res.status}`); }
+            // Save automation overrides
+            const autoFd = new FormData();
+            ['auto_enabled','auto_bg_duration','auto_webcam_enabled','auto_webcam_pos','auto_webcam_width','auto_yt_upload','auto_yt_privacy','auto_yt_playlist_mode'].forEach(function(k) {
+                var el = form.querySelector('[name="'+k+'"]');
+                if (el) autoFd.set(k, el.type === 'checkbox' ? (el.checked ? 'on' : '') : el.value);
+            });
+            await fetch(`/books/${BOOK_ID}/automation-config`, { method: 'POST', body: autoFd });
             showToast('Đã lưu cấu hình video');
         } catch (e) { showToast('Lưu lỗi: ' + (e.message || e), 'error'); }
         finally { btn.disabled = false; btn.textContent = orig; }
@@ -2222,6 +2364,34 @@ async function genSelectedImages() {
     if (vcAuto && batchAuto) vcAuto.addEventListener('change', () => { batchAuto.checked = vcAuto.checked; });
 
     initVideoCells();
+
+    // Background and webcam media save handlers
+    document.getElementById('btn-save-bg-media')?.addEventListener('click', async function() {
+        var sel = document.getElementById('book-bg-media');
+        var ids = Array.from(sel.selectedOptions).map(function(o) { return parseInt(o.value, 10); });
+        try {
+            var res = await fetch('/books/' + BOOK_ID + '/automation/media/background', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({asset_ids: ids}),
+            });
+            if (res.ok) { showToast('Background order saved'); }
+            else { showToast('Failed to save background order', 'error'); }
+        } catch(e) { showToast('Error: ' + e.message, 'error'); }
+    });
+    document.getElementById('btn-save-webcam-media')?.addEventListener('click', async function() {
+        var sel = document.getElementById('book-webcam-media');
+        var ids = Array.from(sel.selectedOptions).map(function(o) { return parseInt(o.value, 10); });
+        try {
+            var res = await fetch('/books/' + BOOK_ID + '/automation/media/webcam', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({asset_ids: ids}),
+            });
+            if (res.ok) { showToast('Webcam order saved'); }
+            else { showToast('Failed to save webcam order', 'error'); }
+        } catch(e) { showToast('Error: ' + e.message, 'error'); }
+    });
 })();
 </script>
 {% endblock %}

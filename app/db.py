@@ -242,6 +242,68 @@ CREATE TABLE IF NOT EXISTS voice_meta (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS automation_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    config_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL UNIQUE,
+    filename TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS book_media_selection (
+    book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    media_asset_id INTEGER NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (book_id, role, media_asset_id),
+    UNIQUE (book_id, role, position)
+);
+
+CREATE TABLE IF NOT EXISTS patch_pipeline (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patch_id INTEGER NOT NULL UNIQUE REFERENCES patch(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL DEFAULT 'thumbnail',
+    thumbnail_status TEXT NOT NULL DEFAULT 'pending',
+    video_status TEXT NOT NULL DEFAULT 'pending',
+    upload_status TEXT NOT NULL DEFAULT 'pending',
+    playlist_status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    next_retry_at TEXT,
+    thumbnail_path TEXT,
+    video_path TEXT,
+    video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
+    youtube_upload_id INTEGER REFERENCES youtube_uploads(id) ON DELETE SET NULL,
+    config_snapshot TEXT NOT NULL,
+    media_snapshot TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_patch_pipeline_claim
+ON patch_pipeline(stage, next_retry_at, id);
+
+CREATE TABLE IF NOT EXISTS youtube_playlist_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL,
+    playlist_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (book_id, channel_id)
+);
+
 """
 
 
@@ -261,11 +323,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a book table already existed on disk."""
+    conn.execute("DROP INDEX IF EXISTS idx_patch_pipeline_claim")
+    conn.execute(
+        "CREATE INDEX idx_patch_pipeline_claim ON patch_pipeline("
+        "stage, next_retry_at, id)"
+    )
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(book)")}
     if "voice_clip_path" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
     if "voice_transcript" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_transcript TEXT")
+    if "automation_config" not in existing:
+        conn.execute("ALTER TABLE book ADD COLUMN automation_config TEXT")
     # book_job and app_state are CREATE TABLE IF NOT EXISTS, so they're picked up by
     # init_schema on a fresh DB and are a no-op on an existing DB; no per-column migration
     # is needed for them.
@@ -333,6 +402,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
     uploads_existing = {row["name"] for row in conn.execute("PRAGMA table_info(youtube_uploads)")}
     if "video_id" not in uploads_existing:
         conn.execute("ALTER TABLE youtube_uploads ADD COLUMN video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL")
+    upload_columns = {
+        "upload_progress": "REAL NOT NULL DEFAULT 0",
+        "thumbnail_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "thumbnail_error": "TEXT",
+        "playlist_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "playlist_error": "TEXT",
+        "playlist_id": "TEXT",
+        "metadata_snapshot": "TEXT",
+        "retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "next_retry_at": "TEXT",
+    }
+    for name, definition in upload_columns.items():
+        if name not in uploads_existing:
+            conn.execute(f"ALTER TABLE youtube_uploads ADD COLUMN {name} {definition}")
+    videos_existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    if "book_id" not in videos_existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN book_id INTEGER REFERENCES book(id) ON DELETE SET NULL")
+    if "patch_id" not in videos_existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN patch_id INTEGER REFERENCES patch(id) ON DELETE SET NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_patch_id ON videos(patch_id) WHERE patch_id IS NOT NULL")
     sync_target_existing = {row["name"] for row in conn.execute("PRAGMA table_info(drive_sync_target)")}
     if "rclone_remote" not in sync_target_existing:
         conn.execute("ALTER TABLE drive_sync_target ADD COLUMN rclone_remote TEXT")

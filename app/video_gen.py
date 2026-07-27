@@ -331,6 +331,9 @@ def generate_full_video(
     music_path: str | None = None,
     music_volume: float = 0.15,
     font_path: str | None = None,
+    backgrounds: list[dict] | None = None,
+    webcam_sources: list[dict] | None = None,
+    automation_config=None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a full video by creating segments per patch and concatenating.
@@ -364,17 +367,30 @@ def generate_full_video(
                       patch_index=patch.patch_index, reason="no_audio")
                 continue
 
-            raw_bg = resolve_patch_image(patch, book, default_image)
-            if not raw_bg:
-                _emit(on_progress, "video.segment_skipped",
-                      patch_index=patch.patch_index, reason="no_image")
-                continue
-
             seg_path = str(tmp_dir / f"seg_{i:04d}.mp4")
 
             def _seg_progress(event: str, fields: dict, _p=patch) -> None:
                 _emit(on_progress, event, patch_index=_p.patch_index,
                       patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
+
+            if automation_config is not None and backgrounds is not None:
+                from app.video_compositor import render_composite
+                segment_paths.append(seg_path)
+                render_composite(
+                    patch.audio_path, backgrounds, webcam_sources or [], seg_path,
+                    automation_config, music_path=music_path,
+                )
+                _emit(on_progress, "video.segment_done",
+                      patch_index=patch.patch_index, patch_id=patch.id,
+                      segment_index=len(segment_paths),
+                      progress=f"{len(segment_paths)}/{len(eligible)}")
+                continue
+
+            raw_bg = resolve_patch_image(patch, book, default_image)
+            if not raw_bg:
+                _emit(on_progress, "video.segment_skipped",
+                      patch_index=patch.patch_index, reason="no_image")
+                continue
 
             seg_marquee_path: str | None = None
             seg_marquee_meta: dict | None = None
@@ -398,6 +414,7 @@ def generate_full_video(
                     except Exception as exc:
                         logger.warning("video_gen: invalid marquee meta for patch %s: %s", patch.id, exc)
 
+            segment_paths.append(seg_path)
             generate_segment(
                 image, patch.audio_path, seg_path,
                 image_type=anim,
@@ -410,7 +427,6 @@ def generate_full_video(
                 marquee_meta=seg_marquee_meta,
                 on_progress=_seg_progress,
             )
-            segment_paths.append(seg_path)
             _emit(on_progress, "video.segment_done",
                   patch_index=patch.patch_index, patch_id=patch.id,
                   segment_index=len(segment_paths),
@@ -453,9 +469,20 @@ def generate_standalone_video(
     music_volume: float = 0.15,
     intro_audio: str | None = None,
     outro_audio: str | None = None,
+    backgrounds: list[dict] | None = None,
+    webcam_sources: list[dict] | None = None,
+    automation_config=None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Generate a standalone video from a single audio + image (Video Creator page)."""
+    if automation_config is not None and backgrounds is not None:
+        from app.video_compositor import render_composite
+        render_composite(
+            audio_path, backgrounds, webcam_sources or [], out_path,
+            automation_config, music_path=music_path,
+        )
+        return
+
     w, h = resolution.split("x")
     res = (int(w), int(h))
     use_nvenc = codec == "h264_nvenc"

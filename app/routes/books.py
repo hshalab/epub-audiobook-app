@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.templating import Jinja2Templates
 
 from app import google_drive, repository, video_gen
+from app.automation_config import AutomationConfig, merge_automation_config
 from app.config import settings
 from app.deps import locked_conn
 from app.epub_parser import parse_epub
@@ -158,8 +159,20 @@ def book_detail(request: Request, book_id: int):
         if (patch_videos_dir / f"{p.id}.mp4").exists()
     }
 
-    from app import youtube
+    from app import automation_repository, youtube
     youtube_configured = youtube.is_configured()
+    auto_config = automation_repository.get_effective_config(conn, book_id)
+    auto_media = {
+        "background": automation_repository.list_book_media(conn, book_id, "background"),
+        "webcam": automation_repository.list_book_media(conn, book_id, "webcam"),
+    }
+    all_media = [dict(r) for r in conn.execute("SELECT * FROM media_assets ORDER BY filename, id")]
+    pipelines = conn.execute(
+        "SELECT pp.* FROM patch_pipeline pp JOIN patch p ON p.id=pp.patch_id WHERE p.book_id=? ORDER BY p.patch_index",
+        (book_id,),
+    ).fetchall()
+    patch_pipeline_ids = {row["patch_id"]: row for row in pipelines}
+    pipeline_stages = {row["patch_id"]: row["stage"] for row in pipelines}
 
     from app import image_overlay
     overlay_cfg = image_overlay.parse_overlay_config(book.overlay_config) if book else image_overlay.get_default_overlay_config()
@@ -192,6 +205,11 @@ def book_detail(request: Request, book_id: int):
             "youtube_configured": youtube_configured,
             "youtube_auto_upload": settings.youtube_auto_upload,
             "youtube_default_privacy": settings.youtube_default_privacy,
+            "auto_config": auto_config,
+            "auto_media": auto_media,
+            "all_media": all_media,
+            "patch_pipeline_ids": patch_pipeline_ids,
+            "pipeline_stages": pipeline_stages,
         }
     )
 
@@ -234,6 +252,44 @@ def update_video_settings(
     })
 
 
+@router.post("/books/{book_id}/automation-config")
+def save_book_automation_config(request: Request, book_id: int,
+    auto_enabled: str = Form(default=""),
+    auto_bg_duration: str = Form(default=""),
+    auto_webcam_enabled: str = Form(default=""),
+    auto_webcam_pos: str = Form(default=""),
+    auto_webcam_width: str = Form(default=""),
+    auto_yt_upload: str = Form(default=""),
+    auto_yt_privacy: str = Form(default=""),
+    auto_yt_playlist_mode: str = Form(default=""),
+):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        existing = json.loads(book.automation_config) if book.automation_config else {}
+        override = dict(existing)
+        if auto_enabled is not None:
+            override["enabled"] = auto_enabled == "on"
+        if auto_bg_duration and auto_bg_duration.strip():
+            override.setdefault("video", {})["background_duration_seconds"] = int(auto_bg_duration)
+        if auto_webcam_enabled is not None:
+            override.setdefault("webcam", {})["enabled"] = auto_webcam_enabled == "on"
+        if auto_webcam_pos:
+            override.setdefault("webcam", {})["position"] = auto_webcam_pos
+        if auto_webcam_width and auto_webcam_width.strip():
+            override.setdefault("webcam", {})["width_percent"] = int(auto_webcam_width)
+        if auto_yt_upload is not None:
+            override["youtube_auto_upload"] = auto_yt_upload == "on"
+        if auto_yt_privacy:
+            override.setdefault("youtube", {})["privacy"] = auto_yt_privacy
+        if auto_yt_playlist_mode:
+            override.setdefault("youtube", {})["playlist_mode"] = auto_yt_playlist_mode
+        from app.automation_repository import save_book_override
+        save_book_override(conn, book_id, override)
+    return JSONResponse({"status": "saved"})
+
+
 @router.get("/books/{book_id}/status")
 def book_status(request: Request, book_id: int):
     """Lightweight JSON endpoint for polling status without reloading the page."""
@@ -242,6 +298,23 @@ def book_status(request: Request, book_id: int):
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         patch_list = repository.list_patches(conn, book_id)
+        pipelines = {
+            row["patch_id"]: {
+                "stage": row["stage"],
+                "thumbnail_status": row["thumbnail_status"],
+                "video_status": row["video_status"],
+                "upload_status": row.get("upload_status"),
+                "playlist_status": row.get("playlist_status"),
+                "thumbnail_path": row["thumbnail_path"],
+                "youtube_upload_id": row["youtube_upload_id"],
+            }
+            for row in conn.execute(
+                "SELECT patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,thumbnail_path,youtube_upload_id FROM patch_pipeline WHERE patch_id IN ({})".format(
+                    ",".join("?" for _ in patch_list)
+                ),
+                [p.id for p in patch_list],
+            )
+        }
     worker = request.app.state.worker
     live_chunk_index = (
         worker.current_chunk_index
@@ -253,6 +326,7 @@ def book_status(request: Request, book_id: int):
         "book_status": book.status,
         "has_final_audio": bool(book.final_audio_path),
         "has_active_patches": any(p.status in ("pending", "processing") for p in patch_list),
+        "pipelines": pipelines,
         "patches": [
             {
                 "id": p.id,
@@ -825,6 +899,7 @@ async def rebuild_patches(request: Request, book_id: int):
             patches = repository.rebuild_patches(conn, book_id, ranges, reset_done)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _auto_enqueue_after(request, book_id)
     return JSONResponse([
         {"patch_index": p.patch_index, "chapter_start": p.chapter_start,
          "chapter_end": p.chapter_end, "name": p.name, "chunk_count": p.chunk_count,
@@ -870,6 +945,7 @@ async def auto_build_patches(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    _auto_enqueue_after(request, book_id)
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
@@ -976,6 +1052,27 @@ def get_youtube_description(request: Request, book_id: int):
             raise HTTPException(status_code=404, detail="book not found")
         result = repository.build_youtube_description(conn, book_id)
     return JSONResponse(result)
+
+
+def _auto_enqueue_after(request: Request, book_id: int) -> None:
+    """If automation is enabled for the book, enqueue pipeline rows for all
+    patches immediately so thumbnails can generate before audio. Must be called
+    outside the DB lock (AutomationWorker.enqueue_book acquires its own lock)."""
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            return
+        system_row = conn.execute("SELECT config_json FROM automation_settings WHERE id = 1").fetchone()
+        config = AutomationConfig.model_validate(merge_automation_config(
+            json.loads(system_row["config_json"]) if system_row else {},
+            json.loads(book.automation_config) if book.automation_config else None,
+        ))
+        if not config.enabled:
+            return
+    from app.automation_worker import AutomationWorker
+    worker = request.app.state.automation_worker
+    if worker is not None:
+        worker.enqueue_book(book_id)
 
 
 def _list_backgrounds() -> list[dict]:

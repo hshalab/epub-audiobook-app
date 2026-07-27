@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}Automation Settings{% endblock %}
+{% block content %}
+<h2>Automation Settings</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Configure video generation, webcam overlay, and YouTube uploading defaults.</p>
+
+<div id="save-status" style="display:none"></div>
+
+<form id="automation-form">
+  <div class="card">
+    <div class="card-header"><h3 style="margin:0">Video</h3></div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-resolution">Resolution</label>
+        <select id="cfg-resolution" name="video.resolution">
+          <option value="1920x1080">1920x1080 (Full HD)</option>
+          <option value="1280x720">1280x720 (HD)</option>
+          <option value="854x480">854x480 (SD)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="cfg-fps">FPS</label>
+        <select id="cfg-fps" name="video.fps">
+          <option value="24">24</option>
+          <option value="30">30</option>
+          <option value="60">60</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-encoder">Encoder</label>
+        <select id="cfg-encoder" name="video.encoder">
+          <option value="libx264">libx264 (CPU)</option>
+          <option value="h264_nvenc">h264_nvenc (GPU)</option>
+        </select>
+      </div>
+      <div class="form-group" id="cfg-quality-group">
+        <label for="cfg-quality">Quality (CRF/CQ 0–51)</label>
+        <input type="number" id="cfg-quality" name="video.crf" min="0" max="51" value="23">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-preset">Preset</label>
+        <select id="cfg-preset" name="video.preset"></select>
+      </div>
+      <div class="form-group">
+        <label for="cfg-audio-bitrate">Audio Bitrate</label>
+        <select id="cfg-audio-bitrate" name="video.audio_bitrate">
+          <option value="128k">128k</option>
+          <option value="192k">192k</option>
+          <option value="256k">256k</option>
+          <option value="320k">320k</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-bg-duration">Background Duration (seconds)</label>
+        <input type="number" id="cfg-bg-duration" name="video.background_duration_seconds" min="3" max="300" value="10">
+      </div>
+      <div class="form-group">
+        <label for="cfg-bg-color">Background Fallback Color</label>
+        <input type="color" id="cfg-bg-color" name="video.background_fallback_color" value="#000000">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 style="margin:0">Webcam</h3></div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+        <input type="checkbox" id="cfg-webcam-enabled" name="webcam.enabled">
+        Enable webcam overlay
+      </label>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-webcam-position">Position</label>
+        <select id="cfg-webcam-position" name="webcam.position">
+          <option value="top-left">Top Left</option>
+          <option value="top-right">Top Right</option>
+          <option value="bottom-left">Bottom Left</option>
+          <option value="bottom-right">Bottom Right</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="cfg-webcam-width">Max Width (%)</label>
+        <input type="number" id="cfg-webcam-width" name="webcam.width_percent" min="10" max="50" value="25">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-webcam-border">Border Width (px)</label>
+        <input type="number" id="cfg-webcam-border" name="webcam.border_width" min="0" max="20" value="0">
+      </div>
+      <div class="form-group">
+        <label for="cfg-webcam-border-color">Border Color</label>
+        <input type="color" id="cfg-webcam-border-color" name="webcam.border_color" value="#ffffff">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-webcam-radius">Border Radius (px)</label>
+        <input type="number" id="cfg-webcam-radius" name="webcam.corner_radius" min="0" max="50" value="0">
+      </div>
+      <div class="form-group">
+        <label for="cfg-webcam-margin">Margin (px)</label>
+        <input type="number" id="cfg-webcam-margin" name="webcam.margin" min="0" max="100" value="24">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 style="margin:0">General Automation</h3></div>
+    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+      <input type="checkbox" id="cfg-enabled" name="enabled">
+      Enable automation pipeline (thumbnail→video→upload)
+    </label>
+    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
+      <input type="checkbox" id="cfg-yt-auto-upload" name="youtube_auto_upload">
+      Auto-upload videos to YouTube after rendering
+    </label>
+    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
+      <input type="checkbox" id="cfg-gen-thumb" name="generate_missing_thumbnails">
+      Auto-generate missing patch thumbnails
+    </label>
+    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
+      <input type="checkbox" id="cfg-continue" name="continue_after_patch_failure">
+      Continue pipeline after patch failure
+    </label>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 style="margin:0">YouTube — Video Defaults</h3></div>
+    <div class="form-group">
+      <label for="cfg-yt-privacy">Video Privacy</label>
+      <select id="cfg-yt-privacy" name="youtube.privacy">
+        <option value="private">Private</option>
+        <option value="unlisted">Unlisted</option>
+        <option value="public">Public</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-category">Category ID</label>
+      <select id="cfg-yt-category" name="youtube.category_id">
+        <option value="22">22 — People &amp; Blogs</option>
+        <option value="1">1 — Film &amp; Animation</option>
+        <option value="2">2 — Autos &amp; Vehicles</option>
+        <option value="10">10 — Music</option>
+        <option value="15">15 — Pets &amp; Animals</option>
+        <option value="17">17 — Sports</option>
+        <option value="19">19 — Travel &amp; Events</option>
+        <option value="20">20 — Gaming</option>
+        <option value="23">23 — Comedy</option>
+        <option value="24">24 — Entertainment</option>
+        <option value="25">25 — News &amp; Politics</option>
+        <option value="26">26 — Howto &amp; Style</option>
+        <option value="27">27 — Education</option>
+        <option value="28">28 — Science &amp; Technology</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-tags">Tags (comma-separated)</label>
+      <input type="text" id="cfg-yt-tags" name="youtube.tags" placeholder="audiobook, epub, tts, video">
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-title-template">Title Template</label>
+      <input type="text" id="cfg-yt-title-template" name="youtube.title_template" placeholder="{book_title} - {patch_name}">
+      <small style="color:var(--text-muted)">Available: {book_title}, {patch_name}, {patch_index}, {chapter_start}, {chapter_end}</small>
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-desc-template">Description Template</label>
+      <textarea id="cfg-yt-desc-template" name="youtube.description_template" rows="3" placeholder="{book_title} - {patch_name}"></textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-yt-audio-lang">Default Audio Language</label>
+        <input type="text" id="cfg-yt-audio-lang" name="youtube.default_audio_language" placeholder="en, vi, ja, …">
+      </div>
+      <div class="form-group">
+        <label for="cfg-yt-video-lang">Default Video Language</label>
+        <input type="text" id="cfg-yt-video-lang" name="youtube.default_video_language" placeholder="en, vi, ja, …">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-yt-license">License</label>
+        <select id="cfg-yt-license" name="youtube.license">
+          <option value="youtube">Standard YouTube License</option>
+          <option value="creativeCommon">Creative Commons</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="cfg-yt-made-for-kids">
+          <input type="checkbox" id="cfg-yt-made-for-kids" name="youtube.made_for_kids">
+          Made for Kids
+        </label>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="cfg-yt-notify-subs">
+          <input type="checkbox" id="cfg-yt-notify-subs" name="youtube.notify_subscribers">
+          Notify subscribers
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="cfg-yt-embeddable">
+          <input type="checkbox" id="cfg-yt-embeddable" name="youtube.embeddable">
+          Allow embedding
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="cfg-yt-stats">
+          <input type="checkbox" id="cfg-yt-stats" name="youtube.public_statistics">
+          Public statistics
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 style="margin:0">YouTube — Playlist</h3></div>
+    <div class="form-group">
+      <label for="cfg-yt-playlist-mode">Playlist Mode</label>
+      <select id="cfg-yt-playlist-mode" name="youtube.playlist_mode">
+        <option value="none">None</option>
+        <option value="existing">Existing</option>
+        <option value="auto-create">Auto-create</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-playlist-id">Playlist ID</label>
+      <input type="text" id="cfg-yt-playlist-id" name="youtube.playlist_id" placeholder="YouTube playlist ID">
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-playlist-title">Playlist Title Template</label>
+      <input type="text" id="cfg-yt-playlist-title" name="youtube.playlist_title_template" placeholder="{book_title}">
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-playlist-desc">Playlist Description Template</label>
+      <textarea id="cfg-yt-playlist-desc" name="youtube.playlist_description_template" rows="3" placeholder="{book_title}"></textarea>
+    </div>
+    <div class="form-group">
+      <label for="cfg-yt-playlist-privacy">Playlist Privacy</label>
+      <select id="cfg-yt-playlist-privacy" name="youtube.playlist_privacy">
+        <option value="private">Private</option>
+        <option value="unlisted">Unlisted</option>
+        <option value="public">Public</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="btn-group" style="margin-top:var(--space-md)">
+    <button type="submit" class="btn-primary">Save Settings</button>
+  </div>
+</form>
+
+<script>
+(function() {
+  var form = document.getElementById('automation-form');
+  var statusEl = document.getElementById('save-status');
+
+  var cpuPresets = ['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'];
+  var nvencPresets = ['p1','p2','p3','p4','p5','p6','p7'];
+
+  function setPresetOptions(encoder) {
+    var sel = document.getElementById('cfg-preset');
+    var opts = encoder === 'h264_nvenc' ? nvencPresets : cpuPresets;
+    sel.innerHTML = opts.map(function(v) { return '<option value="'+v+'">'+v+'</option>'; }).join('');
+  }
+
+  function updateQualityField(encoder) {
+    var input = document.getElementById('cfg-quality');
+    input.name = encoder === 'h264_nvenc' ? 'video.cq' : 'video.crf';
+    var lbl = input.previousElementSibling;
+    lbl.textContent = encoder === 'h264_nvenc' ? 'Quality (CQ 0–51)' : 'Quality (CRF 0–51)';
+  }
+
+  function flatten(obj, prefix) {
+    var out = {};
+    for (var k in obj) {
+      if (!obj.hasOwnProperty(k)) continue;
+      var key = prefix ? prefix + '.' + k : k;
+      if (obj[k] !== null && typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+        var nested = flatten(obj[k], key);
+        for (var nk in nested) out[nk] = nested[nk];
+      } else {
+        out[key] = obj[k];
+      }
+    }
+    return out;
+  }
+
+  function unflatten(obj) {
+    var out = {};
+    for (var key in obj) {
+      if (!obj.hasOwnProperty(key)) continue;
+      var parts = key.split('.');
+      var cur = out;
+      for (var i = 0; i < parts.length - 1; i++) {
+        if (!cur[parts[i]]) cur[parts[i]] = {};
+        cur = cur[parts[i]];
+      }
+      cur[parts[parts.length - 1]] = obj[key];
+    }
+    return out;
+  }
+
+  var encSelect = document.getElementById('cfg-encoder');
+  encSelect.addEventListener('change', function() {
+    setPresetOptions(this.value);
+    updateQualityField(this.value);
+  });
+  setPresetOptions(encSelect.value);
+  updateQualityField(encSelect.value);
+
+  fetch('/automation/settings').then(function(r) { return r.json(); }).then(function(cfg) {
+    var flat = flatten(cfg, '');
+    for (var key in flat) {
+      var el = form.querySelector('[name="' + key + '"]');
+      if (!el) continue;
+      if (el.type === 'checkbox') {
+        el.checked = !!flat[key];
+      } else if (Array.isArray(flat[key])) {
+        el.value = flat[key].join(', ');
+      } else {
+        el.value = flat[key];
+      }
+    }
+    setPresetOptions(encSelect.value);
+  }).catch(function(err) {
+    statusEl.style.display = 'block';
+    statusEl.className = 'error-block';
+    statusEl.textContent = 'Failed to load settings: ' + err.message;
+  });
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var data = {};
+    var els = form.querySelectorAll('[name]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.type === 'checkbox') {
+        if (el.name !== 'youtube.notify_subscribers' && el.name !== 'youtube.embeddable' && el.name !== 'youtube.public_statistics') {
+          data[el.name] = el.checked;
+        }
+      } else if (el.type === 'number') {
+        data[el.name] = parseFloat(el.value);
+      } else if (el.id === 'cfg-yt-tags') {
+        data[el.name] = el.value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      } else {
+        data[el.name] = el.value;
+      }
+    }
+    // Checkboxes with specific names (not part of nested youtube.*)
+    var checkboxNames = ['enabled', 'youtube_auto_upload', 'generate_missing_thumbnails', 'continue_after_patch_failure',
+                         'youtube.made_for_kids', 'youtube.notify_subscribers', 'youtube.embeddable', 'youtube.public_statistics'];
+    checkboxNames.forEach(function(name) {
+      var el = form.querySelector('[name="' + name + '"]');
+      if (el && el.type === 'checkbox') data[name] = el.checked;
+    });
+    var body = unflatten(data);
+    statusEl.style.display = 'block';
+    statusEl.className = 'yt-info';
+    statusEl.textContent = 'Saving...';
+    fetch('/automation/settings', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    }).then(function(r) {
+      if (!r.ok) return r.json().then(function(err) { throw new Error(JSON.stringify(err.detail || err)); });
+      return r.json();
+    }).then(function() {
+      statusEl.className = 'yt-ok';
+      statusEl.textContent = 'Settings saved successfully.';
+      setTimeout(function() { statusEl.style.display = 'none'; }, 3000);
+    }).catch(function(err) {
+      statusEl.className = 'yt-err';
+      statusEl.textContent = 'Error: ' + err.message;
+    });
+  });
+})();
+</script>
+{% endblock %}
