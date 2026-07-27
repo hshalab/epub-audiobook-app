@@ -67,6 +67,33 @@ def _synthetic_epub(path: Path) -> None:
     epub.write_epub(str(path), book)
 
 
+def _book_detail_html(client) -> str:
+    conn = client.app.state.conn
+    book = repository.create_book(
+        conn,
+        title="UI test book",
+        original_filename="ui-test.epub",
+        epub_path="",
+        patch_size=10,
+        chapters=[],
+        background_image_path=None,
+    )
+    response = client.get(f"/books/{book.id}")
+    assert response.status_code == 200
+    return response.text
+
+
+def test_book_detail_groups_workflow_controls(client):
+    html = _book_detail_html(client)
+
+    assert 'class="book-tools"' in html
+    assert 'data-open-dialog="video-config-modal"' in html
+    assert 'id="patch-media-modal"' in html
+    assert 'class="batch-action-group"' in html
+    assert '>Generate<' in html
+    assert '>Export<' in html
+
+
 def test_upload_skips_toc_chapter_and_preview_routes_work(client, tmp_path):
     epub_path = tmp_path / "book.epub"
     _synthetic_epub(epub_path)

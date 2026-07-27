@@ -75,6 +75,24 @@ def test_serve_batch_audio_404_unknown_index(client, tmp_path):
     assert resp.status_code == 404
 
 
+def test_upload_batch_greetings_saves_intro_and_outro_files(client, tmp_path):
+    batch_id = _seed_batch(client, tmp_path)
+
+    resp = client.post(
+        f"/video/batch/{batch_id}/greetings",
+        files={
+            "intro_audio": ("intro.mp3", b"intro", "audio/mpeg"),
+            "outro_audio": ("outro.ogg", b"outro", "audio/ogg"),
+        },
+    )
+
+    assert resp.status_code == 200
+    from app.routes import video as video_routes
+    meta = json.loads((video_routes._TMP_DIR / batch_id / "meta.json").read_text(encoding="utf-8"))
+    assert Path(meta["intro_audio"]).read_bytes() == b"intro"
+    assert Path(meta["outro_audio"]).read_bytes() == b"outro"
+
+
 # ---------------------------------------------------------------------------
 # Overlay rendering with drag offset (final render must match preview)
 # ---------------------------------------------------------------------------

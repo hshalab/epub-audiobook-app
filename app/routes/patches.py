@@ -262,16 +262,20 @@ async def generate_patch_video(
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
 
-    image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None)
-    if not image:
-        image = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
-    if not image:
+    raw_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    if not raw_bg:
         raise HTTPException(status_code=400, detail="No background image available")
+
+    if video_gen.is_video_background(raw_bg):
+        image = raw_bg
+        image_type = "none"
+    else:
+        image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None) or raw_bg
+        image_type = patch.image_type if patch.image_type and patch.image_type != "static" else "none"
 
     w, h = (book.video_resolution or "1920x1080").split("x")
     resolution = (int(w), int(h))
     fps = book.video_fps or 30
-    image_type = patch.image_type if patch.image_type and patch.image_type != "static" else "none"
 
     out_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
     out_dir.mkdir(parents=True, exist_ok=True)

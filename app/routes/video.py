@@ -404,8 +404,8 @@ async def upload_batch(
 @router.post("/video/batch/{batch_id}/greetings")
 async def upload_batch_greetings(
     batch_id: str,
-    intro_voice: str = Form(default=""),
-    outro_voice: str = Form(default=""),
+    intro_audio: UploadFile | None = File(default=None),
+    outro_audio: UploadFile | None = File(default=None),
 ):
     batch_dir = _TMP_DIR / batch_id
     meta_path = batch_dir / "meta.json"
@@ -413,14 +413,15 @@ async def upload_batch_greetings(
         raise HTTPException(status_code=404, detail="Batch not found or expired")
     with open(meta_path) as mf:
         meta = json.load(mf)
-    voice_dir = (Path(settings.data_root) / "voices").resolve()
-    for key, name in (("intro_audio", intro_voice), ("outro_audio", outro_voice)):
-        if not name:
-            meta.pop(key, None)
+    for key, upload in (("intro_audio", intro_audio), ("outro_audio", outro_audio)):
+        if upload is None:
             continue
-        path = (voice_dir / Path(name).name).resolve()
-        if path.parent != voice_dir or not path.exists():
-            raise HTTPException(status_code=400, detail="Voice không hợp lệ hoặc không tồn tại")
+        ext = Path(upload.filename or "").suffix.lower()
+        if ext not in ALLOWED_AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}")
+        path = batch_dir / f"{key}{ext}"
+        with open(path, "wb") as out:
+            shutil.copyfileobj(upload.file, out)
         meta[key] = str(path)
     with open(meta_path, "w") as mf:
         json.dump(meta, mf)
