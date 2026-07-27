@@ -17,6 +17,7 @@ from app.deps import locked_conn
 from app.epub_parser import parse_epub
 from app.normalization import NormalizationOptions, normalize_text
 from app.youtube_metadata import get_book_youtube_config, save_book_youtube_config
+from app.video_config import get_book_video_config, save_book_video_config, validate_video_config
 from app import youtube
 from app import db as app_db
 
@@ -162,6 +163,7 @@ def book_detail(request: Request, book_id: int):
         music_list = repository.list_music(conn)
         current_music = repository.get_music(conn, book.music_id) if book and book.music_id else None
         youtube_config = get_book_youtube_config(conn, book_id)
+        video_config = get_book_video_config(conn, book)
         youtube_creds = youtube.get_creds_from_db(conn)
         pipeline_rows = {
             row["patch_id"]: dict(row)
@@ -221,6 +223,7 @@ def book_detail(request: Request, book_id: int):
             "youtube_auto_upload": settings.youtube_auto_upload,
             "youtube_default_privacy": settings.youtube_default_privacy,
             "youtube_config": youtube_config,
+            "video_config": video_config,
             "youtube_connected": bool(youtube_creds),
             "youtube_channel_name": youtube_creds.get("channel_name") if youtube_creds else None,
             "youtube_playlists": youtube_playlists,
@@ -265,6 +268,28 @@ def update_video_settings(
         "video_resolution": res or (book.video_resolution or "1920x1080"),
         "video_fps": fps or (book.video_fps or 30),
     })
+
+
+@router.get("/books/{book_id}/video-config")
+def get_video_config(request: Request, book_id: int):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        return get_book_video_config(conn, book)
+
+
+@router.post("/books/{book_id}/video-config")
+async def save_video_config(request: Request, book_id: int):
+    data = await request.json()
+    try:
+        validated = validate_video_config(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        return save_book_video_config(conn, book_id, validated)
 
 
 @router.post("/books/{book_id}/youtube-settings")
@@ -1093,14 +1118,15 @@ def get_youtube_description(request: Request, book_id: int):
 
 def _list_backgrounds() -> list[dict]:
     """Shared helper: list backgrounds (default + user-uploaded images/videos)."""
-    from app.routes.video import _BACKGROUNDS_DIR, ALLOWED_BACKGROUND_EXTENSIONS
+    from app.routes.video import ALLOWED_BACKGROUND_EXTENSIONS
     items: list[dict] = []
     default = settings.default_background_image
     if Path(default).exists():
         items.append({"name": "__default__", "path": default, "is_default": True,
                       "is_video": video_gen.is_video_background(default)})
-    _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
-    for f in sorted(_BACKGROUNDS_DIR.iterdir()):
+    backgrounds_dir = Path(settings.data_root) / "backgrounds"
+    backgrounds_dir.mkdir(parents=True, exist_ok=True)
+    for f in sorted(backgrounds_dir.iterdir()):
         if f.suffix.lower() in ALLOWED_BACKGROUND_EXTENSIONS:
             items.append({"name": f.name, "path": str(f), "is_default": False,
                           "is_video": video_gen.is_video_background(f)})

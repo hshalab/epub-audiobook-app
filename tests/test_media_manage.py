@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,16 @@ def test_photo_upload_creates_file(client, tmp_path):
     assert resp.status_code == 303
     names = [p.name for p in _bg_dir(client).iterdir()]
     assert any(n.endswith("up.png") for n in names)
+
+
+def test_media_upload_and_preview_video(client):
+    resp = client.post("/photos/upload", files={"files": ("loop.mp4", b"video", "video/mp4")}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert (_bg_dir(client) / "loop.mp4").exists()
+    preview = client.get("/photos/file/loop.mp4")
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "video/mp4"
+    assert "<video" in client.get("/photos").text
 
 
 def test_photo_upload_rejects_bad_extension(client, tmp_path):
@@ -175,6 +186,37 @@ def test_photo_file_served(client):
     resp = client.get("/photos/file/thumb.png")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
+
+
+def test_media_rename_updates_patch_and_video_config_references(client):
+    old = _seed_photo(client, "old.png")
+    db = _db(client)
+    now = "2026-01-01T00:00:00+00:00"
+    db.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,automation_config,created_at,updated_at) VALUES (1,'b','b.epub','b.epub',10,'ready',?,?,?)", (json.dumps({"video": {"backgrounds": [str(old)], "quality": 20}}), now, now))
+    db.execute("INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,image_path,created_at,updated_at) VALUES (1,0,0,1,?,?,?)", (str(old), now, now))
+    db.commit()
+    response = client.post("/photos/rename", data={"old_name": "old.png", "new_name": "new"}, follow_redirects=False)
+    new = _bg_dir(client) / "new.png"
+    row = db.execute("SELECT automation_config FROM book WHERE id=1").fetchone()
+    patch = db.execute("SELECT image_path FROM patch WHERE book_id=1").fetchone()
+    assert response.status_code == 303
+    assert patch["image_path"] == str(new)
+    assert json.loads(row["automation_config"])["video"]["backgrounds"] == [str(new)]
+
+
+def test_media_delete_clears_patch_and_removes_video_config_reference(client):
+    target = _seed_photo(client, "gone.png")
+    keep = _seed_photo(client, "keep.png")
+    db = _db(client)
+    now = "2026-01-01T00:00:00+00:00"
+    db.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,automation_config,created_at,updated_at) VALUES (1,'b','b.epub','b.epub',10,'ready',?,?,?)", (json.dumps({"video": {"backgrounds": [str(target), str(keep)]}}), now, now))
+    db.execute("INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,image_path,created_at,updated_at) VALUES (1,0,0,1,?,?,?)", (str(target), now, now))
+    db.commit()
+    client.post("/photos/delete", data={"name": "gone.png"}, follow_redirects=False)
+    row = db.execute("SELECT automation_config FROM book WHERE id=1").fetchone()
+    patch = db.execute("SELECT image_path FROM patch WHERE book_id=1").fetchone()
+    assert patch["image_path"] is None
+    assert json.loads(row["automation_config"])["video"]["backgrounds"] == [str(keep)]
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import subprocess
 import tempfile
 import time
@@ -85,6 +86,8 @@ def generate_segment(
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
+    codec: str = "libx264",
+    quality: int = 23,
     marquee_path: str | None = None,
     marquee_meta: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -106,7 +109,7 @@ def generate_segment(
     if music_path is not None and not Path(music_path).exists():
         raise FileNotFoundError(f"music file not found: {music_path}")
 
-    video_codec = "h264_nvenc" if use_nvenc else "libx264"
+    video_codec = "h264_nvenc" if use_nvenc or codec == "h264_nvenc" else "libx264"
     width, height = resolution
     is_video_bg = is_video_background(image_path)
 
@@ -114,11 +117,11 @@ def generate_segment(
           resolution=f"{width}x{height}", fps=fps, codec=video_codec,
           video_background=is_video_bg)
 
-    if use_nvenc:
-        quality_args = ["-cq", str(crf)]
+    if use_nvenc or codec == "h264_nvenc":
+        quality_args = ["-cq", str(quality)]
         tune_args = []
     else:
-        quality_args = ["-crf", str(crf)]
+        quality_args = ["-crf", str(quality)]
         # '-tune stillimage' only helps genuine still frames; a video background
         # has real motion, so skip it there.
         tune_args = [] if is_video_bg else ["-tune", "stillimage"]
@@ -269,6 +272,89 @@ def concat_segments(
     _emit(on_progress, "concat.done", count=len(segment_paths), path=out_path)
 
 
+def _probe_duration(path: str) -> float:
+    result = subprocess.run(
+        [settings.get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True, check=True,
+    )
+    return max(0.01, float(result.stdout.strip()))
+
+
+def generate_background_sequence(
+    backgrounds: list[str], audio_path: str, out_path: str, *,
+    resolution: tuple[int, int], fps: int, image_duration: float,
+    mode: str = "sequential", seed: str = "", music_path: str | None = None,
+    music_volume: float = 0.15, codec: str = "libx264", quality: int = 23,
+    audio_bitrate: str = "192k", on_progress: ProgressCallback | None = None,
+    start_index: int = 0,
+    crossfade: bool = False, crossfade_seconds: float = 1,
+    ken_burns: bool = False, progress_bar: bool = False,
+) -> None:
+    """Render rotating silent backgrounds, then mux narration/music once."""
+    duration = _probe_duration(audio_path)
+    valid = [p for p in backgrounds if Path(p).is_file()]
+    plan = plan_background_segments(valid, duration, image_duration, mode, seed=seed, start_index=start_index)
+    if not plan:
+        raise ValueError("No valid backgrounds for sequence")
+    width, height = resolution
+    video_codec = "h264_nvenc" if codec == "h264_nvenc" else "libx264"
+    with tempfile.TemporaryDirectory(prefix="video_backgrounds_") as temp:
+        pieces = []
+        for index, (background, length) in enumerate(plan):
+            piece = str(Path(temp) / f"piece_{index:04d}.mp4")
+            if is_video_background(background):
+                inputs = [settings.get_ffmpeg_path(), "-y", "-stream_loop", "-1", "-i", background]
+            else:
+                inputs = [settings.get_ffmpeg_path(), "-y", "-loop", "1", "-i", background]
+            filters = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            if ken_burns and not is_video_background(background):
+                filters += f",zoompan=z='min(zoom+0.0005,1.15)':d={max(1, int(length * fps))}:s={width}x{height}:fps={fps}"
+            if progress_bar:
+                filters += f",drawbox=x=0:y=ih-8:w='iw*t/{max(length, 0.01)}':h=8:color=white@0.85:t=fill"
+            cmd = inputs + [
+                "-t", str(length), "-vf", filters,
+                "-an", "-c:v", video_codec,
+                "-pix_fmt", "yuv420p", "-r", str(fps),
+                ("-cq" if video_codec == "h264_nvenc" else "-crf"), str(quality),
+                piece,
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            pieces.append(piece)
+        visual = str(Path(temp) / "visual.mp4")
+        if crossfade and len(pieces) > 1:
+            fade = min(float(crossfade_seconds), min(length for _, length in plan) / 2)
+            graph = []
+            for i in range(len(pieces)):
+                graph.append(f"[{i}:v]settb=AVTB[v{i}]")
+            current = "[v0]"
+            elapsed = plan[0][1]
+            for i in range(1, len(pieces)):
+                out = f"[x{i}]"
+                graph.append(f"{current}[{i}:v]xfade=transition=fade:duration={fade}:offset={max(0, elapsed - fade)}{out}")
+                current = out
+                elapsed += plan[i][1] - fade
+            cmd = [settings.get_ffmpeg_path(), "-y"]
+            for piece in pieces:
+                cmd += ["-i", piece]
+            cmd += ["-filter_complex", ";".join(graph), "-map", current, "-an", "-c:v", video_codec, "-pix_fmt", "yuv420p", visual]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        else:
+            concat_segments(pieces, visual)
+        inputs = [settings.get_ffmpeg_path(), "-y", "-i", visual, "-i", audio_path]
+        chains = []
+        audio_map = "1:a"
+        if music_path:
+            inputs += ["-stream_loop", "-1", "-i", music_path]
+            chains = ["[2:a]volume=" + str(music_volume) + "[music]", "[1:a][music]amix=inputs=2:duration=first:normalize=0[aout]"]
+            audio_map = "[aout]"
+        cmd = inputs
+        if chains:
+            cmd += ["-filter_complex", ";".join(chains)]
+        cmd += ["-map", "0:v:0", "-map", audio_map, "-c:v", "copy", "-c:a", "aac", "-b:a", audio_bitrate, "-shortest", out_path]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 def resolve_patch_image(patch: Patch, book: Book | None, default_image: str) -> str | None:
     """Resolve the image for a patch: patch.image_path -> book.background_image_path -> default."""
     if patch.image_path and Path(patch.image_path).exists():
@@ -280,6 +366,38 @@ def resolve_patch_image(patch: Patch, book: Book | None, default_image: str) -> 
     return None
 
 
+def resolve_configured_patch_image(patch, config: dict | None, fallback: str) -> str | None:
+    """Choose one valid shared background for a patch, honoring patch override."""
+    if getattr(patch, "image_path", None) and Path(patch.image_path).exists():
+        return patch.image_path
+    config = config or {}
+    candidates = [p for p in config.get("backgrounds", []) if isinstance(p, str) and Path(p).exists()]
+    if candidates:
+        if config.get("background_mode") == "random":
+            rng = random.Random(f"{fallback}:{getattr(patch, 'id', 0)}")
+            return rng.choice(candidates)
+        return candidates[getattr(patch, "patch_index", 0) % len(candidates)]
+    return fallback if fallback and Path(fallback).exists() else None
+
+
+def plan_background_segments(backgrounds: list[str], duration: float, image_duration: float, mode: str = "sequential", *, seed: str = "", start_index: int = 0) -> list[tuple[str, float]]:
+    """Return timed background segments whose total duration equals duration."""
+    if duration <= 0 or image_duration <= 0 or not backgrounds:
+        return []
+    ordered = list(backgrounds)
+    if mode == "random":
+        random.Random(seed).shuffle(ordered)
+    result = []
+    remaining = float(duration)
+    index = start_index
+    while remaining > 0:
+        length = min(float(image_duration), remaining)
+        result.append((ordered[index % len(ordered)], length))
+        remaining -= length
+        index += 1
+    return result
+
+
 def generate_full_video(
     patches: list[Patch],
     book: Book,
@@ -289,6 +407,12 @@ def generate_full_video(
     use_nvenc: bool = False,
     music_path: str | None = None,
     music_volume: float = 0.15,
+    codec: str = "libx264",
+    quality: int = 23,
+    audio_bitrate: str = "192k",
+    video_config: dict | None = None,
+    intro_audio: str | None = None,
+    outro_audio: str | None = None,
     font_path: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
@@ -327,9 +451,40 @@ def generate_full_video(
 
             def _seg_progress(event: str, fields: dict, _p=patch) -> None:
                 _emit(on_progress, event, patch_index=_p.patch_index,
-                      patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
+                          patch_id=_p.id, **{k: v for k, v in fields.items() if k != "path"})
 
-            raw_bg = resolve_patch_image(patch, book, default_image)
+            shared = [p for p in (video_config or {}).get("backgrounds", []) if isinstance(p, str)]
+            raw_for_greeting = resolve_configured_patch_image(patch, video_config, resolve_patch_image(patch, book, default_image) or default_image)
+            greeting_paths = []
+            if raw_for_greeting and intro_audio:
+                intro_path = str(tmp_dir / f"intro_{i:04d}.mp4")
+                generate_segment(raw_for_greeting, intro_audio, intro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                greeting_paths.append(intro_path)
+            if len(shared) > 1 and not (getattr(patch, "image_path", None) and Path(patch.image_path).exists()):
+                generate_background_sequence(
+                    shared, patch.audio_path, seg_path, resolution=resolution, fps=fps,
+                    image_duration=float((video_config or {}).get("image_duration_seconds", 15)),
+                    mode=(video_config or {}).get("background_mode", "sequential"),
+                    seed=f"{getattr(book, 'id', '')}-{patch.id}", music_path=music_path,
+                    music_volume=music_volume, codec=codec, quality=quality,
+                    audio_bitrate=audio_bitrate, on_progress=_seg_progress,
+                    start_index=patch.patch_index,
+                    crossfade=bool((video_config or {}).get("crossfade_enabled")),
+                    crossfade_seconds=float((video_config or {}).get("crossfade_seconds", 1)),
+                    ken_burns=bool((video_config or {}).get("ken_burns_enabled")),
+                    progress_bar=bool((video_config or {}).get("progress_bar_enabled")),
+                )
+                if raw_for_greeting and outro_audio:
+                    outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
+                    generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                    greeting_paths.append(outro_path)
+                segment_paths.extend(greeting_paths[:1])
+                segment_paths.append(seg_path)
+                if len(greeting_paths) > 1:
+                    segment_paths.append(greeting_paths[-1])
+                continue
+
+            raw_bg = resolve_configured_patch_image(patch, video_config, resolve_patch_image(patch, book, default_image) or default_image)
             if not raw_bg:
                 _emit(on_progress, "video.segment_skipped",
                       patch_index=patch.patch_index, reason="no_image")
@@ -339,11 +494,10 @@ def generate_full_video(
                 image = raw_bg
                 anim = "none"
             else:
-                overlay = image_overlay.ensure_patch_overlay(book, patch, font_path)
+                overlay = image_overlay.ensure_patch_overlay(book, patch, font_path, background_path=raw_bg)
                 image = overlay or raw_bg
                 anim = patch.image_type if patch.image_type and patch.image_type != "static" else default_anim
 
-            segment_paths.append(seg_path)
             generate_segment(
                 image, patch.audio_path, seg_path,
                 image_type=anim,
@@ -352,8 +506,17 @@ def generate_full_video(
                 use_nvenc=use_nvenc,
                 music_path=music_path,
                 music_volume=music_volume,
+                codec=codec,
+                quality=quality,
+                audio_bitrate=audio_bitrate,
                 on_progress=_seg_progress,
             )
+            segment_paths.extend(greeting_paths[:1])
+            segment_paths.append(seg_path)
+            if raw_for_greeting and outro_audio:
+                outro_path = str(tmp_dir / f"outro_{i:04d}.mp4")
+                generate_segment(raw_for_greeting, outro_audio, outro_path, image_type="none", resolution=resolution, fps=fps, codec=codec, quality=quality, audio_bitrate=audio_bitrate)
+                segment_paths.append(outro_path)
             _emit(on_progress, "video.segment_done",
                   patch_index=patch.patch_index, patch_id=patch.id,
                   segment_index=len(segment_paths),

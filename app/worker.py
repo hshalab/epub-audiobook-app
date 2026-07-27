@@ -27,6 +27,7 @@ from app import audio_merge, repository, video_gen
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
+from app.video_config import get_book_video_config
 from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
 from app.tts_engine import VoxCPMEngine
 
@@ -444,11 +445,21 @@ class PatchWorker:
             raise ValueError(f"book {job.book_id} has no final_audio_path")
 
         music_path: str | None = None
+        video_config = None
         if book.music_id is not None:
             with self.db_lock:
                 music = repository.get_music(self.conn, book.music_id)
+                video_config = get_book_video_config(self.conn, book)
             if music and Path(music.file_path).exists():
                 music_path = music.file_path
+        if video_config is None:
+            with self.db_lock:
+                video_config = get_book_video_config(self.conn, book)
+        voices_dir = Path(settings.data_root) / "voices"
+        intro_audio = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
+        outro_audio = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
+        intro_audio = str(intro_audio) if intro_audio and intro_audio.is_file() else None
+        outro_audio = str(outro_audio) if outro_audio and outro_audio.is_file() else None
 
         done_patches = [p for p in patches if p.status == "done" and p.audio_path]
         book_dir = self.data_root / "books" / str(job.book_id)
@@ -469,6 +480,12 @@ class PatchWorker:
             use_nvenc=settings.use_nvenc,
             music_path=music_path,
             music_volume=book.music_volume,
+            codec=video_config["codec"],
+            quality=video_config["quality"],
+            audio_bitrate=video_config["audio_bitrate"],
+            video_config=video_config,
+            intro_audio=intro_audio,
+            outro_audio=outro_audio,
             font_path=settings.default_font_path or None,
             on_progress=_on_progress,
         )

@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, video, video_api, voices, youtube
+from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
 from app.tts_engine import VoxCPMEngine
 from app.worker import PatchWorker
 
@@ -140,6 +140,7 @@ app.include_router(music.router)
 app.include_router(photos.router)
 app.include_router(voices.router)
 app.include_router(youtube.router)
+app.include_router(text_studio.router)
 app.include_router(drive.router)
 app.include_router(database_io.router)
 app.include_router(effects.router)

@@ -63,6 +63,28 @@ def test_patch_row_exposes_pipeline_stage(client, seeded_book):
     assert "Published" in html
 
 
+def test_patch_media_modal_has_only_audio_and_video_uploads(client, seeded_book):
+    conn = db.connect(settings.db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,created_at,updated_at)
+           VALUES (1,1,0,0,1,'pending',?,?)""",
+        (now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    html = client.get(f"/books/{seeded_book.id}").text
+
+    assert ">Media</button>" in html
+    assert ">More</button>" not in html
+    assert 'id="pm-audio-file"' in html
+    assert 'id="pm-video-file"' in html
+    assert 'id="pm-bg-select"' not in html
+    assert "patch-bg-select" not in html
+    assert "patch-bg-save-btn" not in html
+
+
 def test_book_detail_youtube_controls_use_exact_settings_shape(client, seeded_book):
     html = client.get(f"/books/{seeded_book.id}").text
     for field in ("privacy_status", "auto_upload", "genre_tags", "title_template", "description_template"):
@@ -70,6 +92,20 @@ def test_book_detail_youtube_controls_use_exact_settings_shape(client, seeded_bo
     assert 'name="playlist_id"' in html
     assert 'id="youtube-connection-state"' in html
     assert 'id="youtube-preview"' in html
+
+
+def test_video_config_uses_media_library_background_checkboxes(client, seeded_book):
+    media_dir = __import__("pathlib").Path(settings.data_root) / "backgrounds"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "a.png").write_bytes(b"image")
+    (media_dir / "b.mp4").write_bytes(b"video")
+    html = client.get(f"/books/{seeded_book.id}").text
+    assert html.count('class="vc-background-check"') >= 2
+    assert "a.png" in html and "b.mp4" in html
+    assert '<video src="/video/backgrounds/preview?' in html
+    assert '<img src="/video/backgrounds/preview?' in html
+    assert "Array.from(document.querySelectorAll('.vc-background-check:checked'))" in html
+    assert '<textarea id="vc-backgrounds"' not in html
 
 
 def test_patch_youtube_modal_renders_override_controls_and_metadata_flow(client, seeded_book):

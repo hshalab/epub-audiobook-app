@@ -30,6 +30,35 @@ def test_upload_patch_video_saves_where_preview_reads(tmp_path, monkeypatch):
     assert any(v["filename"] == "patch_7_11.mp4" for v in library.json()["videos"])
 
 
+def test_upload_patch_audio_marks_patch_done(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
+    monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(settings, "enable_worker", False)
+    now = datetime.now(timezone.utc).isoformat()
+    with TestClient(app) as client:
+        conn = client.app.state.conn
+        conn.execute(
+            """INSERT INTO book (id, title, original_filename, epub_path, patch_size, status, created_at, updated_at)
+               VALUES (1, 'Book', 'book.epub', 'book.epub', 10, 'ready', ?, ?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO patch (id, book_id, patch_index, chapter_start, chapter_end, status, created_at, updated_at)
+               VALUES (1, 1, 0, 1, 1, 'pending', ?, ?)""",
+            (now, now),
+        )
+        conn.commit()
+        response = client.post(
+            "/books/1/patches/1/upload-audio",
+            files={"audio": ("result.wav", b"audio-data", "audio/wav")},
+        )
+        row = conn.execute("SELECT status, audio_path FROM patch WHERE id = 1").fetchone()
+
+    assert response.status_code == 200
+    assert row["status"] == "done"
+    assert Path(row["audio_path"]).read_bytes() == b"audio-data"
+
+
 def test_generate_patch_video_mixes_book_background_music(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "data_root", str(tmp_path))

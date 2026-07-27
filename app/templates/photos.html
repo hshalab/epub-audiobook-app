@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% from "_pagination.html" import render_pagination %}
-{% block title %}Photo Library{% endblock %}
+{% block title %}Media Library{% endblock %}
 {% block content %}
-<h2>Photo Library</h2>
-<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Quản lý ảnh nền cho video. Ảnh ở đây dùng được trong Video Creator và làm ảnh nền sách; đổi tên file sẽ tự cập nhật các sách đang dùng ảnh đó.</p>
+<h2>Media Library</h2>
+<p style="color:var(--text-muted);margin-bottom:var(--space-lg)">Quản lý ảnh và video loop dùng làm background cho sách, patch và Video Creator.</p>
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Upload ảnh mới</h3>
+        <h3 style="margin:0">Upload media mới</h3>
     </div>
     <form method="post" action="/photos/upload" enctype="multipart/form-data" style="display:flex;gap:var(--space-md);align-items:flex-end;flex-wrap:wrap">
         <div class="form-group" style="margin:0;flex:1;min-width:200px">
-            <label for="photo-file">File ảnh (.jpg .jpeg .png .webp) — có thể chọn nhiều file</label>
-            <input type="file" name="files" id="photo-file" accept=".jpg,.jpeg,.png,.webp" multiple required>
+            <label for="photo-file">Ảnh/video (.jpg .jpeg .png .webp .mp4 .webm .mov)</label>
+            <input type="file" name="files" id="photo-file" accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,.mov" multiple required>
         </div>
         <button type="submit" class="btn-primary">Upload</button>
     </form>
@@ -20,8 +20,8 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Thư viện ảnh</h3>
-        <span style="font-size:var(--font-size-sm);color:var(--text-muted)">{{ photos|length }} ảnh</span>
+        <h3 style="margin:0">Thư viện media</h3>
+        <span style="font-size:var(--font-size-sm);color:var(--text-muted)">{{ photos|length }} file</span>
     </div>
     {% if photos %}
     <div class="table-wrap">
@@ -39,10 +39,9 @@
         {% for p in photos %}
             <tr>
                 <td>
-                    <img src="/photos/file/{{ p.name }}" alt="{{ p.name }}"
-                         style="height:48px;max-width:96px;object-fit:cover;border-radius:4px;vertical-align:middle">
+                    {% if p.is_video %}<video src="/photos/file/{{ p.name }}" muted loop playsinline preload="metadata" style="height:48px;max-width:96px;object-fit:cover;border-radius:4px;vertical-align:middle"></video>{% else %}<img src="/photos/file/{{ p.name }}" alt="{{ p.name }}" style="height:48px;max-width:96px;object-fit:cover;border-radius:4px;vertical-align:middle">{% endif %}
                 </td>
-                <td style="word-break:break-all">{{ p.name }}</td>
+                <td style="word-break:break-all">{{ p.name }} <span class="badge">{{ 'Video' if p.is_video else 'Image' }}</span></td>
                 <td>{{ p.size_kb }} KB</td>
                 <td>
                     <form method="post" action="/photos/rename" style="display:flex;gap:var(--space-sm)">

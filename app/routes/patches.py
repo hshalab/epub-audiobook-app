@@ -20,6 +20,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.patch_publishing import enqueue_patch_publish, on_patch_audio_ready, retry_patch_publish
 from app.youtube_metadata import get_patch_youtube_override, resolve_patch_youtube_metadata, save_patch_youtube_override
+from app.video_config import get_book_video_config
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,7 @@ async def generate_patch_video(
             music = repository.get_music(conn, book.music_id)
             if music and Path(music.file_path).exists():
                 music_path = music.file_path
+        video_config = get_book_video_config(conn, book)
 
     raw_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
     if not raw_bg:
@@ -268,6 +270,9 @@ async def generate_patch_video(
             use_nvenc=settings.use_nvenc,
             music_path=music_path,
             music_volume=book.music_volume,
+            codec=video_config["codec"],
+            quality=video_config["quality"],
+            audio_bitrate=video_config["audio_bitrate"],
         )
     except Exception as exc:
         if _wants_json(request, ajax):

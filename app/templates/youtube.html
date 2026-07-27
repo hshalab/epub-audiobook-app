@@ -320,7 +320,7 @@ async function copyYouTubeCreds() {
             const res = await fetch('/youtube/uploads/bulk-delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ids})
+                body: JSON.stringify(ids)
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Delete failed');

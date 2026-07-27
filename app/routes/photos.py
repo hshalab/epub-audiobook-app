@@ -9,6 +9,7 @@ books that pointed at it.
 from __future__ import annotations
 
 import math
+import json
 import re
 import shutil
 import uuid
@@ -26,7 +27,9 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-_MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
+ALLOWED_MEDIA_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS
+_MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 
 
 def _backgrounds_dir() -> Path:
@@ -62,8 +65,8 @@ def photos_page(request: Request, page: int = Query(default=1, ge=1)):
     per_page = 20
     all_photos = []
     for f in sorted(_backgrounds_dir().iterdir()):
-        if f.is_file() and f.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
-            all_photos.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024)})
+        if f.is_file() and f.suffix.lower() in ALLOWED_MEDIA_EXTENSIONS:
+            all_photos.append({"name": f.name, "size_kb": max(1, f.stat().st_size // 1024), "is_video": f.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS})
     total = len(all_photos)
     total_pages = max(1, math.ceil(total / per_page))
     offset = (page - 1) * per_page
@@ -90,7 +93,7 @@ async def upload_photos(files: list[UploadFile] = File(...)):
     dest_dir = _backgrounds_dir()
     for file in files:
         ext = Path(file.filename or "").suffix.lower()
-        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        if ext not in ALLOWED_MEDIA_EXTENSIONS:
             continue
         base = Path(file.filename or f"photo{ext}").name
         dest = dest_dir / base
@@ -125,6 +128,8 @@ def rename_photo(
             "WHERE background_image_path = ?",
             (str(dest), datetime.now(timezone.utc).isoformat(), str(src)),
         )
+        conn.execute("UPDATE patch SET image_path = ? WHERE image_path = ?", (str(dest), str(src)))
+        _replace_video_background_reference(conn, str(src), str(dest))
         conn.commit()
     return RedirectResponse(url="/photos", status_code=303)
 
@@ -140,6 +145,21 @@ def delete_photo(request: Request, name: str = Form(...)):
             "WHERE background_image_path = ?",
             (datetime.now(timezone.utc).isoformat(), str(p)),
         )
+        conn.execute("UPDATE patch SET image_path = NULL WHERE image_path = ?", (str(p),))
+        _replace_video_background_reference(conn, str(p), None)
         conn.commit()
         p.unlink(missing_ok=True)
     return RedirectResponse(url="/photos", status_code=303)
+
+
+def _replace_video_background_reference(conn, old_path: str, new_path: str | None) -> None:
+    for row in conn.execute("SELECT id, automation_config FROM book WHERE automation_config IS NOT NULL").fetchall():
+        try:
+            config = json.loads(row["automation_config"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        backgrounds = config.get("video", {}).get("backgrounds")
+        if not isinstance(backgrounds, list) or old_path not in backgrounds:
+            continue
+        config["video"]["backgrounds"] = [new_path if path == old_path else path for path in backgrounds if path != old_path or new_path]
+        conn.execute("UPDATE book SET automation_config = ? WHERE id = ?", (json.dumps(config), row["id"]))

@@ -58,6 +58,34 @@ def test_standalone_defaults_no_music():
     assert kwargs["music_volume"] == 0.15
 
 
+def test_segment_uses_nvenc_cq_and_configured_audio_bitrate(tmp_path, monkeypatch):
+    image = tmp_path / "image.jpg"
+    audio = tmp_path / "audio.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class Result:
+            stdout = ""
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr(video_gen.subprocess, "run", fake_run)
+    video_gen.generate_segment(
+        str(image), str(audio), str(tmp_path / "out.mp4"),
+        codec="h264_nvenc", quality=20, audio_bitrate="320k",
+    )
+    cmd = captured["cmd"]
+    assert "h264_nvenc" in cmd
+    assert cmd[cmd.index("-cq") + 1] == "20"
+    assert cmd[cmd.index("-b:a") + 1] == "320k"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+
+
 def test_standalone_adds_greeting_audio(tmp_path):
     with patch.object(video_gen, "generate_segment") as seg, \
          patch.object(video_gen, "concat_segments") as concat:

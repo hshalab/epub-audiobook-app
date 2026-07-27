@@ -148,40 +148,128 @@
         <h3 style="margin:0">Cấu hình video chung</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
-    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+    <p class="vc-help">
         Áp dụng khi render MP4 cho các patch (ảnh nền đã có chữ + audio). Nhạc nền, ảnh nền chung
         và chữ overlay được chỉnh trong <button type="button" class="btn-link" data-open-dialog="studio-modal">Studio</button>.
     </p>
-    <form id="video-config-form" class="form-grid" style="margin-bottom:var(--space-md)">
-        <div class="form-group" style="margin:0">
-            <label for="vc-resolution">Độ phân giải</label>
-            <select id="vc-resolution" name="video_resolution">
-                <option value="1920x1080" {% if book.video_resolution == '1920x1080' %}selected{% endif %}>1920x1080 (Full HD)</option>
-                <option value="1280x720" {% if book.video_resolution == '1280x720' %}selected{% endif %}>1280x720 (HD)</option>
-                <option value="854x480" {% if book.video_resolution == '854x480' %}selected{% endif %}>854x480 (SD)</option>
-            </select>
+    <form id="video-config-form" class="form-grid video-config-grid">
+        <fieldset class="vc-section vc-wide">
+            <legend>Nội dung</legend>
+            <div class="form-group">
+                <label for="vc-voice">Giọng nói tham chiếu</label>
+                <select name="voice_name" id="vc-voice">
+                    <option value="">— Không dùng voice tham chiếu —</option>
+                    {% for v in voices %}<option value="{{ v }}" {% if current_voice_name == v %}selected{% endif %}>{{ v }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="vc-voice-transcript">Transcript voice mẫu</label>
+                <input name="voice_transcript" id="vc-voice-transcript" value="{{ book.voice_transcript or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="vc-music">Nhạc nền</label>
+                <select name="music_id" id="vc-music">
+                    <option value="">— Không dùng —</option>
+                    {% for m in music_list %}<option value="{{ m.id }}" {% if book.music_id == m.id %}selected{% endif %}>{{ m.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="vc-music-volume">Âm lượng nhạc: <span id="vc-music-volume-label">{{ (book.music_volume * 100)|round|int }}%</span></label>
+                <input type="range" name="music_volume" id="vc-music-volume" min="0" max="100" value="{{ (book.music_volume * 100)|round|int }}">
+            </div>
+        </fieldset>
+
+        <fieldset class="vc-section vc-wide">
+            <legend>Background</legend>
+            <div class="form-group vc-wide">
+                <span>Background chung từ Media Library</span>
+                <div id="vc-backgrounds" class="vc-background-grid">
+                    {% for bg in backgrounds %}
+                    <label class="vc-background-option">
+                        <input type="checkbox" class="vc-background-check" value="{{ bg.path }}" {% if bg.path in video_config.backgrounds %}checked{% endif %}>
+                        {% if bg.is_video %}
+                        <video src="/video/backgrounds/preview?path={{ bg.path|urlencode }}" muted loop playsinline preload="metadata" class="vc-background-preview"></video>
+                        {% else %}
+                        <img src="/video/backgrounds/preview?path={{ bg.path|urlencode }}" alt="" class="vc-background-preview">
+                        {% endif %}
+                        <span>{{ bg.name }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="vc-background-mode">Cách đổi background</label>
+                <select id="vc-background-mode">
+                    <option value="sequential" {% if video_config.background_mode == 'sequential' %}selected{% endif %}>Tuần tự</option>
+                    <option value="random" {% if video_config.background_mode == 'random' %}selected{% endif %}>Ngẫu nhiên</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="vc-image-duration">Thời lượng ảnh (giây)</label>
+                <input type="number" id="vc-image-duration" min="1" max="600" value="{{ video_config.image_duration_seconds }}">
+            </div>
+            <div class="form-group">
+                <label for="vc-intro">Âm thanh mở đầu</label>
+                <select id="vc-intro"><option value="">— Không dùng —</option>{% for v in voices %}<option value="{{ v }}" {% if video_config.intro_voice == v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+            </div>
+            <div class="form-group">
+                <label for="vc-outro">Âm thanh kết thúc</label>
+                <select id="vc-outro"><option value="">— Không dùng —</option>{% for v in voices %}<option value="{{ v }}" {% if video_config.outro_voice == v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+            </div>
+        </fieldset>
+
+        <fieldset class="vc-section vc-wide">
+            <legend>Render</legend>
+            <div class="form-group">
+                <label for="vc-resolution">Độ phân giải</label>
+                <select id="vc-resolution" name="video_resolution">
+                    <option value="1920x1080" {% if book.video_resolution == '1920x1080' %}selected{% endif %}>1920x1080 (Full HD)</option>
+                    <option value="1280x720" {% if book.video_resolution == '1280x720' %}selected{% endif %}>1280x720 (HD)</option>
+                    <option value="854x480" {% if book.video_resolution == '854x480' %}selected{% endif %}>854x480 (SD)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="vc-codec">Codec</label>
+                <select id="vc-codec"><option value="libx264" {% if video_config.codec == 'libx264' %}selected{% endif %}>libx264 (CPU)</option><option value="h264_nvenc" {% if video_config.codec == 'h264_nvenc' %}selected{% endif %}>h264_nvenc (NVIDIA)</option></select>
+            </div>
+            <div class="form-group">
+                <label for="vc-bitrate">Audio bitrate</label>
+                <select id="vc-bitrate">{% for b in ['128k','192k','256k','320k'] %}<option value="{{ b }}" {% if video_config.audio_bitrate == b %}selected{% endif %}>{{ b }}</option>{% endfor %}</select>
+            </div>
+            <div class="form-group">
+                <label for="vc-quality">CRF/CQ: <span id="vc-quality-label">{{ video_config.quality }}</span></label>
+                <input type="range" id="vc-quality" min="18" max="28" value="{{ video_config.quality }}">
+            </div>
+            <div class="form-group">
+                <label for="vc-concurrency">Video song song</label>
+                <select id="vc-concurrency">{% for n in [1,2,3,4,6,8] %}<option value="{{ n }}" {% if video_config.concurrency == n %}selected{% endif %}>{{ n }}</option>{% endfor %}</select>
+            </div>
+            <div class="form-group">
+                <label for="vc-fps">FPS</label>
+                <select id="vc-fps" name="video_fps">
+                    <option value="24" {% if book.video_fps == 24 %}selected{% endif %}>24</option>
+                    <option value="30" {% if not book.video_fps or book.video_fps == 30 %}selected{% endif %}>30</option>
+                    <option value="60" {% if book.video_fps == 60 %}selected{% endif %}>60</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="vc-animation">Animation mặc định (ảnh tĩnh)</label>
+                <select id="vc-animation" name="default_image_animation">
+                    <option value="none" {% if book.default_image_animation in (None, '', 'none', 'static') %}selected{% endif %}>Static</option>
+                    <option value="zoom-in" {% if book.default_image_animation == 'zoom-in' %}selected{% endif %}>Zoom In</option>
+                    <option value="zoom-out" {% if book.default_image_animation == 'zoom-out' %}selected{% endif %}>Zoom Out</option>
+                    <option value="pan-left" {% if book.default_image_animation == 'pan-left' %}selected{% endif %}>Pan Left</option>
+                    <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
+                </select>
+            </div>
+            <label class="vc-check"><input type="checkbox" id="vc-crossfade" {% if video_config.crossfade_enabled %}checked{% endif %}> Crossfade</label>
+            <label class="vc-check"><input type="checkbox" id="vc-kenburns" {% if video_config.ken_burns_enabled %}checked{% endif %}> Ken Burns</label>
+            <label class="vc-check"><input type="checkbox" id="vc-progress" {% if video_config.progress_bar_enabled %}checked{% endif %}> Progress bar</label>
+        </fieldset>
+
+        <div class="btn-group vc-wide">
+            <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
         </div>
-        <div class="form-group" style="margin:0">
-            <label for="vc-fps">FPS</label>
-            <select id="vc-fps" name="video_fps">
-                <option value="24" {% if book.video_fps == 24 %}selected{% endif %}>24</option>
-                <option value="30" {% if not book.video_fps or book.video_fps == 30 %}selected{% endif %}>30</option>
-                <option value="60" {% if book.video_fps == 60 %}selected{% endif %}>60</option>
-            </select>
-        </div>
-        <div class="form-group" style="margin:0">
-            <label for="vc-animation">Animation mặc định (ảnh tĩnh)</label>
-            <select id="vc-animation" name="default_image_animation">
-                <option value="none" {% if book.default_image_animation in (None, '', 'none', 'static') %}selected{% endif %}>Static</option>
-                <option value="zoom-in" {% if book.default_image_animation == 'zoom-in' %}selected{% endif %}>Zoom In</option>
-                <option value="zoom-out" {% if book.default_image_animation == 'zoom-out' %}selected{% endif %}>Zoom Out</option>
-                <option value="pan-left" {% if book.default_image_animation == 'pan-left' %}selected{% endif %}>Pan Left</option>
-                <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
-            </select>
-        </div>
-    <div class="btn-group">
-        <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
-    </div>
     </form>
 </dialog>
 
@@ -254,16 +342,6 @@
         <label for="pm-audio-file">Audio kết quả</label>
         <input type="file" id="pm-audio-file" class="patch-audio-file" accept=".wav,.mp3,.ogg,.flac">
         <button type="button" class="btn-primary btn-sm patch-audio-upload-btn">Lưu &amp; Hoàn tất</button>
-    </div>
-    <div class="form-group">
-        <label for="pm-bg-select">Background riêng</label>
-        <select id="pm-bg-select" class="patch-bg-select">
-            <option value="">— Dùng background sách —</option>
-            {% for bg in backgrounds %}
-            <option value="{{ bg.path }}">{{ bg.name }}{% if bg.is_video %} 🎬{% endif %}</option>
-            {% endfor %}
-        </select>
-        <button type="button" class="btn-outline btn-sm patch-bg-save-btn">Lưu nền</button>
     </div>
     <div class="form-group">
         <label for="pm-video-file">MP4 từ Colab / Kaggle</label>
@@ -418,7 +496,7 @@
                     {% endif %}
                      <button type="button" class="btn-outline btn-sm patch-media-btn"
                             data-patch-id="{{ patch.id }}" data-patch-name="{{ patch.name or patch.patch_index }}"
-                             data-patch-status="{{ patch.status }}" data-bg-path="{{ patch.image_path or '' }}">More</button>
+                             data-patch-status="{{ patch.status }}">Media</button>
                      <button type="button" class="btn-outline btn-sm" data-patch-youtube-id="{{ patch.id }}">Publish</button>
                 </td>
             </tr>
@@ -471,6 +549,17 @@
 </div>
 
 <style>
+/* Video config modal */
+.vc-help { margin:0 0 var(--space-md) 0; color:var(--text-muted); font-size:var(--font-size-sm); }
+.video-config-grid { margin-bottom:var(--space-md); }
+.vc-wide { grid-column:1/-1; }
+.vc-section { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:var(--space-sm); margin:0; padding:var(--space-md); border:1px solid var(--border-color); border-radius:var(--border-radius); }
+.vc-section legend { padding:0 var(--space-xs); color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+.vc-background-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:var(--space-sm); }
+.vc-background-option { display:flex; gap:var(--space-xs); align-items:center; padding:var(--space-xs); border:1px solid var(--border-color); border-radius:var(--border-radius); }
+.vc-background-preview { width:64px; height:40px; object-fit:cover; }
+.vc-check { display:flex; align-items:center; gap:var(--space-xs); font-weight:500; }
+
 /* Patch image modal 2-col layout */
 .pi-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-lg); align-items:start; margin-top:var(--space-md); }
 .pi-col-label { margin:0 0 var(--space-xs) 0; font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
@@ -575,7 +664,7 @@
                 </p>
             </div>
 
-            <form id="voice-form" method="post" action="/books/{{ book.id }}/voice-select" class="studio-section">
+            <form id="voice-form" method="post" action="/books/{{ book.id }}/voice-select" class="studio-section" hidden>
                 <h4>Voice tham chiếu (dùng để clone giọng + nghe thử mix)</h4>
                 <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
                     <button type="button" id="mix-play" class="btn-outline btn-sm">&#9654; Nghe thử</button>
@@ -735,7 +824,7 @@
                 </dialog>
             </form>
 
-            <form id="music-form" data-autosave method="post" action="/books/{{ book.id }}/music" class="studio-section">
+             <form id="music-form" data-autosave method="post" action="/books/{{ book.id }}/music" class="studio-section" hidden>
                 <h4>Nhạc nền</h4>
                 <div class="form-group" style="margin:0">
                     <label for="music-select">Chọn nhạc</label>
@@ -2041,32 +2130,6 @@ async function uploadPatchAudio(btn) {
     }
 }
 
-async function savePatchBackground(btn) {
-    const pid = parseInt(btn.dataset.patchId, 10);
-    const modal = document.getElementById('patch-media-modal');
-    const sel = modal.querySelector('.patch-bg-select');
-    if (!sel) return;
-    const origText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Đang lưu…';
-    try {
-        const fd = new FormData();
-        fd.set('background_path', sel.value);
-        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/background`, { method: 'POST', body: fd });
-        if (!res.ok) {
-            let d; try { d = await res.json(); } catch (_) {}
-            throw new Error((d && d.detail) || `HTTP ${res.status}`);
-        }
-        refreshPatchThumb(pid);
-        modal.close();
-        showToast('Đã lưu background patch ' + pid);
-    } catch (e) {
-        showToast('Lưu nền lỗi: ' + (e.message || e), 'error');
-        btn.disabled = false;
-        btn.textContent = origText;
-    }
-}
-
 async function uploadPatchMp4(pid) {
     const modal = document.getElementById('patch-media-modal');
     const input = document.getElementById('pm-video-file');
@@ -2221,19 +2284,15 @@ function openPatchImageModal(pid, name, imageType, patchBgPath) {
     dlg.showModal();
 }
 
-function openPatchMediaModal(pid, name, status, backgroundPath) {
+function openPatchMediaModal(pid, name, status) {
     const modal = document.getElementById('patch-media-modal');
     document.getElementById('pm-title').textContent = name || ('Patch ' + pid);
     document.getElementById('pm-audio-section').hidden = status === 'done';
-    document.getElementById('pm-bg-select').value = backgroundPath || '';
     document.getElementById('pm-audio-file').value = '';
     document.getElementById('pm-video-file').value = '';
     const audioBtn = modal.querySelector('.patch-audio-upload-btn');
-    const bgBtn = modal.querySelector('.patch-bg-save-btn');
     audioBtn.dataset.patchId = pid;
-    bgBtn.dataset.patchId = pid;
     audioBtn.onclick = () => uploadPatchAudio(audioBtn);
-    bgBtn.onclick = () => savePatchBackground(bgBtn);
     document.getElementById('pm-video-upload').onclick = () => uploadPatchMp4(pid);
     modal.showModal();
 }
@@ -2299,7 +2358,7 @@ async function genSelectedImages() {
             const thumb = e.target.closest('.patch-thumb-btn');
             if (thumb) { openPatchImageModal(parseInt(thumb.dataset.patchId, 10), thumb.dataset.patchName, thumb.dataset.imageType, thumb.dataset.bgPath); return; }
             const mediaBtn = e.target.closest('.patch-media-btn');
-            if (mediaBtn) { openPatchMediaModal(parseInt(mediaBtn.dataset.patchId, 10), mediaBtn.dataset.patchName, mediaBtn.dataset.patchStatus, mediaBtn.dataset.bgPath); return; }
+            if (mediaBtn) { openPatchMediaModal(parseInt(mediaBtn.dataset.patchId, 10), mediaBtn.dataset.patchName, mediaBtn.dataset.patchStatus); return; }
             const cell = e.target.closest('.patch-video-cell');
             if (!cell) return;
             const pid = parseInt(cell.dataset.patchId, 10);
@@ -2322,9 +2381,36 @@ async function genSelectedImages() {
         btn.disabled = true; btn.textContent = 'Đang lưu…';
         try {
             const form = document.getElementById('video-config-form');
-            const fd = new FormData(form);
-            const res = await fetch(`/books/${BOOK_ID}/video-settings`, { method: 'POST', body: fd });
-            if (!res.ok) { let d; try { d = await res.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${res.status}`); }
+            const videoFd = new FormData(form);
+            const settingsRes = await fetch(`/books/${BOOK_ID}/video-settings`, { method: 'POST', body: videoFd });
+            if (!settingsRes.ok) { let d; try { d = await settingsRes.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${settingsRes.status}`); }
+            const voiceFd = new FormData();
+            voiceFd.set('voice_name', document.getElementById('vc-voice').value);
+            voiceFd.set('voice_transcript', document.getElementById('vc-voice-transcript').value);
+            const voiceRes = await fetch(`/books/${BOOK_ID}/voice-select`, { method: 'POST', body: voiceFd });
+            if (!voiceRes.ok) throw new Error(`HTTP ${voiceRes.status}`);
+            const musicFd = new FormData();
+            musicFd.set('music_id', document.getElementById('vc-music').value);
+            musicFd.set('music_volume', document.getElementById('vc-music-volume').value);
+            const musicRes = await fetch(`/books/${BOOK_ID}/music`, { method: 'POST', body: musicFd });
+            if (!musicRes.ok) throw new Error(`HTTP ${musicRes.status}`);
+            const videoConfig = {
+                backgrounds: Array.from(document.querySelectorAll('.vc-background-check:checked')).map(input => input.value),
+                background_mode: document.getElementById('vc-background-mode').value,
+                image_duration_seconds: Number(document.getElementById('vc-image-duration').value),
+                intro_voice: document.getElementById('vc-intro').value,
+                outro_voice: document.getElementById('vc-outro').value,
+                codec: document.getElementById('vc-codec').value,
+                audio_bitrate: document.getElementById('vc-bitrate').value,
+                quality: Number(document.getElementById('vc-quality').value),
+                concurrency: Number(document.getElementById('vc-concurrency').value),
+                crossfade_enabled: document.getElementById('vc-crossfade').checked,
+                crossfade_seconds: 1,
+                ken_burns_enabled: document.getElementById('vc-kenburns').checked,
+                progress_bar_enabled: document.getElementById('vc-progress').checked,
+            };
+            const configRes = await fetch(`/books/${BOOK_ID}/video-config`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(videoConfig) });
+            if (!configRes.ok) { let d; try { d = await configRes.json(); } catch (_) {} throw new Error((d && d.detail) || `HTTP ${configRes.status}`); }
             showToast('Đã lưu cấu hình video');
         } catch (e) { showToast('Lưu lỗi: ' + (e.message || e), 'error'); }
         finally { btn.disabled = false; btn.textContent = orig; }

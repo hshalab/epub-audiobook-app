@@ -9,6 +9,15 @@ import pytest
 from app import db, youtube
 
 
+def test_bulk_delete_ui_sends_raw_id_list():
+    template = Path(__file__).parents[1] / "app" / "templates" / "youtube.html"
+    source = template.read_text(encoding="utf-8")
+    request = source[source.index("fetch('/youtube/uploads/bulk-delete'"):]
+    request = request[:request.index("async function bulkRetryFailed")]
+    assert "body: JSON.stringify(ids)" in request
+    assert "body: JSON.stringify({ids})" not in request
+
+
 @pytest.fixture
 def db_conn(tmp_path):
     conn = db.connect(str(tmp_path / "test.db"))
