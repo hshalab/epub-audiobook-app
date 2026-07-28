@@ -7,7 +7,84 @@ import numpy as np
 from app import db
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_youtube_metadata, save_book_youtube_config,
-                                  save_patch_youtube_override, validate_book_youtube_config)
+                                  save_patch_youtube_override, validate_book_youtube_config,
+                                  load_timeline)
+
+
+def test_load_timeline_returns_valid_sidecar(tmp_path):
+    audio = tmp_path / "result.wav"
+    sf.write(audio, np.zeros(40), 1)
+    timeline = {"version": 1, "sample_rate": 1, "total_frames": 40,
+                "chapters": [{"chapter_index": 1, "start_frame": 0, "start_seconds": 0.0, "title": "One"},
+                             {"chapter_index": 2, "start_frame": 10, "start_seconds": 10.0, "title": "Two"},
+                             {"chapter_index": 3, "start_frame": 20, "start_seconds": 20.0, "title": "Three"}]}
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    assert load_timeline(audio) == timeline
+
+
+@pytest.mark.parametrize("chapter_change", [
+    lambda chapters: chapters[1].update(start_frame=5),
+    lambda chapters: chapters[1].pop("chapter_index"),
+])
+def test_load_timeline_rejects_invalid_chapter_order_and_schema(tmp_path, chapter_change):
+    audio = tmp_path / "invalid.wav"
+    sf.write(audio, np.zeros(20), 10)
+    chapters = [
+        {"chapter_index": 1, "title": "One", "start_frame": 0, "start_seconds": 0},
+        {"chapter_index": 2, "title": "Two", "start_frame": 10, "start_seconds": 1},
+    ]
+    chapter_change(chapters)
+    audio.with_suffix(".timeline.json").write_text(json.dumps({
+        "version": 1, "sample_rate": 10, "total_frames": 20, "chapters": chapters,
+    }), encoding="utf-8")
+    assert load_timeline(audio) is None
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_load_timeline_accepts_valid_short_chapter_lists(tmp_path, count):
+    audio = tmp_path / "short-structural.wav"
+    sf.write(audio, np.zeros(20), 10)
+    chapters = [{"chapter_index": i + 1, "title": f"Chapter {i + 1}",
+                 "start_frame": i * 10, "start_seconds": i}
+                for i in range(count)]
+    audio.with_suffix(".timeline.json").write_text(json.dumps({
+        "version": 1, "sample_rate": 10, "total_frames": 20, "chapters": chapters,
+    }), encoding="utf-8")
+    assert load_timeline(audio) is not None
+
+
+def test_load_timeline_accepts_gapped_source_indexes(tmp_path):
+    audio = tmp_path / "gapped.wav"
+    sf.write(audio, np.zeros(20), 10)
+    timeline = {"version": 1, "sample_rate": 10, "total_frames": 20, "chapters": [
+        {"chapter_index": 10, "title": "Ten", "start_frame": 0, "start_seconds": 0},
+        {"chapter_index": 12, "title": "Twelve", "start_frame": 10, "start_seconds": 1},
+    ]}
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    assert load_timeline(audio) == timeline
+
+
+@pytest.mark.parametrize("indexes", [[10, 10], [12, 10]])
+def test_load_timeline_rejects_duplicate_or_regressing_indexes(tmp_path, indexes):
+    audio = tmp_path / "bad-indexes.wav"
+    sf.write(audio, np.zeros(20), 10)
+    timeline = {"version": 1, "sample_rate": 10, "total_frames": 20, "chapters": [
+        {"chapter_index": indexes[0], "title": "One", "start_frame": 0, "start_seconds": 0},
+        {"chapter_index": indexes[1], "title": "Two", "start_frame": 10, "start_seconds": 1},
+    ]}
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    assert load_timeline(audio) is None
+
+
+def test_valid_short_timeline_loads_but_is_not_added_to_description(tmp_path):
+    audio = tmp_path / "short.wav"
+    sf.write(audio, np.zeros(20), 10)
+    timeline = {"version": 1, "sample_rate": 10, "total_frames": 20,
+                 "chapters": [{"chapter_index": 1, "start_frame": 0, "start_seconds": 0.0, "title": "Only"}]}
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    from app.youtube_metadata import load_timeline, resolve_patch_youtube_metadata
+    assert load_timeline(audio) == timeline
+    assert "Only" not in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), {})["description"]
 
 
 def _book():
@@ -28,9 +105,9 @@ def _timeline_audio(tmp_path, *, frames=30 * 10, sample_rate=10, chapters=None):
     sidecar.write_text(json.dumps({"version": 1, "sample_rate": sample_rate,
                                    "total_frames": frames,
                                    "chapters": chapters or [
-                                       {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
-                                       {"start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
-                                       {"start_frame": 200, "start_seconds": 20, "title": "Chapter 2"},
+                                       {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
+                                       {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
+                                       {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Chapter 2"},
                                    ]}))
     return audio
 
@@ -46,9 +123,9 @@ def _write_timeline(audio, **values):
 
 def test_valid_timeline_is_appended_once_with_floor_and_hour_formatting(tmp_path):
     audio = _timeline_audio(tmp_path, frames=72000, sample_rate=10, chapters=[
-        {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
-        {"start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
-        {"start_frame": 36000, "start_seconds": 3600, "title": "Chapter 2"},
+        {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
+        {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
+        {"chapter_index": 3, "start_frame": 36000, "start_seconds": 3600, "title": "Chapter 2"},
     ])
     book = _book()
     patch = _patch(str(audio))
@@ -119,9 +196,9 @@ def test_mismatched_or_invalid_start_seconds_preserves_description(tmp_path, sta
 
 def test_start_seconds_must_match_frame_position_tightly(tmp_path):
     audio = _timeline_audio(tmp_path, chapters=[
-        {"start_frame": 0, "start_seconds": 0.0, "title": "Intro"},
-        {"start_frame": 100, "start_seconds": 10.0, "title": "Chapter 1"},
-        {"start_frame": 200, "start_seconds": 20.0, "title": "Chapter 2"},
+            {"chapter_index": 1, "start_frame": 0, "start_seconds": 0.0, "title": "Intro"},
+            {"chapter_index": 2, "start_frame": 100, "start_seconds": 10.0, "title": "Chapter 1"},
+            {"chapter_index": 3, "start_frame": 200, "start_seconds": 20.0, "title": "Chapter 2"},
     ])
     assert "00:10 Chapter 1" in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"]
 
@@ -138,7 +215,7 @@ def test_timeline_append_is_idempotent_for_exact_existing_block(tmp_path):
 
 
 @pytest.mark.parametrize("chapters,frames,valid", [
-    ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 100, "start_seconds": 10, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 300, True),
+        ([{"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "a"}, {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "b"}, {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "c"}], 300, True),
     ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 99, "start_seconds": 9.9, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 300, False),
     ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 100, "start_seconds": 10, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 299, False),
 ])

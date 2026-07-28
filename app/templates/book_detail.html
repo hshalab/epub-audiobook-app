@@ -185,7 +185,7 @@
                 <span>Background chung từ Media Library</span>
                 <div id="vc-backgrounds" class="vc-background-grid">
                     {% for bg in backgrounds %}
-                    <label class="vc-background-option">
+                    <label class="vc-background-option" data-bg-path="{{ bg.path }}" data-bg-name="{{ bg.name }}">
                         <input type="checkbox" class="vc-background-check" value="{{ bg.path }}" {% if bg.path in video_config.backgrounds %}checked{% endif %}>
                         {% if bg.is_video %}
                         <video src="/video/backgrounds/preview?path={{ bg.path|urlencode }}" muted loop playsinline preload="metadata" class="vc-background-preview"></video>
@@ -193,6 +193,9 @@
                         <img src="/video/backgrounds/preview?path={{ bg.path|urlencode }}" alt="" class="vc-background-preview">
                         {% endif %}
                         <span>{{ bg.name }}</span>
+                        {% if not bg.is_default %}
+                        <button type="button" class="vc-background-del" title="Xóa file media khỏi thư viện">&#128465;</button>
+                        {% endif %}
                     </label>
                     {% endfor %}
                 </div>
@@ -558,6 +561,9 @@
 .vc-background-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:var(--space-sm); }
 .vc-background-option { display:flex; gap:var(--space-xs); align-items:center; padding:var(--space-xs); border:1px solid var(--border-color); border-radius:var(--border-radius); }
 .vc-background-preview { width:64px; height:40px; object-fit:cover; }
+.vc-background-option span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vc-background-del { flex:none; background:none; border:none; cursor:pointer; padding:2px; opacity:.45; font-size:var(--font-size-sm); line-height:1; }
+.vc-background-del:hover { opacity:1; color:var(--color-error, #dc2626); }
 .vc-check { display:flex; align-items:center; gap:var(--space-xs); font-weight:500; }
 
 /* Patch image modal 2-col layout */
@@ -2034,6 +2040,7 @@ function buildVideoCell(cell) {
         html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-preview" title="Xem video">&#9654;</button>`;
         html += `<a class="btn-outline btn-sm pv-icon-btn" href="/books/${BOOK_ID}/patches/${pid}/video?v=${v}" download title="Tải .mp4">&#8681;</a>`;
         html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-gen" title="Tạo lại video">&#8635;</button>`;
+        html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-del" title="Xóa video">&#128465;</button>`;
         if (YOUTUBE_CONFIGURED) html += `<button type="button" class="btn-outline btn-sm pv-yt" title="Upload lên YouTube">YT</button>`;
     } else {
         html += `<button type="button" class="btn-primary btn-sm pv-gen">&#127916; Tạo</button>`;
@@ -2156,6 +2163,25 @@ async function uploadPatchMp4(pid) {
         ACTIVE_TASKS.delete(pid);
         btn.disabled = false;
         btn.textContent = orig;
+    }
+}
+
+async function deletePatchVideo(pid, cell) {
+    if (!confirm(`Xóa video của "${cell.dataset.patchName}"? File MP4 sẽ bị xóa khỏi ổ đĩa.`)) return;
+    const wrap = cell.querySelector('.pv-wrap');
+    if (!wrap) return;
+    const prev = wrap.innerHTML;
+    wrap.innerHTML = '<span class="pv-progress">&#9203; Đang xóa…</span>';
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/video/delete?ajax=1`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        cell.dataset.hasVideo = '0';
+        buildVideoCell(cell);
+        showToast(`Đã xóa video: ${cell.dataset.patchName}`);
+    } catch (e) {
+        wrap.innerHTML = prev;
+        showToast('Xóa video lỗi: ' + (e.message || e), 'error');
     }
 }
 
@@ -2364,6 +2390,7 @@ async function genSelectedImages() {
             const pid = parseInt(cell.dataset.patchId, 10);
             if (e.target.closest('.pv-gen')) { e.preventDefault(); genPatchVideo(pid, cell); }
             else if (e.target.closest('.pv-preview')) { e.preventDefault(); openPatchVideoModal(pid, cell.dataset.patchName); }
+            else if (e.target.closest('.pv-del')) { e.preventDefault(); deletePatchVideo(pid, cell); }
             else if (e.target.closest('.pv-yt')) { e.preventDefault(); uploadPatchYouTube(pid, cell); }
         });
     }
@@ -2373,6 +2400,31 @@ async function genSelectedImages() {
     if (vmodal) vmodal.addEventListener('close', () => {
         const v = document.getElementById('pvm-video');
         if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+    });
+
+    // Video-config: delete a media file straight from the background grid. The
+    // tile is a <label>, so stop the click from toggling its checkbox.
+    document.getElementById('vc-backgrounds')?.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.vc-background-del');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const tile = btn.closest('.vc-background-option');
+        const name = tile.dataset.bgName;
+        if (!confirm(`Xóa "${name}" khỏi thư viện media? File sẽ bị xóa khỏi ổ đĩa và mọi sách/patch đang dùng sẽ bị bỏ chọn.`)) return;
+        btn.disabled = true;
+        try {
+            const fd = new FormData();
+            fd.set('path', tile.dataset.bgPath);
+            const res = await fetch('/video/backgrounds/delete', { method: 'POST', body: fd });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            tile.remove();
+            showToast(`Đã xóa media: ${name}`);
+        } catch (err) {
+            btn.disabled = false;
+            showToast('Xóa media lỗi: ' + (err.message || err), 'error');
+        }
     });
 
     // Video-config: save + keep the batch auto-upload checkbox in sync.

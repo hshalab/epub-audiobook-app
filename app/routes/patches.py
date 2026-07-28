@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import os
+import sys
 import shutil
+import tempfile
 import time
 import uuid
 import zipfile
 import sqlite3
+import soundfile as sf
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -19,7 +26,7 @@ from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
 from app.patch_publishing import enqueue_patch_publish, on_patch_audio_ready, retry_patch_publish
-from app.youtube_metadata import get_patch_youtube_override, resolve_patch_youtube_metadata, save_patch_youtube_override
+from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override
 from app.video_config import get_book_video_config
 
 logger = logging.getLogger(__name__)
@@ -218,6 +225,116 @@ def _wants_json(request: Request, ajax: int) -> bool:
     return bool(ajax) or "application/json" in (request.headers.get("accept") or "")
 
 
+def _safe_batch_path(root: Path, relative: str) -> Path | None:
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _resolve_batch_result(patch_folder: Path, patch_id: int) -> Path | None:
+    root = patch_folder.resolve()
+    for parent in [root, *root.parents]:
+        manifest_path = parent / "batch_manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entry = next((item for item in manifest.get("patches", []) if item.get("patch_id") == patch_id), None)
+            if not entry or not isinstance(entry.get("result_wav"), str):
+                return None
+            result = _safe_batch_path(parent, entry["result_wav"])
+            patch_manifest = _safe_batch_path(parent, str(entry.get("folder", "")) + "/manifest.json")
+            return result if result and patch_manifest and patch_manifest.is_file() else None
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+    return None
+
+
+def _build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_ms: int) -> dict | None:
+    if not chunk_paths or len(chunk_paths) != len(metadata):
+        return None
+    try:
+        infos = [sf.info(str(path)) for path in chunk_paths]
+        rate = infos[0].samplerate
+        keys = {"filename", "chapter_index", "chapter_title", "is_chapter_start"}
+        if any(set(item) != keys or info.samplerate != rate or info.channels != infos[0].channels or item["filename"] != path.name
+               for info, item, path in zip(infos, metadata, chunk_paths)):
+            return None
+        pause = round(rate * pause_ms / 1000)
+        starts, chapters = [], []
+        frame = 0
+        previous_index = None
+        previous_title = None
+        for index, (info, item) in enumerate(zip(infos, metadata)):
+            chapter_index = item["chapter_index"]
+            title = item["chapter_title"]
+            marker = item["is_chapter_start"]
+            if (isinstance(chapter_index, bool) or not isinstance(chapter_index, int) or
+                    (previous_index is not None and chapter_index <= previous_index) or
+                    not isinstance(title, str) or not title.strip() or not isinstance(marker, bool) or
+                    (index == 0 and not marker) or
+                    (index > 0 and marker != (chapter_index != previous_index))):
+                return None
+            previous_index, previous_title = chapter_index, title
+            starts.append(frame)
+            if marker:
+                chapters.append({"chapter_index": chapter_index, "start_frame": frame,
+                                 "start_seconds": frame / rate, "title": title.strip()})
+            frame += info.frames + pause
+        total_frames = frame - pause
+        if any(b - a < rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < rate * 10:
+            return None
+        return {"version": 1, "sample_rate": rate, "total_frames": total_frames, "chapters": chapters}
+    except (OSError, TypeError, ValueError, KeyError, sf.SoundFileError):
+        return None
+
+
+def _atomic_copy(source: Path, target: Path) -> None:
+    shutil.copy2(source, target)
+
+
+def _install_imported_wav(source: Path, audio_path: Path, timeline: dict | None = None) -> None:
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    local_sidecar = audio_path.with_suffix(".timeline.json")
+    temp_wav = audio_path.with_name(f".{audio_path.name}.{uuid.uuid4().hex}.tmp")
+    temp_sidecar = local_sidecar.with_name(f".{local_sidecar.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        sf.info(str(source))
+        _atomic_copy(source, temp_wav)
+        if timeline is None:
+            timeline = load_timeline(source)
+        if timeline is not None:
+            temp_sidecar.write_text(json.dumps(timeline), encoding="utf-8")
+        os.replace(temp_wav, audio_path)
+        if timeline is not None:
+            try:
+                os.replace(temp_sidecar, local_sidecar)
+            except OSError:
+                logger.warning("Timeline persistence failed after local install", exc_info=True)
+                try:
+                    local_sidecar.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Failed to remove stale timeline sidecar %s", local_sidecar, exc_info=True)
+        else:
+            try:
+                local_sidecar.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove stale timeline sidecar %s", local_sidecar, exc_info=True)
+    except Exception:
+        temp_wav.unlink(missing_ok=True)
+        temp_sidecar.unlink(missing_ok=True)
+        raise
+    finally:
+        for path in (temp_wav, temp_sidecar):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("failed to clean import staging path %s", path, exc_info=True)
+
+
 @router.post("/books/{book_id}/patches/{patch_id}/generate-video")
 async def generate_patch_video(
     request: Request, book_id: int, patch_id: int,
@@ -241,18 +358,25 @@ async def generate_patch_video(
                 music_path = music.file_path
         video_config = get_book_video_config(conn, book)
 
-    raw_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    fallback_bg = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
+    raw_bg = video_gen.resolve_configured_patch_image(patch, video_config, fallback_bg or "")
     if not raw_bg:
         raise HTTPException(status_code=400, detail="No background image available")
 
-    if video_gen.is_video_background(raw_bg):
+    shared_backgrounds = [p for p in video_config.get("backgrounds", []) if isinstance(p, str)]
+    use_shared_sequence = len(shared_backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
+    if use_shared_sequence:
+        image = raw_bg
+        image_type = "none"
+    elif video_gen.is_video_background(raw_bg):
         image = raw_bg
         image_type = "none"
     else:
-        image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None) or raw_bg
-        image_type = patch.image_type if patch.image_type and patch.image_type != "static" else "none"
+        image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None, background_path=raw_bg) or raw_bg
+        image_type = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
 
     w, h = (book.video_resolution or "1920x1080").split("x")
+
     resolution = (int(w), int(h))
     fps = book.video_fps or 30
 
@@ -260,20 +384,75 @@ async def generate_patch_video(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = str(out_dir / f"{patch_id}.mp4")
 
+    voices_dir = Path(settings.data_root) / "voices"
+    intro_audio = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
+    outro_audio = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
+    intro_audio = str(intro_audio) if intro_audio and intro_audio.is_file() else None
+    outro_audio = str(outro_audio) if outro_audio and outro_audio.is_file() else None
+
+    def _render_main(target: str) -> None:
+        if use_shared_sequence:
+            video_gen.generate_background_sequence(
+                shared_backgrounds, patch.audio_path, target,
+                resolution=resolution,
+                fps=fps,
+                image_duration=float(video_config.get("image_duration_seconds", 15)),
+                mode=video_config.get("background_mode", "sequential"),
+                seed=f"{book_id}-{patch.id}",
+                start_index=patch.patch_index,
+                music_path=music_path,
+                music_volume=book.music_volume,
+                codec=video_config["codec"],
+                quality=video_config["quality"],
+                audio_bitrate=video_config["audio_bitrate"],
+                crossfade=bool(video_config.get("crossfade_enabled")),
+                crossfade_seconds=float(video_config.get("crossfade_seconds", 1)),
+                ken_burns=bool(video_config.get("ken_burns_enabled")),
+                progress_bar=bool(video_config.get("progress_bar_enabled")),
+            )
+        else:
+            video_gen.generate_segment(
+                image, patch.audio_path, target,
+                image_type=image_type,
+                resolution=resolution,
+                fps=fps,
+                use_nvenc=settings.use_nvenc,
+                music_path=music_path,
+                music_volume=book.music_volume,
+                codec=video_config["codec"],
+                quality=video_config["quality"],
+                audio_bitrate=video_config["audio_bitrate"],
+            )
+
+    def _render() -> None:
+        if not intro_audio and not outro_audio:
+            _render_main(out_path)
+            return
+        with tempfile.TemporaryDirectory(prefix="patch_video_") as tmp:
+            segments: list[str] = []
+            if intro_audio:
+                intro_path = str(Path(tmp) / "intro.mp4")
+                video_gen.generate_segment(
+                    raw_bg, intro_audio, intro_path, image_type="none",
+                    resolution=resolution, fps=fps, codec=video_config["codec"],
+                    quality=video_config["quality"], audio_bitrate=video_config["audio_bitrate"],
+                )
+                segments.append(intro_path)
+            main_path = str(Path(tmp) / "main.mp4")
+            _render_main(main_path)
+            segments.append(main_path)
+            if outro_audio:
+                outro_path = str(Path(tmp) / "outro.mp4")
+                video_gen.generate_segment(
+                    raw_bg, outro_audio, outro_path, image_type="none",
+                    resolution=resolution, fps=fps, codec=video_config["codec"],
+                    quality=video_config["quality"], audio_bitrate=video_config["audio_bitrate"],
+                )
+                segments.append(outro_path)
+            video_gen.concat_segments(segments, out_path)
+
     try:
-        await asyncio.to_thread(
-            video_gen.generate_segment,
-            image, patch.audio_path, out_path,
-            image_type=image_type,
-            resolution=resolution,
-            fps=fps,
-            use_nvenc=settings.use_nvenc,
-            music_path=music_path,
-            music_volume=book.music_volume,
-            codec=video_config["codec"],
-            quality=video_config["quality"],
-            audio_bitrate=video_config["audio_bitrate"],
-        )
+        await asyncio.to_thread(_render)
     except Exception as exc:
         if _wants_json(request, ajax):
             return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
@@ -296,6 +475,50 @@ async def generate_patch_video(
             "video_url": f"/books/{book_id}/patches/{patch_id}/video?v={int(time.time())}",
             "youtube": youtube_status,
         })
+    return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
+
+
+@router.post("/books/{book_id}/patches/{patch_id}/video/delete")
+def delete_patch_video(
+    request: Request, book_id: int, patch_id: int,
+    ajax: int = Query(default=0),
+):
+    """Remove a patch's rendered MP4: the file, its Video Library row, and the
+    publish pipeline's pointer at it. An upload that already reached YouTube is
+    left alone - only the local artefact goes away, so the row keeps its
+    history and the pipeline isn't rewound past the upload."""
+    with locked_conn(request) as conn:
+        patch = repository.get_patch(conn, patch_id)
+        if patch is None or patch.book_id != book_id:
+            raise HTTPException(status_code=404, detail="patch not found")
+
+    video_path = _patch_video_path(book_id, patch_id)
+    with locked_conn(request) as conn:
+        row = conn.execute("SELECT id FROM videos WHERE file_path = ?", (str(video_path),)).fetchone()
+        if row:
+            video_repository.delete_video(conn, row["id"])
+        video_path.unlink(missing_ok=True)
+
+        pipeline = conn.execute(
+            "SELECT upload_status FROM patch_pipeline WHERE patch_id = ?", (patch_id,)
+        ).fetchone()
+        if pipeline:
+            if pipeline["upload_status"] == "done":
+                conn.execute(
+                    "UPDATE patch_pipeline SET video_id = NULL, video_path = NULL, "
+                    "updated_at = ? WHERE patch_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), patch_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE patch_pipeline SET stage = 'video', video_status = 'pending', "
+                    "video_id = NULL, video_path = NULL, updated_at = ? WHERE patch_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), patch_id),
+                )
+            conn.commit()
+
+    if _wants_json(request, ajax):
+        return JSONResponse({"status": "deleted"})
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
 
@@ -614,9 +837,7 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
         if not package_folder.is_dir():
             raise HTTPException(status_code=400, detail="Export folder is unavailable; check Google Drive Desktop or export again")
 
-        text = repository.build_patch_text(conn, patch)
-        max_chars = patch.max_chars or settings.tts_max_chars
-        expected_chunk_count = len(split_into_tts_chunks(text, max_chars=max_chars))
+        expected_chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
 
         chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -624,31 +845,74 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
         (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
 
         try:
-            source_dir = package_folder / "output"
-            if not source_dir.is_dir():
-                source_dir = package_folder
+            batch_root = package_folder
+            while not (batch_root / "batch_manifest.json").is_file() and batch_root != batch_root.parent:
+                batch_root = batch_root.parent
+            manifest_path = batch_root / "batch_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+            entry = next((item for item in (manifest or {}).get("patches", []) if item.get("patch_id") == patch_id), None)
+            result = _resolve_batch_result(package_folder, patch_id)
+            audio_path = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.wav"
+            if result and result.is_file():
+                try:
+                    import soundfile as sf
+                    sf.info(str(result))
+                    _install_imported_wav(result, audio_path)
+                    repository.mark_patch_done(conn, patch_id, str(audio_path))
+                    on_patch_audio_ready(conn, patch_id)
+                    repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=expected_chunk_count)
+                    return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
+                except Exception:
+                    logger.warning("batch result WAV invalid for patch %s; falling back to chunks", patch_id, exc_info=True)
+            patch_folder = _safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
+            chunk_source_dir = patch_folder / "output" if patch_folder else package_folder / "output"
+            if not chunk_source_dir.is_dir():
+                chunk_source_dir = package_folder / "output"
+            if not chunk_source_dir.is_dir():
+                chunk_source_dir = package_folder
 
             imported = 0
+            expected_info = None
             for i in range(expected_chunk_count):
                 name = f"chunk_{i:03d}.wav"
                 local_path = chunk_dir / name
                 if local_path.exists():
+                    info = sf.info(str(local_path))
+                    if expected_info is None:
+                        expected_info = (info.samplerate, info.channels)
+                    elif (info.samplerate, info.channels) != expected_info:
+                        raise ValueError("chunk samplerate/channels mismatch")
                     imported += 1
                     continue
-                source_path = source_dir / name
-                if not source_path.is_file():
+                source_path = _safe_batch_path(batch_root, str(chunk_source_dir.relative_to(batch_root) / name)) if chunk_source_dir.is_relative_to(batch_root) else None
+                if source_path is None or not source_path.is_file():
                     break  # first missing chunk: stop here, contiguous prefix ends
+                info = sf.info(str(source_path))
+                if expected_info is None:
+                    expected_info = (info.samplerate, info.channels)
+                elif (info.samplerate, info.channels) != expected_info:
+                    raise ValueError("chunk samplerate/channels mismatch")
                 shutil.copy2(source_path, local_path)
                 imported += 1
 
             if imported >= expected_chunk_count:
                 book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-                audio_path = str(book_dir / f"{patch_id}.wav")
+                audio_path = Path(book_dir / f"{patch_id}.wav")
                 chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-                audio_merge.concat_wavs(chunk_paths, audio_path)
+                temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.tmp.wav")
+                try:
+                    audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
+                    metadata = None
+                    patch_manifest = (patch_folder or package_folder) / "manifest.json"
+                    if patch_manifest.is_file():
+                        metadata = json.loads(patch_manifest.read_text(encoding="utf-8")).get("chunk_metadata")
+                    timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata or [], 300)
+                    _install_imported_wav(temp_audio, audio_path, timeline)
+                finally:
+                    temp_audio.unlink(missing_ok=True)
                 # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
                 # the local synthesis path in worker.py - not auto-deleted after merge.
-                repository.mark_patch_done(conn, patch_id, audio_path)
+                repository.mark_patch_done(conn, patch_id, str(audio_path))
                 on_patch_audio_ready(conn, patch_id)
                 repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=imported)
             else:
@@ -810,9 +1074,7 @@ async def import_patch_from_upload(
         if patch.status == "processing":
             raise HTTPException(status_code=400, detail="cannot import while the patch is processing")
 
-        text = repository.build_patch_text(conn, patch)
-        max_chars = patch.max_chars or settings.tts_max_chars
-        expected_chunk_count = len(split_into_tts_chunks(text, max_chars=max_chars))
+        expected_chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
 
         chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
         chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -862,10 +1124,15 @@ async def import_patch_from_upload(
 
         if imported >= expected_chunk_count:
             book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-            audio_path = str(book_dir / f"{patch_id}.wav")
+            audio_path = Path(book_dir / f"{patch_id}.wav")
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-            audio_merge.concat_wavs(chunk_paths, audio_path)
-            repository.mark_patch_done(conn, patch_id, audio_path)
+            temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.wav")
+            try:
+                audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
+                _install_imported_wav(temp_audio, audio_path, None)
+            finally:
+                temp_audio.unlink(missing_ok=True)
+            repository.mark_patch_done(conn, patch_id, str(audio_path))
             on_patch_audio_ready(conn, patch_id)
         else:
             repository.update_patch_chunk_progress(conn, patch_id, imported)

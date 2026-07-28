@@ -46,9 +46,9 @@ def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):
     Path(audio.with_suffix(".timeline.json")).write_text(json.dumps({
         "version": 1, "sample_rate": 10, "total_frames": 300,
         "chapters": [
-                {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
-                {"start_frame": 100, "start_seconds": 10, "title": "One"},
-                {"start_frame": 200, "start_seconds": 20, "title": "Two"},
+                    {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Intro"},
+                    {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "One"},
+                    {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Two"},
         ],
     }))
     patch_id = _seed(conn)

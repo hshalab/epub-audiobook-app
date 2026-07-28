@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app import repository
-from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import Book, Patch
 
@@ -94,19 +93,26 @@ def _write_patch_files(
     """Write chunk_NNN.txt files + manifest.json + background image for one patch into
     dest_dir and return the manifest dict. overlay_image_path is the pre-rendered
     background image (text already baked in by Pillow); falls back to raw background."""
-    text = repository.build_patch_text(conn, patch)
-    max_chars = patch.max_chars or settings.tts_max_chars
-    chunks = split_into_tts_chunks(text, max_chars=max_chars)
-    if not chunks:
+    plan = repository.build_patch_chunk_plan(conn, patch)
+    if not plan:
         raise ValueError(f"patch {patch.id} has no text to export")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     chunk_filenames = []
-    for i, chunk_text in enumerate(chunks):
+    chunk_metadata = []
+    for i, item in enumerate(plan):
         filename = f"chunk_{i:03d}.txt"
-        (dest_dir / filename).write_text(chunk_text, encoding="utf-8")
+        (dest_dir / filename).write_text(item["text"], encoding="utf-8")
         chunk_filenames.append(filename)
+        chunk_metadata.append(
+            {
+                "filename": filename,
+                "chapter_index": item["chapter_index"],
+                "chapter_title": item["chapter_title"],
+                "is_chapter_start": item["is_chapter_start"],
+            }
+        )
 
     bg_filename: str | None = None
     bg_source = overlay_image_path
@@ -128,13 +134,14 @@ def _write_patch_files(
         "patch_name": patch.name or str(patch.patch_index),
         "chapter_start": patch.chapter_start,
         "chapter_end": patch.chapter_end,
-        "max_chars": max_chars,
-        "chunk_count": len(chunks),
+        "max_chars": patch.max_chars or settings.tts_max_chars,
+        "chunk_count": len(plan),
         "chunks": chunk_filenames,
+        "chunk_metadata": chunk_metadata,
         "reference_wav": reference_rel,
         "reference_transcript": book.voice_transcript or None,
         "voxcpm_model_id": "openbmb/VoxCPM2",
-        "expected_outputs": [f"chunk_{i:03d}.wav" for i in range(len(chunks))],
+        "expected_outputs": [f"chunk_{i:03d}.wav" for i in range(len(plan))],
         "background_image": bg_filename,
     }
     (dest_dir / "manifest.json").write_text(

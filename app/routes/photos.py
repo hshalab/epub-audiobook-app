@@ -9,17 +9,16 @@ books that pointed at it.
 from __future__ import annotations
 
 import math
-import json
 import re
 import shutil
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app import media_library
 from app.config import settings
 from app.deps import locked_conn
 
@@ -123,13 +122,7 @@ def rename_photo(
     # then repoint every book that referenced the old file.
     with locked_conn(request) as conn:
         src.rename(dest)
-        conn.execute(
-            "UPDATE book SET background_image_path = ?, updated_at = ? "
-            "WHERE background_image_path = ?",
-            (str(dest), datetime.now(timezone.utc).isoformat(), str(src)),
-        )
-        conn.execute("UPDATE patch SET image_path = ? WHERE image_path = ?", (str(dest), str(src)))
-        _replace_video_background_reference(conn, str(src), str(dest))
+        media_library.replace_background_reference(conn, str(src), str(dest))
         conn.commit()
     return RedirectResponse(url="/photos", status_code=303)
 
@@ -140,26 +133,5 @@ def delete_photo(request: Request, name: str = Form(...)):
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
     with locked_conn(request) as conn:
-        conn.execute(
-            "UPDATE book SET background_image_path = NULL, updated_at = ? "
-            "WHERE background_image_path = ?",
-            (datetime.now(timezone.utc).isoformat(), str(p)),
-        )
-        conn.execute("UPDATE patch SET image_path = NULL WHERE image_path = ?", (str(p),))
-        _replace_video_background_reference(conn, str(p), None)
-        conn.commit()
-        p.unlink(missing_ok=True)
+        media_library.delete_background(conn, p)
     return RedirectResponse(url="/photos", status_code=303)
-
-
-def _replace_video_background_reference(conn, old_path: str, new_path: str | None) -> None:
-    for row in conn.execute("SELECT id, automation_config FROM book WHERE automation_config IS NOT NULL").fetchall():
-        try:
-            config = json.loads(row["automation_config"] or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        backgrounds = config.get("video", {}).get("backgrounds")
-        if not isinstance(backgrounds, list) or old_path not in backgrounds:
-            continue
-        config["video"]["backgrounds"] = [new_path if path == old_path else path for path in backgrounds if path != old_path or new_path]
-        conn.execute("UPDATE book SET automation_config = ? WHERE id = ?", (json.dumps(config), row["id"]))

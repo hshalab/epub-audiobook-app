@@ -1,12 +1,17 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 import pytest
+import soundfile as sf
+import numpy as np
 from fastapi.testclient import TestClient
 
 from app import db, drive_export, repository
 from app.config import settings
 from app.main import app
+from app.routes.patches import (_build_import_timeline, _install_imported_wav,
+                                _resolve_batch_result)
 
 
 NOW = datetime.now(timezone.utc).isoformat()
@@ -389,3 +394,278 @@ def test_import_partial_prefix(tmp_path):
     assert export.local_folder_path == str(source)
     assert (output / "chunk_000.wav").exists()
     conn.close()
+
+
+def _wav(path, frames, rate=100):
+    sf.write(path, np.zeros(frames), rate)
+
+
+def test_batch_result_resolver_prefers_safe_result_and_patch_manifest(tmp_path):
+    root = tmp_path / "batch"
+    result = root / "result"
+    patch_dir = root / "patches" / "patch_000"
+    result.mkdir(parents=True)
+    patch_dir.mkdir(parents=True)
+    target = result / "001 - result.wav"
+    target.write_bytes(b"wav")
+    (patch_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (root / "batch_manifest.json").write_text(json.dumps({"patches": [{
+        "patch_id": 7, "folder": "patches/patch_000", "result_wav": "result/001 - result.wav"
+    }]}), encoding="utf-8")
+    assert _resolve_batch_result(root / "patches" / "patch_000", 7) == target
+    assert _resolve_batch_result(root / "patches" / "patch_000", 8) is None
+
+
+def test_import_fallback_uses_patch_manifest_and_output_chunks(client_with_target, tmp_path):
+    c, book_id, patch_id, _, _ = client_with_target
+    root = tmp_path / "batch"
+    patch_folder = root / "patches" / f"patch_{patch_id:03d}"
+    output = patch_folder / "output"
+    output.mkdir(parents=True)
+    (root / "batch_manifest.json").write_text(json.dumps({"patches": [{
+        "patch_id": patch_id, "folder": f"patches/patch_{patch_id:03d}",
+        "result_wav": f"result/{patch_id}.wav",
+    }]}), encoding="utf-8")
+    (patch_folder / "manifest.json").write_text(json.dumps({"chunk_metadata": [
+        {"filename": "chunk_000.wav", "chapter_index": 1, "chapter_title": "One", "is_chapter_start": True},
+    ]}), encoding="utf-8")
+    chunk = output / "chunk_000.wav"
+    _wav(chunk, 1200, 100)
+    result = root / "result"
+    result.mkdir()
+    (result / f"{patch_id}.wav").write_bytes(b"bad")
+    from app import repository
+    with db.connect(str(Path(settings.data_root) / "app.db")) as conn:
+        export = repository.create_patch_export(conn, patch_id, str(root), str(root), 3,
+                                                local_folder_path=str(root))
+    response = c.post(f"/books/{book_id}/patches/{patch_id}/import", follow_redirects=False)
+    assert response.status_code == 303
+    canonical = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.timeline.json"
+    assert json.loads(canonical.read_text(encoding="utf-8"))["chapters"][0]["title"] == "One"
+
+
+def test_atomic_install_failure_preserves_existing_pair(tmp_path, monkeypatch):
+    source = tmp_path / "source.wav"
+    target = tmp_path / "canonical.wav"
+    _wav(source, 20)
+    target.write_bytes(b"old wav")
+    target.with_suffix(".timeline.json").write_text("old sidecar", encoding="utf-8")
+    import app.routes.patches as routes
+    monkeypatch.setattr(routes, "_atomic_copy", lambda *_: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        _install_imported_wav(source, target)
+    assert target.read_bytes() == b"old wav"
+    assert target.with_suffix(".timeline.json").read_text(encoding="utf-8") == "old sidecar"
+
+
+def test_valid_result_install_copies_canonical_pair(tmp_path):
+    source = tmp_path / "result.wav"
+    target = tmp_path / "canonical.wav"
+    _wav(source, 3000, 100)
+    timeline = {"version": 1, "sample_rate": 100, "total_frames": 3000,
+                "chapters": [{"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "One"},
+                             {"chapter_index": 2, "start_frame": 1000, "start_seconds": 10, "title": "Two"},
+                             {"chapter_index": 3, "start_frame": 2000, "start_seconds": 20, "title": "Three"}]}
+    source.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    _install_imported_wav(source, target)
+    assert target.read_bytes() == source.read_bytes()
+    assert json.loads(target.with_suffix(".timeline.json").read_text()) == timeline
+
+
+def test_corrupt_result_does_not_replace_old_media(tmp_path):
+    source = tmp_path / "corrupt.wav"
+    target = tmp_path / "canonical.wav"
+    source.write_bytes(b"not wav")
+    target.write_bytes(b"old wav")
+    target.with_suffix(".timeline.json").write_text("old", encoding="utf-8")
+    with pytest.raises(Exception):
+        sf.info(str(source))
+    assert target.read_bytes() == b"old wav"
+    assert target.with_suffix(".timeline.json").read_text(encoding="utf-8") == "old"
+
+
+def test_sidecar_replace_failure_keeps_new_wav_and_removes_stale_sidecar(tmp_path, monkeypatch):
+    source = tmp_path / "result.wav"
+    target = tmp_path / "canonical.wav"
+    _wav(source, 3000, 100)
+    timeline = {"version": 1, "sample_rate": 100, "total_frames": 3000,
+                "chapters": [{"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "One"},
+                             {"chapter_index": 2, "start_frame": 1000, "start_seconds": 10, "title": "Two"},
+                             {"chapter_index": 3, "start_frame": 2000, "start_seconds": 20, "title": "Three"}]}
+    source.with_suffix(".timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
+    target.write_bytes(b"old wav")
+    target.with_suffix(".timeline.json").write_bytes(b"old sidecar")
+    import app.routes.patches as routes
+    import os
+    original = os.replace
+    calls = {"n": 0}
+    def fail_second(source_name, destination):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("replace failed")
+        return original(source_name, destination)
+    monkeypatch.setattr(os, "replace", fail_second)
+    routes._install_imported_wav(source, target)
+    assert target.read_bytes() == source.read_bytes()
+    assert not target.with_suffix(".timeline.json").exists()
+
+
+@pytest.mark.parametrize("bad", [
+    {"filename": "chunk_000.wav", "chapter_index": True, "chapter_title": "One", "is_chapter_start": True},
+    {"filename": "chunk_000.wav", "chapter_index": 2, "chapter_title": "One", "is_chapter_start": True},
+    {"filename": "chunk_000.wav", "chapter_index": 1, "chapter_title": "", "is_chapter_start": True},
+])
+def test_chunk_metadata_rejects_exact_schema_errors(tmp_path, bad):
+    paths = []
+    for index in range(3):
+        path = tmp_path / f"chunk_{index:03d}.wav"
+        _wav(path, 1000, 100)
+        paths.append(path)
+    metadata = [dict(bad), {"filename": "chunk_001.wav", "chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
+                {"filename": "chunk_002.wav", "chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
+    assert _build_import_timeline(paths, metadata, 300) is None
+
+
+def test_corrupt_existing_chunk_is_rejected(tmp_path):
+    paths = []
+    for index in range(3):
+        path = tmp_path / f"chunk_{index:03d}.wav"
+        path.write_bytes(b"bad") if index == 1 else _wav(path, 1000, 100)
+        paths.append(path)
+    metadata = [{"filename": path.name, "chapter_index": index, "chapter_title": str(index), "is_chapter_start": True}
+                for index, path in enumerate(paths)]
+    assert _build_import_timeline(paths, metadata, 300) is None
+
+
+
+
+def test_chunk_metadata_builds_timeline_with_pause(tmp_path):
+    first, second = tmp_path / "chunk_000.wav", tmp_path / "chunk_001.wav"
+    _wav(first, 1000, 100)
+    _wav(second, 2000, 100)
+    third = tmp_path / "chunk_002.wav"
+    _wav(third, 2000, 100)
+    metadata = [{"filename": first.name, "chapter_index": 1, "chapter_title": "One", "is_chapter_start": True},
+                {"filename": second.name, "chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
+                {"filename": third.name, "chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
+    timeline = _build_import_timeline([first, second, third], metadata, pause_ms=300)
+    assert timeline["version"] == 1
+    assert timeline["sample_rate"] == 100
+    assert timeline["total_frames"] == 5060
+    assert [c["start_frame"] for c in timeline["chapters"]] == [0, 1030, 3060]
+    assert [c["chapter_index"] for c in timeline["chapters"]] == [1, 2, 3]
+
+
+def test_import_timeline_preserves_noncontiguous_source_chapter_indexes(tmp_path):
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"chunk_{index:03d}.wav"
+        _wav(path, 1000, 100)
+        paths.append(path)
+    metadata = [
+        {"filename": paths[0].name, "chapter_index": 10, "chapter_title": "Ten", "is_chapter_start": True},
+        {"filename": paths[1].name, "chapter_index": 12, "chapter_title": "Twelve", "is_chapter_start": True},
+    ]
+    timeline = _build_import_timeline(paths, metadata, pause_ms=300)
+    assert [c["chapter_index"] for c in timeline["chapters"]] == [10, 12]
+
+
+@pytest.mark.parametrize("indexes", [[10, 10], [12, 10]])
+def test_import_timeline_rejects_duplicate_or_regressing_chapter_indexes(tmp_path, indexes):
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"chunk_{index:03d}.wav"
+        _wav(path, 1000, 100)
+        paths.append(path)
+    metadata = [{"filename": path.name, "chapter_index": indexes[index],
+                 "chapter_title": str(index), "is_chapter_start": True}
+                for index, path in enumerate(paths)]
+    assert _build_import_timeline(paths, metadata, pause_ms=300) is None
+
+
+def test_sidecar_cleanup_refusal_does_not_fail_import(tmp_path, monkeypatch):
+    source = tmp_path / "source.wav"
+    target = tmp_path / "canonical.wav"
+    _wav(source, 1000, 100)
+    stale = target.with_suffix(".timeline.json")
+    stale.write_text("stale", encoding="utf-8")
+    import app.routes.patches as routes
+    original_unlink = Path.unlink
+    def refuse(path, *args, **kwargs):
+        if path == stale:
+            raise OSError("refused")
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", refuse)
+    routes._install_imported_wav(source, target)
+    assert target.read_bytes() == source.read_bytes()
+
+
+def test_invalid_chunk_metadata_disables_timeline(tmp_path):
+    chunk = tmp_path / "chunk_000.wav"
+    _wav(chunk, 100, 100)
+    assert _build_import_timeline([chunk], [{"filename": "wrong.wav"}], pause_ms=300) is None
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_chunk_metadata_builds_timeline_for_short_imports(tmp_path, count):
+    paths = []
+    metadata = []
+    for index in range(count):
+        path = tmp_path / f"chunk_{index:03d}.wav"
+        _wav(path, 1000, 100)
+        paths.append(path)
+        metadata.append({"filename": path.name, "chapter_index": index + 1,
+                         "chapter_title": f"Chapter {index + 1}", "is_chapter_start": True})
+    assert _build_import_timeline(paths, metadata, pause_ms=300) is not None
+
+
+def test_import_local_merge_removes_stale_timeline(client_with_target, tmp_path):
+    c, book_id, patch_id, _, _ = client_with_target
+    chunk = tmp_path / "chunk_000.wav"
+    _wav(chunk, 1000, 100)
+    audio_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    (audio_dir / f"{patch_id}.timeline.json").write_text("stale", encoding="utf-8")
+    response = c.post(f"/books/{book_id}/patches/{patch_id}/import-local", files={
+        "files": ("chunk_000.wav", chunk.read_bytes(), "audio/wav")
+    })
+    assert response.status_code == 200
+    assert not (audio_dir / f"{patch_id}.timeline.json").exists()
+
+
+def test_import_local_merge_failure_preserves_old_pair(client_with_target, tmp_path, monkeypatch):
+    c, book_id, patch_id, _, _ = client_with_target
+    chunk = tmp_path / "chunk_000.wav"
+    _wav(chunk, 1000, 100)
+    audio_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    canonical = audio_dir / f"{patch_id}.wav"
+    sidecar = canonical.with_suffix(".timeline.json")
+    canonical.write_bytes(b"old wav")
+    sidecar.write_bytes(b"old sidecar")
+    import app.routes.patches as routes
+    monkeypatch.setattr(routes.audio_merge, "concat_wavs", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("merge failed")))
+    with pytest.raises(OSError, match="merge failed"):
+        c.post(f"/books/{book_id}/patches/{patch_id}/import-local", files={
+            "files": ("chunk_000.wav", chunk.read_bytes(), "audio/wav")
+        })
+    assert canonical.read_bytes() == b"old wav"
+    assert sidecar.read_bytes() == b"old sidecar"
+
+
+def test_installer_original_error_survives_cleanup_and_restore_errors(tmp_path, monkeypatch):
+    source = tmp_path / "source.wav"
+    target = tmp_path / "canonical.wav"
+    _wav(source, 3000, 100)
+    target.write_bytes(b"old wav")
+    target.with_suffix(".timeline.json").write_bytes(b"old sidecar")
+    import app.routes.patches as routes
+    monkeypatch.setattr(routes, "_atomic_copy", lambda *args: (_ for _ in ()).throw(OSError("original install")))
+    original_replace = routes.os.replace
+    def bad_restore(source_name, destination):
+        if str(source_name).endswith(".bak"):
+            raise OSError("restore failed")
+        return original_replace(source_name, destination)
+    monkeypatch.setattr(routes.os, "replace", bad_restore)
+    with pytest.raises(OSError, match="original install"):
+        routes._install_imported_wav(source, target)

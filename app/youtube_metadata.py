@@ -15,6 +15,43 @@ OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status
 DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
 
 
+def load_timeline(audio_path) -> dict | None:
+    """Load a version-1 timeline whose exact frame metadata matches its WAV."""
+    try:
+        info = sf.info(str(audio_path))
+        timeline = json.loads(Path(audio_path).with_suffix(".timeline.json").read_text(encoding="utf-8"))
+        if not isinstance(timeline, dict) or timeline.get("version") != 1:
+            return None
+        rate, frames = timeline["sample_rate"], timeline["total_frames"]
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0 or rate != info.samplerate:
+            return None
+        if isinstance(frames, bool) or not isinstance(frames, int) or frames < 0 or frames != info.frames:
+            return None
+        chapters = timeline["chapters"]
+        if not isinstance(chapters, list) or not chapters:
+            return None
+        starts = []
+        for index, chapter in enumerate(chapters):
+            if set(chapter) != {"chapter_index", "title", "start_frame", "start_seconds"}:
+                return None
+            chapter_index = chapter["chapter_index"]
+            start, seconds, title = chapter["start_frame"], chapter["start_seconds"], chapter["title"]
+            if (isinstance(chapter_index, bool) or not isinstance(chapter_index, int) or
+                    (index and chapter_index <= chapters[index - 1]["chapter_index"])):
+                return None
+            if (isinstance(start, bool) or not isinstance(start, int) or not 0 <= start <= frames or
+                    isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or
+                    not math.isclose(seconds, start / rate, rel_tol=0, abs_tol=1e-9) or
+                    not isinstance(title, str) or not title.strip()):
+                return None
+            starts.append(start)
+        if starts[0] != 0 or any(b <= a for a, b in zip(starts, starts[1:])):
+            return None
+        return timeline
+    except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
+        return None
+
+
 def split_tags(value: str) -> list[str]:
     return list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
 
@@ -119,37 +156,21 @@ def _timeline_description(patch) -> str:
     if not audio_path:
         return ""
     try:
-        info = sf.info(audio_path)
-        timeline_path = Path(audio_path).with_suffix(".timeline.json")
-        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
-        if not isinstance(timeline, dict) or timeline.get("version") != 1:
+        timeline = load_timeline(audio_path)
+        if timeline is None:
             return ""
         sample_rate = timeline["sample_rate"]
         total_frames = timeline["total_frames"]
-        if (isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0 or sample_rate != info.samplerate or
-                isinstance(total_frames, bool) or not isinstance(total_frames, int) or total_frames < 0 or total_frames != info.frames):
-            return ""
         chapters = timeline["chapters"]
-        if not isinstance(chapters, list) or len(chapters) < 3:
-            return ""
         starts = []
         titles = []
         for chapter in chapters:
-            if not isinstance(chapter, dict):
-                return ""
             start = chapter["start_frame"]
             start_seconds = chapter["start_seconds"]
             title = chapter["title"]
-            if (isinstance(start, bool) or not isinstance(start, int) or start < 0 or start > total_frames or
-                    isinstance(start_seconds, bool) or not isinstance(start_seconds, (int, float)) or
-                    not math.isfinite(start_seconds) or not math.isclose(start_seconds, start / sample_rate, rel_tol=0, abs_tol=1e-9) or
-                    not isinstance(title, str) or not title.strip()):
-                return ""
             starts.append(start)
             titles.append(title.strip())
-        if starts[0] != 0 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])):
-            return ""
-        if total_frames - starts[-1] < sample_rate * 10:
+        if len(starts) < 3 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])) or total_frames - starts[-1] < sample_rate * 10:
             return ""
 
         def format_time(frame):

@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Reque
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app import image_overlay, repository, video_gen
+from app import image_overlay, media_library, repository, video_gen
 from app.config import settings
 from app.deps import locked_conn
 
@@ -762,6 +762,21 @@ async def upload_background(request: Request, file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, out)
 
     return JSONResponse({"name": safe_name, "path": str(dest)})
+
+
+@router.post("/video/backgrounds/delete")
+def delete_background(request: Request, path: str = Form(...)):
+    """Delete a media file from the library by absolute path, the way the video
+    config modal addresses backgrounds. Books and patches pointing at it are
+    cleared first so nothing renders against a missing file."""
+    resolved = _safe_background_path(path)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy file media")
+    if resolved == Path(settings.default_background_image).resolve():
+        raise HTTPException(status_code=400, detail="Không thể xóa background mặc định")
+    with locked_conn(request) as conn:
+        media_library.delete_background(conn, resolved)
+    return JSONResponse({"status": "deleted", "name": resolved.name})
 
 
 # ---------------------------------------------------------------------------

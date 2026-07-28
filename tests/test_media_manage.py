@@ -15,12 +15,14 @@ from app.main import app
 def client(tmp_path, monkeypatch):
     from app.config import settings
     from app.routes import music as music_routes
+    from app.routes import video as video_routes
 
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    # _MUSIC_DIR is a module-level constant computed from the real settings at
-    # import time - repoint it so uploads land in the test dir.
+    # _MUSIC_DIR / _BACKGROUNDS_DIR are module-level constants computed from the
+    # real settings at import time - repoint them so uploads land in the test dir.
     monkeypatch.setattr(music_routes, "_MUSIC_DIR", tmp_path / "music")
+    monkeypatch.setattr(video_routes, "_BACKGROUNDS_DIR", tmp_path / "backgrounds")
     with TestClient(app) as c:
         yield c
 
@@ -217,6 +219,61 @@ def test_media_delete_clears_patch_and_removes_video_config_reference(client):
     patch = db.execute("SELECT image_path FROM patch WHERE book_id=1").fetchone()
     assert patch["image_path"] is None
     assert json.loads(row["automation_config"])["video"]["backgrounds"] == [str(keep)]
+
+
+# ---------------------------------------------------------------------------
+# Deleting a background straight from the video config modal (by absolute path)
+# ---------------------------------------------------------------------------
+
+
+def test_background_delete_by_path_removes_file_and_references(client):
+    target = _seed_photo(client, "drop.png")
+    keep = _seed_photo(client, "stay.png")
+    db = _db(client)
+    now = "2026-01-01T00:00:00+00:00"
+    db.execute(
+        "INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,"
+        "background_image_path,automation_config,created_at,updated_at) "
+        "VALUES (1,'b','b.epub','b.epub',10,'ready',?,?,?,?)",
+        (str(target), json.dumps({"video": {"backgrounds": [str(target), str(keep)]}}), now, now),
+    )
+    db.execute(
+        "INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,image_path,created_at,updated_at) "
+        "VALUES (1,0,0,1,?,?,?)",
+        (str(target), now, now),
+    )
+    db.commit()
+
+    resp = client.post("/video/backgrounds/delete", data={"path": str(target)})
+    book = db.execute("SELECT background_image_path, automation_config FROM book WHERE id=1").fetchone()
+    patch = db.execute("SELECT image_path FROM patch WHERE book_id=1").fetchone()
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+    assert not target.exists()
+    assert keep.exists()
+    assert book["background_image_path"] is None
+    assert patch["image_path"] is None
+    assert json.loads(book["automation_config"])["video"]["backgrounds"] == [str(keep)]
+    db.close()
+
+
+def test_background_delete_rejects_path_outside_library(client, tmp_path):
+    outsider = tmp_path / "private.png"
+    outsider.write_bytes(b"secret")
+    resp = client.post("/video/backgrounds/delete", data={"path": str(outsider)})
+    assert resp.status_code == 404
+    assert outsider.exists()
+
+
+def test_background_delete_refuses_default_background(client, monkeypatch):
+    from app.config import settings
+
+    default = _seed_photo(client, "default.png")
+    monkeypatch.setattr(settings, "default_background_image", str(default))
+    resp = client.post("/video/backgrounds/delete", data={"path": str(default)})
+    assert resp.status_code == 400
+    assert default.exists()
 
 
 # ---------------------------------------------------------------------------
