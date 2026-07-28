@@ -367,8 +367,8 @@ def book_status(request: Request, book_id: int):
                 "stage": row["stage"],
                 "thumbnail_status": row["thumbnail_status"],
                 "video_status": row["video_status"],
-                "upload_status": row.get("upload_status"),
-                "playlist_status": row.get("playlist_status"),
+                "upload_status": row["upload_status"],
+                "playlist_status": row["playlist_status"],
                 "thumbnail_path": row["thumbnail_path"],
                 "youtube_upload_id": row["youtube_upload_id"],
             }

@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 import pytest
+import soundfile as sf
+import numpy as np
 
 from app import db
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
@@ -15,8 +17,135 @@ def _book():
     }}))
 
 
-def _patch():
-    return SimpleNamespace(name="Mua", chapter_start=1, chapter_end=8, patch_index=3)
+def _patch(audio_path=None):
+    return SimpleNamespace(name="Mua", chapter_start=1, chapter_end=8, patch_index=3, audio_path=audio_path)
+
+
+def _timeline_audio(tmp_path, *, frames=30 * 10, sample_rate=10, chapters=None):
+    audio = tmp_path / "episode.wav"
+    sf.write(audio, np.zeros(frames), sample_rate)
+    sidecar = audio.with_suffix(".timeline.json")
+    sidecar.write_text(json.dumps({"version": 1, "sample_rate": sample_rate,
+                                   "total_frames": frames,
+                                   "chapters": chapters or [
+                                       {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
+                                       {"start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
+                                       {"start_frame": 200, "start_seconds": 20, "title": "Chapter 2"},
+                                   ]}))
+    return audio
+
+
+def _write_timeline(audio, **values):
+    timeline = {"version": 1, "sample_rate": 10, "total_frames": 300,
+                "chapters": [{"start_frame": 0, "title": "Intro"},
+                              {"start_frame": 100, "title": "One"},
+                              {"start_frame": 200, "title": "Two"}]}
+    timeline.update(values)
+    audio.with_suffix(".timeline.json").write_text(json.dumps(timeline))
+
+
+def test_valid_timeline_is_appended_once_with_floor_and_hour_formatting(tmp_path):
+    audio = _timeline_audio(tmp_path, frames=72000, sample_rate=10, chapters=[
+        {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
+        {"start_frame": 100, "start_seconds": 10, "title": "Chapter 1"},
+        {"start_frame": 36000, "start_seconds": 3600, "title": "Chapter 2"},
+    ])
+    book = _book()
+    patch = _patch(str(audio))
+    result = resolve_patch_youtube_metadata(book, patch, None)
+    assert result["description"] == "book description\n\n00:00 Intro\n00:10 Chapter 1\n1:00:00 Chapter 2"
+    assert result["description"].count("Intro") == 1
+
+
+@pytest.mark.parametrize("chapters", [
+    [{"start_frame": 0, "title": "a"}, {"start_frame": 100, "title": "b"}],
+    [{"start_frame": 1, "title": "a"}, {"start_frame": 101, "title": "b"}, {"start_frame": 201, "title": "c"}],
+    [{"start_frame": 0, "title": "a"}, {"start_frame": 99, "title": "b"}, {"start_frame": 200, "title": "c"}],
+    [{"start_frame": 0, "title": "a"}, {"start_frame": 100, "title": "b"}, {"start_frame": 250, "title": "c"}],
+    [{"start_frame": 0, "title": " "}, {"start_frame": 100, "title": "b"}, {"start_frame": 200, "title": "c"}],
+    [{"start_frame": 0, "title": "a"}, {"start_frame": 100, "title": "b"}, {"start_frame": 100, "title": "c"}],
+])
+def test_invalid_timeline_preserves_description(tmp_path, chapters):
+    audio = _timeline_audio(tmp_path, chapters=chapters)
+    result = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)
+    assert result["description"] == "book description"
+
+
+def test_missing_or_stale_timeline_preserves_description(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    audio.with_suffix(".timeline.json").unlink()
+    assert resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"] == "book description"
+
+
+def test_invalid_utf8_timeline_preserves_description(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    audio.with_suffix(".timeline.json").write_bytes(b"{\xff")
+    assert resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"] == "book description"
+
+
+def test_existing_timeline_after_prose_and_blank_line_is_unchanged(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    _write_timeline(audio, chapters=[{"start_frame": 0, "title": "Intro"},
+                                     {"start_frame": 100, "title": "One"},
+                                     {"start_frame": 200, "title": "Two"}])
+    block = "00:00 Intro\n00:10 One\n00:20 Two"
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {"description": f"Prose\n\n{block}"}})
+    description = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)["description"]
+    assert description == f"Prose\n\n{block}"
+    assert description.count("00:00 Intro") == 1
+
+
+@pytest.mark.parametrize("values", [
+    {"sample_rate": 0}, {"sample_rate": 11}, {"total_frames": 299},
+    {"sample_rate": True}, {"total_frames": False}, {"total_frames": 301},
+    {"chapters": [{"start_frame": 0, "title": "a"}, {"start_frame": 100, "title": "b"}, {"start_frame": 301, "title": "c"}]},
+])
+def test_invalid_timeline_numbers_preserve_description(tmp_path, values):
+    audio = _timeline_audio(tmp_path)
+    _write_timeline(audio, **values)
+    assert resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"] == "book description"
+
+
+@pytest.mark.parametrize("start_seconds", [None, True, "10", float("nan"), 10.000000002])
+def test_mismatched_or_invalid_start_seconds_preserves_description(tmp_path, start_seconds):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
+        {"start_frame": 100, "start_seconds": start_seconds, "title": "Chapter 1"},
+        {"start_frame": 200, "start_seconds": 20, "title": "Chapter 2"},
+    ])
+    assert resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"] == "book description"
+
+
+def test_start_seconds_must_match_frame_position_tightly(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"start_frame": 0, "start_seconds": 0.0, "title": "Intro"},
+        {"start_frame": 100, "start_seconds": 10.0, "title": "Chapter 1"},
+        {"start_frame": 200, "start_seconds": 20.0, "title": "Chapter 2"},
+    ])
+    assert "00:10 Chapter 1" in resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)["description"]
+
+
+def test_timeline_append_is_idempotent_for_exact_existing_block(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    _write_timeline(audio, chapters=[{"start_frame": 0, "title": "Intro"},
+                                     {"start_frame": 100, "title": "One"},
+                                     {"start_frame": 200, "title": "Two"}])
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {"description": "00:00 Intro\n00:10 One\n00:20 Two"}})
+    result = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)
+    assert result["description"].count("00:00 Intro") == 1
+
+
+@pytest.mark.parametrize("chapters,frames,valid", [
+    ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 100, "start_seconds": 10, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 300, True),
+    ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 99, "start_seconds": 9.9, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 300, False),
+    ([{"start_frame": 0, "start_seconds": 0, "title": "a"}, {"start_frame": 100, "start_seconds": 10, "title": "b"}, {"start_frame": 200, "start_seconds": 20, "title": "c"}], 299, False),
+])
+def test_timeline_ten_second_boundaries(tmp_path, chapters, frames, valid):
+    audio = _timeline_audio(tmp_path, frames=frames, chapters=chapters)
+    result = resolve_patch_youtube_metadata(_book(), _patch(str(audio)), None)
+    assert ("00:00 a" in result["description"]) is valid
 
 
 def test_default_patch_title_and_tags():

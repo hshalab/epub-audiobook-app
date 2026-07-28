@@ -169,3 +169,55 @@ def test_chunk_view_processing_uses_live_worker_index():
     view = repository.get_patch_chunk_view(conn, patch, FakeWorker())
     assert view[0]["status"] == "done"
     assert view[1]["status"] == "processing"
+
+
+def test_build_patch_chunk_plan_keeps_chapters_separate_and_marks_starts():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute("UPDATE chapter SET text = 'Ch0 text.', char_count = 9 WHERE book_id = 1 AND chapter_index = 0")
+    conn.execute(
+        "INSERT INTO chapter (book_id, chapter_index, title, text, char_count) VALUES (1, 1, ?, ?, ?)",
+        ("Ch1", "Ch1 This is chapter one.", len("Ch1 This is chapter one.")),
+    )
+    pid = _insert_patch(conn, max_chars=100)
+    conn.execute("UPDATE patch SET chapter_end = 1 WHERE id = ?", (pid,))
+    conn.commit()
+    plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
+    assert all(set(item) == {"text", "chapter_index", "chapter_title", "is_chapter_start"} for item in plan)
+    assert [item["chapter_index"] for item in plan] == [0, 1]
+    assert [item["is_chapter_start"] for item in plan] == [True, True]
+
+
+def test_build_patch_chunk_plan_skips_excluded_and_empty_after_replacement():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute("UPDATE chapter SET is_excluded = 1 WHERE book_id = 1 AND chapter_index = 0")
+    conn.execute(
+        "INSERT INTO chapter (book_id, chapter_index, title, text, char_count) VALUES (1, 1, 'Ch1', 'remove me', 9)"
+    )
+    conn.execute(
+        "INSERT INTO text_replace_rule (book_id, find, replace, is_regex, position) VALUES (1, 'remove me', '', 0, 0)"
+    )
+    pid = _insert_patch(conn)
+    conn.execute("UPDATE patch SET chapter_end = 1 WHERE id = ?", (pid,))
+    conn.commit()
+    assert repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid)) == []
+
+
+def test_build_patch_chunk_plan_marks_later_chunks_not_chapter_start():
+    conn = _make_conn()
+    _insert_book(conn)
+    pid = _insert_patch(conn, max_chars=20)
+    plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
+    assert len(plan) > 1
+    assert [item["is_chapter_start"] for item in plan] == [True] + [False] * (len(plan) - 1)
+
+
+def test_build_patch_chunk_plan_empty_title_is_safe():
+    conn = _make_conn()
+    _insert_book(conn)
+    conn.execute("UPDATE chapter SET title = '' WHERE book_id = 1")
+    conn.commit()
+    pid = _insert_patch(conn)
+    plan = repository.build_patch_chunk_plan(conn, repository.get_patch(conn, pid))
+    assert plan and plan[0]["chapter_title"] == ""

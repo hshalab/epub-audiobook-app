@@ -15,8 +15,11 @@ the routes that touch the same connection.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import sqlite3
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,18 +27,16 @@ from pathlib import Path
 import soundfile as sf
 
 from app import audio_merge, repository, video_gen
-from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.models import BookJob, Patch
 from app.video_config import get_book_video_config
-from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
 from app.tts_engine import VoxCPMEngine
 
 logger = logging.getLogger(__name__)
 
 
 _WARNING_EVENTS = {"queue.paused", "worker.shutdown_timeout"}
-_TITLE_END_PUNCTUATION = frozenset(".!?…:;,)]\"'»")
+_CHUNK_PAUSE_MS = 300
 
 
 def _now_iso() -> str:
@@ -224,33 +225,10 @@ class PatchWorker:
         """Blocking: runs in a thread via asyncio.to_thread so the event loop (and thus the
         web UI) isn't frozen during synthesis."""
         with self.db_lock:
-            chapters = repository.get_chapters_in_range(
-                self.conn, patch.book_id, patch.chapter_start, patch.chapter_end
-            )
-            rules = repository.list_replace_rules(self.conn, patch.book_id)
+            plan = repository.build_patch_chunk_plan(self.conn, patch)
             book = repository.get_book(self.conn, patch.book_id)
-
-        included = [ch for ch in chapters if not ch.is_excluded]
-        texts: list[str] = []
-        for ch in included:
-            t = ch.text
-            if ch.title and t.startswith(ch.title) and ch.title[-1] not in _TITLE_END_PUNCTUATION:
-                suffix = t[len(ch.title):].lstrip()
-                if suffix:
-                    t = ch.title + ".\n\n" + suffix
-            texts.append(t)
-        raw = "\n\n".join(texts)
-        raw = normalize_chapter_titles(raw)
-        if book is not None:
-            opts = NormalizationOptions(
-                numbers=bool(book.normalize_numbers_enabled),
-                junk=bool(book.normalize_junk_enabled),
-                spellcheck=bool(book.normalize_spellcheck_enabled),
-                dictionary=bool(book.normalize_dictionary_enabled),
-                transliteration=bool(book.normalize_transliteration_enabled),
-            )
-            raw = normalize_text(raw, opts)
-        patch_text = repository.apply_replace_rules(raw, rules)
+        if not plan:
+            raise ValueError("patch has no speakable text")
 
         ref_wav = book.voice_clip_path if book else None
         ref_text = book.voice_transcript if book else None
@@ -258,14 +236,20 @@ class PatchWorker:
         book_dir = self.data_root / "books" / str(patch.book_id) / "patches"
         book_dir.mkdir(parents=True, exist_ok=True)
         audio_path = str(book_dir / f"{patch.id}.wav")
+        timeline_path = Path(audio_path).with_suffix(".timeline.json")
 
         if not settings.tts_write_chunk_files:
-            wavs = self.engine.synthesize_patch(
-                patch_text,
-                reference_wav_path=ref_wav,
-                prompt_text=ref_text,
-            )
-            audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path)
+            wavs = [self.engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text) for item in plan]
+            chapter_frames = 0
+            chapters = []
+            for i, (item, arr) in enumerate(zip(plan, wavs)):
+                if i:
+                    chapter_frames += round(self.engine.sample_rate * _CHUNK_PAUSE_MS / 1000)
+                if item["is_chapter_start"]:
+                    chapters.append({"chapter_index": item["chapter_index"], "title": item["chapter_title"], "start_frame": chapter_frames, "start_seconds": chapter_frames / self.engine.sample_rate})
+                chapter_frames += len(arr)
+            audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+            self._try_write_timeline(timeline_path, self.engine.sample_rate, chapters, sf.info(audio_path).frames)
             return audio_path
 
         chunk_dir = book_dir / f"{patch.id}_chunks"
@@ -275,7 +259,7 @@ class PatchWorker:
         # LightTTS from ever merging worker-produced chunks as its own.
         (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
         try:
-            chunks = split_into_tts_chunks(patch_text, max_chars=patch.max_chars or settings.tts_max_chars)
+            chunks = [item["text"] for item in plan]
             with self.db_lock:
                 repository.update_patch_chunk_count(self.conn, patch.id, len(chunks))
             start_index = max(0, min(patch.next_chunk_index, len(chunks)))
@@ -286,27 +270,30 @@ class PatchWorker:
                     from_chunk=start_index,
                     total_chunks=len(chunks),
                 )
-            for i in range(start_index, len(chunks)):
-                chunk_text = chunks[i]
-                self.current_chunk_index = i
-                arr = self.engine.synthesize_chunk(
-                    chunk_text,
-                    reference_wav_path=ref_wav,
-                    prompt_text=ref_text,
-                )
-                chunk_path = str(chunk_dir / f"chunk_{i:03d}.wav")
-                sf.write(chunk_path, arr, self.engine.sample_rate)
-                self._log_event(
-                    "chunk.written",
-                    patch_id=patch.id,
-                    chunk_index=i,
-                    path=chunk_path,
-                )
-                with self.db_lock:
-                    repository.update_patch_chunk_progress(self.conn, patch.id, i + 1)
+            chapter_frames = 0
+            chapters = []
+            for i, item in enumerate(plan):
+                chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
+                if i >= start_index:
+                    chunk_text = item["text"]
+                    self.current_chunk_index = i
+                    arr = self.engine.synthesize_chunk(
+                        chunk_text, reference_wav_path=ref_wav, prompt_text=ref_text,
+                    )
+                    sf.write(chunk_path, arr, self.engine.sample_rate)
+                    self._log_event("chunk.written", patch_id=patch.id, chunk_index=i, path=str(chunk_path))
+                    with self.db_lock:
+                        repository.update_patch_chunk_progress(self.conn, patch.id, i + 1)
+                frames = sf.info(str(chunk_path)).frames
+                if i:
+                    chapter_frames += round(self.engine.sample_rate * _CHUNK_PAUSE_MS / 1000)
+                if item["is_chapter_start"]:
+                    chapters.append({"chapter_index": item["chapter_index"], "title": item["chapter_title"], "start_frame": chapter_frames, "start_seconds": chapter_frames / self.engine.sample_rate})
+                chapter_frames += frames
 
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
-            audio_merge.concat_wavs(chunk_paths, audio_path)
+            audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+            self._try_write_timeline(timeline_path, self.engine.sample_rate, chapters, sf.info(audio_path).frames)
             self._log_event("chunk.merged", patch_id=patch.id)
             # Chunk files are intentionally left on disk after a successful merge (not
             # auto-deleted here) - a bad merge wouldn't necessarily raise, and deleting the
@@ -316,6 +303,29 @@ class PatchWorker:
             return audio_path
         except Exception:
             raise
+
+    @staticmethod
+    def _write_timeline(path: Path, sample_rate: int, chapters: list[dict], total_frames: int) -> None:
+        payload = {"version": 1, "sample_rate": sample_rate, "total_frames": total_frames, "chapters": chapters}
+        fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as temp:
+                json.dump(payload, temp, ensure_ascii=False, indent=2)
+                temp.flush()
+                os.fsync(temp.fileno())
+            os.replace(temp_path, path)
+        except Exception:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _try_write_timeline(self, path: Path, sample_rate: int, chapters: list[dict], total_frames: int) -> None:
+        try:
+            self._write_timeline(path, sample_rate, chapters, total_frames)
+        except Exception:
+            logger.warning("failed to write timeline sidecar %s", path, exc_info=True)
 
     async def _maybe_finalize_book(self, book_id: int) -> None:
         with self.db_lock:

@@ -32,6 +32,21 @@ def _delete_chunk_dir(book_id: int, patch_id: int) -> None:
     cleanup_chunk_dir(str(_chunk_dir_for(book_id, patch_id)))
 
 
+def delete_patch_audio_files(audio_path: str | None) -> None:
+    if not audio_path:
+        return
+    path = Path(audio_path)
+    first_error = None
+    for target in (path, path.with_suffix(".timeline.json")):
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
 def _update_status(conn, table, id, *, status=None, **extra):
     sets = []
     values = []
@@ -282,16 +297,15 @@ def get_patch_chunk_view(conn: sqlite3.Connection, patch: Patch, worker=None) ->
     Chunk texts always come from the same split_into_tts_chunks call the worker makes
     (worker.py _synthesize), so indices line up with whatever chunk_NNN.wav files are (or
     aren't) currently on disk."""
-    text = build_patch_text(conn, patch)
-    max_chars = patch.max_chars or _TTS_MAX_CHARS
-    chunks = split_into_tts_chunks(text, max_chars=max_chars)
+    plan = build_patch_chunk_plan(conn, patch)
 
     current_index = None
     if worker is not None and getattr(worker, "current_patch_id", None) == patch.id:
         current_index = worker.current_chunk_index
 
     result = []
-    for i, chunk_text in enumerate(chunks):
+    for i, item in enumerate(plan):
+        chunk_text = item["text"]
         if patch.status == "done":
             status = "done"
         elif patch.status == "processing" and i == current_index:
@@ -363,7 +377,7 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
         return False
 
     if patch.audio_path:
-        Path(patch.audio_path).unlink(missing_ok=True)
+        delete_patch_audio_files(patch.audio_path)
 
     video_dir = Path("data") / "books" / str(patch.book_id) / "patch_videos"
     video_file = video_dir / f"{patch_id}.mp4"
@@ -396,7 +410,7 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     book_id = patch.book_id
 
     if patch.audio_path:
-        Path(patch.audio_path).unlink(missing_ok=True)
+        delete_patch_audio_files(patch.audio_path)
     if patch.image_path:
         Path(patch.image_path).unlink(missing_ok=True)
     video_dir = Path("data") / "books" / str(book_id) / "patch_videos"
@@ -746,9 +760,9 @@ def rename_book(conn: sqlite3.Connection, book_id: int, new_title: str) -> bool:
 
 
 def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
-    done_ids = [
-        r["id"] for r in conn.execute(
-            "SELECT id FROM patch WHERE book_id = ? AND status = 'done'",
+    done_rows = [
+        r for r in conn.execute(
+            "SELECT id, audio_path FROM patch WHERE book_id = ? AND status = 'done'",
             (book_id,),
         ).fetchall()
     ]
@@ -758,8 +772,9 @@ def reset_done_patches_for_book(conn: sqlite3.Connection, book_id: int) -> int:
            next_chunk_index = 0, updated_at = ? WHERE book_id = ? AND status = 'done'""",
         (now, book_id),
     )
-    for pid in done_ids:
-        _delete_chunk_dir(book_id, pid)
+    for row in done_rows:
+        delete_patch_audio_files(row["audio_path"])
+        _delete_chunk_dir(book_id, row["id"])
     conn.execute(
         """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
            status = 'ready', updated_at = ? WHERE id = ?""",
@@ -825,7 +840,7 @@ def rebuild_patches(
         patterns = list_patches(conn, book_id)
         for p in patterns:
             if p.status == "done" and p.audio_path:
-                Path(p.audio_path).unlink(missing_ok=True)
+                delete_patch_audio_files(p.audio_path)
             if p.image_path:
                 Path(p.image_path).unlink(missing_ok=True)
             _delete_chunk_dir(book_id, p.id)
@@ -898,6 +913,43 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
 
     rules = list_replace_rules(conn, patch.book_id)
     return apply_replace_rules(raw, rules)
+
+
+def build_patch_chunk_plan(conn: sqlite3.Connection, patch: Patch) -> list[dict]:
+    """Build independently split TTS chunks for each included chapter."""
+    chapters = get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)
+    book = get_book(conn, patch.book_id)
+    rules = list_replace_rules(conn, patch.book_id)
+    opts = NormalizationOptions(
+        numbers=bool(book.normalize_numbers_enabled) if book else False,
+        junk=bool(book.normalize_junk_enabled) if book else False,
+        spellcheck=bool(book.normalize_spellcheck_enabled) if book else False,
+        dictionary=bool(book.normalize_dictionary_enabled) if book else False,
+        transliteration=bool(book.normalize_transliteration_enabled) if book else False,
+    )
+    plan = []
+    for chapter in chapters:
+        if chapter.is_excluded:
+            continue
+        text = chapter.text
+        if chapter.title and text.startswith(chapter.title) and chapter.title[-1] not in _TITLE_END_PUNCTUATION:
+            suffix = text[len(chapter.title):].lstrip()
+            if suffix:
+                text = chapter.title + ".\n\n" + suffix
+        text = normalize_chapter_titles(text)
+        text = normalize_text(text, opts)
+        text = apply_replace_rules(text, rules)
+        if not text.strip().strip(" .!?…:;,)]\"'»"):
+            continue
+        chunks = split_into_tts_chunks(text, max_chars=patch.max_chars or _TTS_MAX_CHARS)
+        for i, chunk in enumerate(chunks):
+            plan.append({
+                "text": chunk,
+                "chapter_index": chapter.chapter_index,
+                "chapter_title": chapter.title,
+                "is_chapter_start": i == 0,
+            })
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -1229,9 +1281,9 @@ def retry_all_failed_patches_for_book(conn: sqlite3.Connection, book_id: int) ->
     """Reset every failed patch of a book to pending. Skips patches currently 'processing'.
     Also clears the book's stale final outputs (consistent with reset_patch)."""
     now = _now()
-    failed_ids = [
-        r["id"] for r in conn.execute(
-            "SELECT id FROM patch WHERE book_id = ? AND status = 'failed'",
+    failed_rows = [
+        r for r in conn.execute(
+            "SELECT id, audio_path FROM patch WHERE book_id = ? AND status = 'failed'",
             (book_id,),
         ).fetchall()
     ]
@@ -1240,8 +1292,9 @@ def retry_all_failed_patches_for_book(conn: sqlite3.Connection, book_id: int) ->
            next_chunk_index = 0, updated_at = ? WHERE book_id = ? AND status = 'failed'""",
         (now, book_id),
     )
-    for pid in failed_ids:
-        _delete_chunk_dir(book_id, pid)
+    for row in failed_rows:
+        delete_patch_audio_files(row["audio_path"])
+        _delete_chunk_dir(book_id, row["id"])
     if cur.rowcount > 0:
         conn.execute(
             """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,
@@ -1343,9 +1396,8 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
         "SELECT output_path FROM book_job WHERE output_path IS NOT NULL"
     ).fetchall()
     chunk_rows = conn.execute("SELECT book_id, id FROM patch").fetchall()
-    paths_to_delete = [r["audio_path"] for r in audio_rows] + [
-        r["output_path"] for r in video_rows
-    ]
+    paths_to_delete = [r["output_path"] for r in video_rows]
+    patch_audio_paths = [r["audio_path"] for r in audio_rows]
 
     cur_p = conn.execute(
         """UPDATE patch SET status = 'pending', audio_path = NULL, error_message = NULL,
@@ -1371,6 +1423,12 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
         except OSError:
             pass
 
+    for path in patch_audio_paths:
+        try:
+            delete_patch_audio_files(path)
+        except OSError:
+            pass
+
     for row in chunk_rows:
         _delete_chunk_dir(row["book_id"], row["id"])
 
@@ -1378,7 +1436,7 @@ def reset_all_jobs(conn: sqlite3.Connection) -> dict:
         "patches_reset": cur_p.rowcount,
         "book_jobs_reset": cur_bj.rowcount,
         "books_reset": cur_book.rowcount,
-        "files_deleted": len(paths_to_delete),
+        "files_deleted": len(paths_to_delete) + len(patch_audio_paths),
     }
 
 

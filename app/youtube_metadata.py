@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from pathlib import Path
 import string
+
+import soundfile as sf
 
 DEFAULT_TITLE_TEMPLATE = "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}"
 ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end", "patch_name", "genre_tags"}
@@ -110,6 +114,55 @@ def _validate_override(override: dict) -> dict:
     return override
 
 
+def _timeline_description(patch) -> str:
+    audio_path = getattr(patch, "audio_path", None)
+    if not audio_path:
+        return ""
+    try:
+        info = sf.info(audio_path)
+        timeline_path = Path(audio_path).with_suffix(".timeline.json")
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        if not isinstance(timeline, dict) or timeline.get("version") != 1:
+            return ""
+        sample_rate = timeline["sample_rate"]
+        total_frames = timeline["total_frames"]
+        if (isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0 or sample_rate != info.samplerate or
+                isinstance(total_frames, bool) or not isinstance(total_frames, int) or total_frames < 0 or total_frames != info.frames):
+            return ""
+        chapters = timeline["chapters"]
+        if not isinstance(chapters, list) or len(chapters) < 3:
+            return ""
+        starts = []
+        titles = []
+        for chapter in chapters:
+            if not isinstance(chapter, dict):
+                return ""
+            start = chapter["start_frame"]
+            start_seconds = chapter["start_seconds"]
+            title = chapter["title"]
+            if (isinstance(start, bool) or not isinstance(start, int) or start < 0 or start > total_frames or
+                    isinstance(start_seconds, bool) or not isinstance(start_seconds, (int, float)) or
+                    not math.isfinite(start_seconds) or not math.isclose(start_seconds, start / sample_rate, rel_tol=0, abs_tol=1e-9) or
+                    not isinstance(title, str) or not title.strip()):
+                return ""
+            starts.append(start)
+            titles.append(title.strip())
+        if starts[0] != 0 or any(b - a < sample_rate * 10 for a, b in zip(starts, starts[1:])):
+            return ""
+        if total_frames - starts[-1] < sample_rate * 10:
+            return ""
+
+        def format_time(frame):
+            seconds = frame // sample_rate
+            minutes, seconds = divmod(seconds, 60)
+            hours, minutes = divmod(minutes, 60)
+            return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+        return "\n".join(f"{format_time(start)} {title}" for start, title in zip(starts, titles))
+    except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
+        return ""
+
+
 def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
     raw = _json_object(book.automation_config, {})
     config = validate_book_youtube_config(raw.get("youtube", {}))
@@ -149,6 +202,14 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
         description = description_template.format(**values)
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid description template") from exc
+    timeline = _timeline_description(patch)
+    if timeline:
+        if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
+            candidate = description
+        else:
+            candidate = f"{description}\n\n{timeline}" if description else timeline
+        if len(candidate) <= 5000:
+            description = candidate
     privacy = override.get("privacy_status") or config["privacy_status"]
     if not isinstance(title, str) or not title or len(title) > 100:
         raise ValueError("title must be 1-100 characters")

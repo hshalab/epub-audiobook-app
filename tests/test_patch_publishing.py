@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 import pytest
+import soundfile as sf
 
 from app import db
 from app import youtube
@@ -35,6 +37,28 @@ def test_enqueue_snapshots_metadata_and_is_idempotent(tmp_path, monkeypatch):
     assert json.loads(first["config_snapshot"])["automation"]["youtube"]["mode"] == "none"
     assert first["id"] == second["id"]
     assert conn.execute("SELECT COUNT(*) FROM patch_pipeline").fetchone()[0] == 1
+
+
+def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "test.db")); db.init_schema(conn)
+    audio = tmp_path / "audio.wav"
+    sf.write(audio, [0.0] * 300, 10)
+    Path(audio.with_suffix(".timeline.json")).write_text(json.dumps({
+        "version": 1, "sample_rate": 10, "total_frames": 300,
+        "chapters": [
+                {"start_frame": 0, "start_seconds": 0, "title": "Intro"},
+                {"start_frame": 100, "start_seconds": 10, "title": "One"},
+                {"start_frame": 200, "start_seconds": 20, "title": "Two"},
+        ],
+    }))
+    patch_id = _seed(conn)
+    conn.execute("UPDATE patch SET audio_path=? WHERE id=?", (str(audio), patch_id)); conn.commit()
+    monkeypatch.setattr("app.patch_publishing.ensure_patch_overlay", lambda *args, **kwargs: "/tmp/thumb.png")
+    row = enqueue_patch_publish(conn, patch_id)
+    description = json.loads(row["config_snapshot"])["description"]
+    assert description.count("00:00 Intro") == 1
+    assert description.endswith("00:00 Intro\n00:10 One\n00:20 Two")
+    assert json.loads(enqueue_patch_publish(conn, patch_id)["config_snapshot"])["description"].count("00:00 Intro") == 1
 
 
 def test_thumbnail_path_must_exist_before_enqueue_is_complete(tmp_path, monkeypatch):

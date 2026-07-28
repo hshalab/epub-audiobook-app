@@ -14,11 +14,13 @@ class VoxCPMEngine:
         load_denoiser: bool = False,
         cfg_value: float = 2.0,
         inference_timesteps: int = 10,
+        seed: int = 42,
     ):
         self.model_id = model_id
         self.load_denoiser = load_denoiser
         self.cfg_value = cfg_value
         self.inference_timesteps = inference_timesteps
+        self.seed = seed
         self._model = None
 
     def _ensure_loaded(self) -> None:
@@ -52,6 +54,7 @@ class VoxCPMEngine:
             text=text,
             cfg_value=self.cfg_value,
             inference_timesteps=self.inference_timesteps,
+            seed=self.seed,
             **kwargs,
         )
 
