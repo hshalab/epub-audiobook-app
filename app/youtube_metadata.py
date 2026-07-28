@@ -11,6 +11,7 @@ import soundfile as sf
 
 DEFAULT_TITLE_TEMPLATE = "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}"
 ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end", "patch_name", "genre_tags"}
+YOUTUBE_TITLE_LIMIT = 100
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
 DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
 
@@ -134,6 +135,25 @@ def _clean_title(title: str) -> str:
     return re.sub(r"\s+", " ", title).strip(" -:|")
 
 
+def _fit_title(title: str, genre_text: str, limit: int = YOUTUBE_TITLE_LIMIT) -> str:
+    """Shrink an auto-generated title to YouTube's cap, dropping the least
+    useful part first.
+
+    A Vietnamese book title plus a chapter name routinely runs past 100
+    characters, so composing without a length budget made the whole patch
+    unpublishable. The genre suffix goes first - it is duplicated in `tags`
+    anyway - and only then is the remaining text cut short.
+    """
+    if len(title) <= limit:
+        return title
+    suffix = f" | {genre_text}"
+    if genre_text and title.endswith(suffix):
+        title = title[: -len(suffix)]
+        if len(title) <= limit:
+            return title
+    return title[: limit - 1].rstrip(" -:|") + "…"
+
+
 def _validate_override(override: dict) -> dict:
     if not isinstance(override, dict) or any(k not in OVERRIDE_FIELDS for k in override):
         raise ValueError("invalid override field")
@@ -231,8 +251,10 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
             candidate = f"{description}\n\n{timeline}" if description else timeline
         if len(candidate) <= 5000:
             description = candidate
+    if not explicit_title:
+        title = _fit_title(title, genre_text)
     privacy = override.get("privacy_status") or config["privacy_status"]
-    if not isinstance(title, str) or not title or len(title) > 100:
+    if not isinstance(title, str) or not title or len(title) > YOUTUBE_TITLE_LIMIT:
         raise ValueError("title must be 1-100 characters")
     if not isinstance(description, str) or len(description) > 5000:
         raise ValueError("description exceeds 5000 characters")

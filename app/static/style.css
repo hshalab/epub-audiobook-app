@@ -87,6 +87,11 @@
   --max-width: 1280px;
   --content-width: 860px;
   --nav-height: 56px;
+
+  /* Form controls - shared height so inputs, selects and buttons align in a row.
+     2.375rem is the height a text input already renders at from its own padding,
+     so adopting it here aligns everything else without restyling the inputs. */
+  --control-height: 2.375rem;
 }
 
 /* --- Dark Mode --- */
@@ -587,10 +592,16 @@ label {
   margin-bottom: var(--space-xs);
 }
 
+/* input:not([type]) matters - an input with no type attribute behaves as text
+   but matches no input[type=...] selector, so it used to render unstyled. */
+input:not([type]),
 input[type="text"],
 input[type="number"],
 input[type="email"],
 input[type="password"],
+input[type="search"],
+input[type="url"],
+input[type="tel"],
 textarea,
 select {
   font-family: var(--font-sans);
@@ -603,6 +614,19 @@ select {
   transition: border-color var(--transition-fast);
   width: 100%;
   max-width: 100%;
+  min-height: var(--control-height);
+}
+
+/* A label that wraps its own control stacks: caption above, control below.
+   Saves tagging every such label with a class - there are 24 of them.
+   :where() keeps this at plain-`label` specificity so component classes like
+   .chapter-checkbox-item can still override it. */
+label:where(:has(> input:not([type="checkbox"]):not([type="radio"]))),
+label:where(:has(> select)),
+label:where(:has(> textarea)) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
 }
 
 input:focus, textarea:focus, select:focus {
@@ -727,8 +751,44 @@ input[type="file"]:hover {
 }
 
 input[type="checkbox"], input[type="radio"] {
-  width: auto;
-  margin-right: var(--space-xs);
+  width: 1rem;
+  height: 1rem;
+  min-height: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--text-primary);
+}
+
+/* A label wrapping a checkbox or radio sits on one line instead. Spacing comes
+   from this gap, which is why the controls above carry no margin. */
+label:where(:has(> input[type="checkbox"])),
+label:where(:has(> input[type="radio"])) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 500;
+}
+
+input[type="range"] {
+  width: 100%;
+  max-width: 100%;
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--text-primary);
+}
+
+/* Swatch picker, sized to match the number inputs it sits beside. */
+input[type="color"] {
+  width: 100%;
+  max-width: 100%;
+  height: var(--control-height);
+  padding: 0.15rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-card);
+  cursor: pointer;
 }
 
 .form-group {
@@ -752,9 +812,80 @@ input[type="checkbox"], input[type="radio"] {
   flex-wrap: wrap;
 }
 
-.form-row .form-group { 
-  flex: 1; 
-  min-width: 180px; 
+.form-row .form-group {
+  flex: 1;
+  min-width: 180px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-md);
+}
+
+/* One horizontal row of controls, vertically centred. */
+.form-inline {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Buttons sitting in a control row match the inputs beside them; on their own
+   they keep their natural, smaller size. The flex centring is needed because
+   link-buttons are plain anchors - without it the label sits at the top of the
+   taller box instead of on the same line as the real buttons. */
+.form-inline > button,
+.form-inline > a[class*="btn-"],
+.form-inline > .btn,
+.field-with-action > button,
+.field-with-action > a[class*="btn-"],
+.field-with-action > .btn {
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* A vertical list of checkbox or radio labels. */
+.check-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* A field with a button attached to its right. */
+.field-with-action {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: center;
+}
+
+.field-with-action input,
+.field-with-action select {
+  flex: 1;
+}
+
+.input-narrow,
+.auto-build-form input[type="number"] {
+  width: 6rem;
+  max-width: none;
+  text-align: center;
+}
+
+.input-xnarrow,
+.range-row input,
+.replace-rule-form input[type="number"] {
+  width: 5rem;
+  max-width: none;
+  text-align: center;
+}
+
+/* Selects embedded in table rows stay compact - they are not paired with a
+   full-size input, so matching --control-height would just bloat the row. */
+.image-type-select,
+.patch-inline-section select {
+  min-height: 0;
 }
 
 .form-inline {
@@ -1047,11 +1178,7 @@ section {
   max-width: none; 
 }
 
-.replace-rule-form input[type=number] { 
-  text-align: center; 
-  width: 5rem; 
-  max-width: none; 
-}
+/* Width lives with .input-xnarrow in the forms section. */
 
 /* --- Patch Actions --- */
 .patch-actions {
@@ -1077,10 +1204,7 @@ section {
   align-items: center;
 }
 
-.range-row input { 
-  width: 5rem; 
-  max-width: none; 
-}
+/* Width lives with .input-xnarrow in the forms section. */
 
 .auto-build-form {
   display: flex;
@@ -1095,11 +1219,7 @@ section {
   font-weight: 500; 
 }
 
-.auto-build-form input[type=number] { 
-  width: 6rem; 
-  text-align: center; 
-  max-width: none; 
-}
+/* Width lives with .input-narrow in the forms section. */
 
 /* --- Queue Observability --- */
 .queue-pending {
@@ -1558,8 +1678,37 @@ section {
   font-weight: 500; 
 }
 
-.yt-error-row td { 
-  background: var(--accent-red); 
+.yt-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.yt-progress-track {
+  flex: 1;
+  min-width: 60px;
+  height: 4px;
+  border-radius: var(--border-radius-sm);
+  background: var(--border-color);
+  overflow: hidden;
+}
+
+.yt-progress-fill {
+  height: 100%;
+  border-radius: var(--border-radius-sm);
+  background: var(--accent-blue-text);
+  transition: width 0.3s ease;
+}
+
+.yt-progress-pct {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.yt-error-row td {
+  background: var(--accent-red);
 }
 
 .yt-error-msg { 

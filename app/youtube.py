@@ -285,7 +285,7 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
         raise FileNotFoundError(f"Video file not found: {row['video_path']}")
 
     conn.execute(
-        "UPDATE youtube_uploads SET status='uploading' WHERE id=?",
+        "UPDATE youtube_uploads SET status='uploading', upload_progress=0 WHERE id=?",
         (upload_id,),
     )
     conn.commit()
@@ -323,12 +323,20 @@ def process_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
         while response is None:
             status, response = req.next_chunk()
             if status:
-                pct = int(status.progress() * 100)
-                logger.info("YouTube upload %s: %d%%", upload_id, pct)
+                # Persisted every chunk so the /youtube page can poll it. This runs on the
+                # worker's own connection (see UploadWorker._execution_connection), never the
+                # shared one, so a multi-minute upload does not hold up any request.
+                pct = status.progress() * 100
+                conn.execute(
+                    "UPDATE youtube_uploads SET upload_progress=? WHERE id=?",
+                    (pct, upload_id),
+                )
+                conn.commit()
+                logger.info("YouTube upload %s: %d%%", upload_id, int(pct))
 
         youtube_video_id = response.get("id", "")
         conn.execute(
-            "UPDATE youtube_uploads SET youtube_video_id=?, status='done', uploaded_at=?, error_message=NULL WHERE id=?",
+            "UPDATE youtube_uploads SET youtube_video_id=?, status='done', upload_progress=100, uploaded_at=?, error_message=NULL WHERE id=?",
             (youtube_video_id, _now_iso(), upload_id),
         )
         conn.commit()
@@ -685,6 +693,14 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
         if row["playlist_status"] != "done":
             playlist_mode = youtube_config.get("playlist_mode", "none")
             if playlist_mode != "none":
+                # resolve_book_playlist may create a playlist and playlist_contains_video pages
+                # through every item, so this stretch is slow enough to be worth showing. Marked
+                # before the first API call so the UI can tell "not started" from "running".
+                conn.execute(
+                    "UPDATE youtube_uploads SET playlist_status='processing' WHERE id=?",
+                    (upload_id,),
+                )
+                conn.commit()
                 creds = get_creds_from_db(conn)
                 channel_id = creds["channel_id"] if creds else ""
                 playlist_id = youtube_config.get("playlist_id") or ""
@@ -733,6 +749,13 @@ def postprocess_upload(conn: sqlite3.Connection, upload_id: int) -> dict:
 
     except Exception as exc:
         logger.exception("postprocess_upload %s failed", upload_id)
+        # Otherwise a crash mid-playlist leaves the row stuck showing "running" forever. Still
+        # retryable: the resume path only skips work when the status is exactly 'done'.
+        conn.execute(
+            "UPDATE youtube_uploads SET playlist_status='failed' WHERE id=? AND playlist_status='processing'",
+            (upload_id,),
+        )
+        conn.commit()
         status_code = getattr(getattr(exc, "resp", None), "status", None)
         if isinstance(exc, RefreshError) or (isinstance(exc, HttpError) and status_code == 401):
             auth_label = "auth_required"

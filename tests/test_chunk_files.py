@@ -417,7 +417,7 @@ def test_worker_returns_audio_when_timeline_replace_fails(tmp_audio_dir, seeded_
     audio_path = worker._synthesize(patch)
     sidecar = Path(audio_path).with_suffix(".timeline.json")
     sidecar.write_text("old", encoding="utf-8")
-    monkeypatch.setattr(worker_mod.os, "replace", MagicMock(side_effect=OSError("replace failed")))
+    monkeypatch.setattr(audio_merge.os, "replace", MagicMock(side_effect=OSError("replace failed")))
     with caplog.at_level("WARNING"):
         result = worker._synthesize(patch)
     assert result == audio_path
@@ -436,7 +436,7 @@ def test_worker_returns_audio_when_timeline_failure_and_stale_delete_fail(
     audio_path = worker._synthesize(patch)
     sidecar = Path(audio_path).with_suffix(".timeline.json")
     sidecar.write_text("old", encoding="utf-8")
-    monkeypatch.setattr(worker_mod.os, "replace", MagicMock(side_effect=OSError("replace failed")))
+    monkeypatch.setattr(audio_merge.os, "replace", MagicMock(side_effect=OSError("replace failed")))
     original_unlink = Path.unlink
 
     def refuse_sidecar(path, *args, **kwargs):

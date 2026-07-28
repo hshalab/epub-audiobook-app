@@ -17,6 +17,9 @@ from app import db, repository
 from app.config import settings
 from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
 from app.tts_engine import VoxCPMEngine
+from app.upload_worker import init_worker
+# Aliased: the `from app.routes import ... youtube` above binds the routes module to that name.
+from app.youtube import is_configured as youtube_is_configured
 from app.worker import PatchWorker
 
 logging.basicConfig(
@@ -97,9 +100,23 @@ async def lifespan(app: FastAPI):
     else:
         app.state.worker = None
 
+    # Without this the module-level singleton stays None, so nothing ever drains
+    # youtube_uploads rows left at 'pending' and /publish always answers 503.
+    # Deliberately not gated on enable_worker: that flag suppresses the TTS loop in dev
+    # (no GPU), which has nothing to do with draining the upload queue.
+    uploader = None
+    if youtube_is_configured():
+        uploader = init_worker(conn, db_lock)
+        await uploader.start()
+    else:
+        logging.info("upload worker not started: YouTube credentials are not configured")
+    app.state.upload_worker = uploader
+
     try:
         yield
     finally:
+        if uploader is not None:
+            await uploader.stop()
         if worker_task is not None:
             worker.stop()
             try:

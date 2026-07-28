@@ -15,9 +15,9 @@
     </span>
 </h2>
 
-<form data-guard method="post" action="/books/{{ book.id }}/rename" style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-md);align-items:center">
+<form data-guard method="post" action="/books/{{ book.id }}/rename" class="form-inline" style="margin-bottom:var(--space-md)">
     <input type="text" name="title" value="{{ book.title }}" required
-           style="min-width:240px;padding:var(--space-xs) var(--space-sm)"
+           style="flex:1;min-width:240px;max-width:420px"
            placeholder="Nhập tên sách mới">
     <button type="submit" class="btn-sm btn-primary">Lưu</button>
     <a href="/books/{{ book.id }}" class="btn-sm btn-outline">Hủy</a>
@@ -25,6 +25,7 @@
 
 <nav class="book-nav" aria-label="Điều hướng nội dung sách">
     <button type="button" data-open-dialog="studio-modal">Studio Setup</button>
+    <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
     {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
     <a href="#patch-bottom-nav">Export</a>
     <details class="book-tools">
@@ -65,8 +66,32 @@
     <div id="pym-body"><p>Audio, thumbnail, video and effective YouTube metadata are managed here.</p>
         <audio id="pym-audio" controls></audio><img id="pym-thumbnail" alt="Patch thumbnail"><video id="pym-video" controls></video>
         <div id="pym-stage"></div><div id="pym-error"></div>
-        {% for field in ('title', 'description', 'genre_tags', 'privacy_status') %}<label>{{ field }} <input id="patch-{{ field }}" data-patch-field="{{ field }}"><button type="button" data-use-book-default="{{ field }}">Use book default</button></label>{% endfor %}
-        <label>Playlist <select id="patch-playlist" data-patch-field="playlist"><option value="none">None</option><option value="existing">Existing</option><option value="create">Create</option></select></label><button type="button" data-use-book-default="playlist">Use book default</button>
+        {% set patch_field_labels = {
+            'title': 'Tiêu đề',
+            'description': 'Mô tả',
+            'genre_tags': 'Thẻ thể loại',
+            'privacy_status': 'Chế độ hiển thị'
+        } %}
+        {% for field, field_label in patch_field_labels.items() %}
+        <div class="form-group">
+            <label for="patch-{{ field }}">{{ field_label }}</label>
+            <div class="field-with-action">
+                <input id="patch-{{ field }}" data-patch-field="{{ field }}">
+                <button type="button" class="btn-outline btn-sm" data-use-book-default="{{ field }}">Use book default</button>
+            </div>
+        </div>
+        {% endfor %}
+        <div class="form-group">
+            <label for="patch-playlist">Playlist</label>
+            <div class="field-with-action">
+                <select id="patch-playlist" data-patch-field="playlist">
+                    <option value="none">None</option>
+                    <option value="existing">Existing</option>
+                    <option value="create">Create</option>
+                </select>
+                <button type="button" class="btn-outline btn-sm" data-use-book-default="playlist">Use book default</button>
+            </div>
+        </div>
     </div>
     <div class="btn-group"><button type="button" class="btn-primary btn-sm" data-patch-publish-action="save">Save</button><button type="button" class="btn-primary btn-sm" data-patch-publish-action="publish">Save &amp; Upload</button><button type="button" class="btn-outline btn-sm" data-patch-publish-action="retry">Retry</button><button type="button" class="btn-outline btn-sm" data-patch-publish-action="new" hidden>Upload again as new video</button></div>
 </dialog>
@@ -80,24 +105,24 @@
         Cấu hình cách văn bản được tiền xử lý trước khi tổng hợp giọng nói.
     </p>
     <form data-autosave data-guard action="/books/{{ book.id }}/normalization" method="post">
-        <div style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+        <div class="check-stack">
+            <label>
                 <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
                 Chuyển số, tiền tệ, ngày tháng, giờ thành chữ tiếng Việt
             </label>
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <label>
                 <input type="checkbox" name="junk" {% if book.normalize_junk_enabled %}checked{% endif %}>
                 Xóa token rác/định dạng (ví dụ OO@@)
             </label>
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <label>
                 <input type="checkbox" name="spellcheck" {% if book.normalize_spellcheck_enabled %}checked{% endif %}>
                 Sửa từ tiếng Việt bị chèn dấu chấm (vd: ch.ế.t → chết)
             </label>
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <label>
                 <input type="checkbox" name="dictionary" {% if book.normalize_dictionary_enabled %}checked{% endif %}>
                 Tra từ viết tắt và từ ngoại ngữ qua từ điển vietnormalizer
             </label>
-            <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
+            <label>
                 <input type="checkbox" name="transliteration" {% if book.normalize_transliteration_enabled %}checked{% endif %}>
                 Phiên âm từ ngoại ngữ không có trong từ điển (kèm tra từ điển)
             </label>
@@ -138,7 +163,7 @@
             Chunk nhỏ hơn → ít lỗi hơn nhưng chậm hơn.
         </small>
     </div>
-    <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;margin-top:var(--space-sm)">
+    <label style="margin-top:var(--space-sm)">
         <input type="checkbox" id="bookTtsFx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
     </label>
 </dialog>
@@ -265,9 +290,9 @@
                     <option value="pan-right" {% if book.default_image_animation == 'pan-right' %}selected{% endif %}>Pan Right</option>
                 </select>
             </div>
-            <label class="vc-check"><input type="checkbox" id="vc-crossfade" {% if video_config.crossfade_enabled %}checked{% endif %}> Crossfade</label>
-            <label class="vc-check"><input type="checkbox" id="vc-kenburns" {% if video_config.ken_burns_enabled %}checked{% endif %}> Ken Burns</label>
-            <label class="vc-check"><input type="checkbox" id="vc-progress" {% if video_config.progress_bar_enabled %}checked{% endif %}> Progress bar</label>
+            <label><input type="checkbox" id="vc-crossfade" {% if video_config.crossfade_enabled %}checked{% endif %}> Crossfade</label>
+            <label><input type="checkbox" id="vc-kenburns" {% if video_config.ken_burns_enabled %}checked{% endif %}> Ken Burns</label>
+            <label><input type="checkbox" id="vc-progress" {% if video_config.progress_bar_enabled %}checked{% endif %}> Progress bar</label>
         </fieldset>
 
         <div class="btn-group vc-wide">
@@ -426,7 +451,7 @@
         <tbody>
         {% for patch in patches %}
             <tr>
-                <td><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
+                <td class="patch-select-cell"><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
                            form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
                 <td class="patch-name-cell">
                     <strong>{{ patch.name or patch.patch_index }}</strong>
@@ -486,7 +511,8 @@
                     {% endif %}
                 </td>
                 <td class="patch-actions">
-                    <a href="/books/{{ book.id }}/patches/{{ patch.id }}/text" class="btn-outline btn-sm">Preview</a>
+                    <a href="/books/{{ book.id }}/text-studio?patch_id={{ patch.id }}" class="btn-outline btn-sm"
+                       title="Mở Text Studio để xem và chỉnh văn bản trước khi tạo speech">Preview</a>
                     <button type="button" class="btn-outline btn-sm" onclick="openChunksModal({{ patch.id }})">&#9654; Chunks</button>
                     {% if patch.status != "processing" %}
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
@@ -564,7 +590,6 @@
 .vc-background-option span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vc-background-del { flex:none; background:none; border:none; cursor:pointer; padding:2px; opacity:.45; font-size:var(--font-size-sm); line-height:1; }
 .vc-background-del:hover { opacity:1; color:var(--color-error, #dc2626); }
-.vc-check { display:flex; align-items:center; gap:var(--space-xs); font-weight:500; }
 
 /* Patch image modal 2-col layout */
 .pi-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-lg); align-items:start; margin-top:var(--space-md); }
@@ -608,7 +633,7 @@
 @media (max-width:640px) { .batch-action-group { width:100%; } .batch-selection-count { width:100%; } }
 
 /* Bottom-nav inline checkbox */
-.bn-check { display:flex; align-items:center; gap:4px; font-size:var(--font-size-xs); white-space:nowrap; color:var(--text-muted); }
+.bn-check { font-size:var(--font-size-xs); white-space:nowrap; color:var(--text-muted); }
 .btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
 </style>
@@ -628,7 +653,13 @@
         .studio-section h4 { margin:0 0 var(--space-sm) 0; font-size:var(--font-size-sm); text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); }
         #drag-rect { position:absolute; border:2px dashed #38bdf8; background:rgba(56,189,248,.10); cursor:move; touch-action:none; display:none; border-radius:4px; }
         #drag-rect:hover, #drag-rect.dragging { background:rgba(56,189,248,.22); }
-        .batch-patch-checkbox, #batch-select-all { transform:scale(2); margin:8px; }
+        /* Real size, not transform:scale — a scaled box keeps its 16px layout
+           slot, so it overlapped the next cell and the hit area drifted. */
+        /* Typed selector needed: bare .batch-patch-checkbox loses to
+           input[type="checkbox"] in style.css on specificity. */
+        input[type="checkbox"].batch-patch-checkbox,
+        input[type="checkbox"]#batch-select-all { width:18px; height:18px; }
+        .patch-select-cell, table[data-table-key="patch-table"] th:first-child { padding:var(--space-sm) var(--space-md); }
         .patch-name-cell { min-width:300px; }
         .patch-name-cell .patch-audio-player { width:100%; margin-top:var(--space-xs); }
         .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); white-space:nowrap; overflow-x:auto; }
@@ -672,7 +703,7 @@
 
             <form id="voice-form" method="post" action="/books/{{ book.id }}/voice-select" class="studio-section" hidden>
                 <h4>Voice tham chiếu (dùng để clone giọng + nghe thử mix)</h4>
-                <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+                <div class="form-inline">
                     <button type="button" id="mix-play" class="btn-outline btn-sm">&#9654; Nghe thử</button>
                     <select name="voice_name" id="mix-ref" style="flex:1;min-width:160px">
                         <option value="">— Không dùng voice tham chiếu —</option>
@@ -692,7 +723,7 @@
                            placeholder="Nội dung chính xác được đọc trong file voice tham chiếu">
                     <small>Giúp việc clone giọng chính xác hơn. Điền lại nếu bạn đổi voice tham chiếu ở trên.</small>
                 </div>
-                <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm)">
+                <div class="form-inline" style="margin-top:var(--space-sm);flex-wrap:nowrap">
                     <input type="range" id="mix-seek" min="0" max="100" value="0" step="0.1" style="flex:1" disabled>
                     <span id="mix-time" style="font-size:var(--font-size-xs);color:var(--text-muted);min-width:96px;text-align:right">0:00 / 0:00</span>
                 </div>
@@ -781,7 +812,7 @@
                 <details open style="margin-bottom:var(--space-md)">
                     <summary style="cursor:pointer;font-weight:500">Shadow (đổ bóng)</summary>
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
-                        <label style="display:flex;align-items:center;gap:var(--space-xs)">
+                        <label>
                             <input type="checkbox" name="shadow_enabled" {% if overlay_cfg.shadow.enabled %}checked{% endif %}>
                             Bật
                         </label>
@@ -799,7 +830,7 @@
                 <details style="margin-bottom:var(--space-md)">
                     <summary style="cursor:pointer;font-weight:500">Background box (hộp nền)</summary>
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-md);padding:var(--space-md) 0">
-                        <label style="display:flex;align-items:center;gap:var(--space-xs)">
+                        <label>
                             <input type="checkbox" name="box_enabled" {% if overlay_cfg.box.enabled %}checked{% endif %}>
                             Bật
                         </label>
@@ -889,7 +920,7 @@
     <form data-guard action="/books/{{ book.id }}/replace-rules" method="post" class="replace-rule-form" style="margin-top:var(--space-md)">
         <input type="text" name="find" placeholder="find" required>
         <input type="text" name="replace" placeholder="replace">
-        <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500;white-space:nowrap">
+        <label style="white-space:nowrap">
             <input type="checkbox" name="is_regex" value="true"> regex
         </label>
         <input type="number" name="position" value="0">

@@ -1,15 +1,274 @@
-"""Endpoints shared by the Book Detail LightTTS controls."""
+"""Text Studio: edit patch text, search/replace, spell check, effect markers — plus the
+LightTTS endpoints the Book Detail page drives its per-patch and batch runs from."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+import asyncio
+import hashlib
+import io
+import json
+import logging
+import re
+import time
+import uuid
+from pathlib import Path
 
-from app import repository
-from app.chunker import split_into_tts_chunks
+import numpy as np
+import soundfile as sf
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from starlette.responses import FileResponse, Response, StreamingResponse
+
+from app import audio_merge, repository, text_analysis
 from app.config import settings
 from app.deps import locked_conn
-from app.light_tts import _BACKENDS, _check_backend, list_voices
+from app.light_tts import _BACKENDS, LightTTSEngine, _check_backend, list_voices
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
+
+# Same inter-chunk gap the worker merges with, so LightTTS audio (and the chapter
+# timeline derived from it) lines up with worker-produced patches.
+_CHUNK_PAUSE_MS = 300
+
+
+def _require_patch(conn, book_id: int, patch_id: int):
+    patch = repository.get_patch(conn, patch_id)
+    if patch is None or patch.book_id != book_id:
+        raise HTTPException(status_code=404, detail="patch not found")
+    return patch
+
+
+def _book_patch_dir(book_id: int) -> Path:
+    return Path(settings.data_root) / "books" / str(book_id) / "patches"
+
+
+def _chunk_dir(book_id: int, patch_id: int) -> Path:
+    return _book_patch_dir(book_id) / f"{patch_id}_chunks"
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _mix_effects(wav_bytes: bytes, text: str, conn) -> bytes:
+    """Overlay sound-effect clips onto synthesized speech at the marker positions.
+
+    Placement is proportional (marker offset / text length), which is all we can do
+    without word timings. Returns the input untouched whenever anything doesn't line
+    up — no markers, no matching library entry, a sample-rate mismatch — so a bad
+    effect can never corrupt the speech."""
+    markers_found: list[tuple[int, str]] = []
+    for pattern in text_analysis._EFFECT_PATTERNS:
+        for match in pattern.finditer(text):
+            markers_found.append((match.start(), match.group(1 if match.lastindex else 0)))
+    if not markers_found:
+        return wav_bytes
+
+    effect_map: dict[str, dict] = {}
+    for effect in repository.list_sound_effects(conn):
+        effect_map.setdefault(effect["marker"].strip().lower(), effect)
+    if not effect_map:
+        return wav_bytes
+
+    try:
+        tts_data, tts_sr = sf.read(io.BytesIO(wav_bytes))
+    except Exception:
+        return wav_bytes
+    if tts_data.ndim > 1:
+        tts_data = tts_data.mean(axis=1)
+    mixed = tts_data.astype(np.float64)
+    text_len = len(text)
+
+    for position, raw_marker in markers_found:
+        effect = effect_map.get(raw_marker.strip().lower())
+        if effect is None:
+            continue
+        effect_path = effect.get("file_path", "")
+        if not effect_path or not Path(effect_path).exists():
+            continue
+        try:
+            eff_data, eff_sr = sf.read(effect_path)
+        except Exception:
+            continue
+        if eff_sr != tts_sr:
+            continue
+        if eff_data.ndim > 1:
+            eff_data = eff_data.mean(axis=1)
+        ratio = position / text_len if text_len > 0 else 0
+        start = int(ratio * len(mixed))
+        end = min(start + len(eff_data), len(mixed))
+        if end - start <= 0:
+            continue
+        mixed[start:end] += eff_data[: end - start]
+
+    peak = np.max(np.abs(mixed))
+    if peak > 1.0:
+        mixed = mixed / peak
+
+    out_buf = io.BytesIO()
+    sf.write(out_buf, mixed, tts_sr, format="WAV")
+    return out_buf.getvalue()
+
+
+def _synth_chunk_with_retries(engine: LightTTSEngine, chunk_text: str, voice: str | None = None) -> bytes:
+    """Synthesize one chunk, retrying up to ``light_tts_chunk_retries`` times with a
+    short backoff. Blocking — call via asyncio.to_thread. Raises the last error once
+    every attempt has failed."""
+    attempts = max(1, settings.light_tts_chunk_retries)
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            wav_bytes, _ = engine.synthesize_to_wav_bytes(chunk_text, voice)
+            return wav_bytes
+        except Exception as exc:  # noqa: BLE001 - reported to the client after retries
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.5 * (attempt + 1))
+    raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Page + text editing
+# ---------------------------------------------------------------------------
+
+
+@router.get("/books/{book_id}/text-studio", response_class=HTMLResponse)
+def text_studio_page(request: Request, book_id: int, patch_id: int | None = None):
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail=f"book {book_id} not found")
+        patches = repository.list_patches(conn, book_id)
+        if patch_id is not None and not any(p.id == patch_id for p in patches):
+            raise HTTPException(status_code=404, detail="patch not found")
+        if patch_id is None and patches:
+            patch_id = patches[0].id
+        patch = repository.get_patch(conn, patch_id) if patch_id else None
+        warnings = repository.list_patch_warnings(conn, patch_id) if patch_id else []
+        clean_text = repository.get_effective_patch_text(conn, patch) if patch else None
+    return templates.TemplateResponse(
+        request,
+        "text_studio.html",
+        {
+            "book": book,
+            "patches": patches,
+            "patch": patch,
+            "clean_text": clean_text,
+            "warnings": warnings,
+            "default_max_chars": settings.tts_max_chars,
+        },
+    )
+
+
+@router.get("/books/{book_id}/text-studio/patches/{patch_id}")
+def get_patch_text(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        text = repository.get_effective_patch_text(conn, patch)
+        warnings = repository.list_patch_warnings(conn, patch_id)
+    return JSONResponse({"text": text, "warnings": warnings, "is_edited": patch.clean_text is not None})
+
+
+@router.put("/books/{book_id}/text-studio/patches/{patch_id}")
+async def save_patch_text(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    text = body.get("text", "")
+    with locked_conn(request) as conn:
+        _require_patch(conn, book_id, patch_id)
+        repository.save_patch_clean_text(conn, patch_id, text)
+        chunk_count = len(repository.build_patch_chunk_plan(conn, repository.get_patch(conn, patch_id)))
+        repository.update_patch_chunk_count(conn, patch_id, chunk_count)
+    return JSONResponse({"ok": True, "chunk_count": chunk_count})
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/analyze")
+async def analyze_patch_text(request: Request, book_id: int, patch_id: int):
+    try:
+        client_text = (await request.json()).get("text")
+    except Exception:
+        client_text = None
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        text = client_text if client_text is not None else repository.get_effective_patch_text(conn, patch)
+        warnings = text_analysis.analyze_text(text)
+        repository.save_patch_warnings(conn, patch_id, warnings)
+        warnings = repository.list_patch_warnings(conn, patch_id)
+    return JSONResponse({"warnings": warnings, "count": len(warnings)})
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/apply-warning")
+async def apply_warning(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    warning_id = body.get("warning_id")
+    action = body.get("action")  # "accept" or "dismiss"
+    if warning_id is None or action not in ("accept", "dismiss"):
+        raise HTTPException(status_code=400, detail="warning_id and action required")
+    with locked_conn(request) as conn:
+        _require_patch(conn, book_id, patch_id)
+        repository.update_patch_warning_status(conn, warning_id, 1 if action == "accept" else 2)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/replace")
+async def search_replace(request: Request, book_id: int, patch_id: int):
+    body = await request.json()
+    search = body.get("search", "")
+    replace = body.get("replace", "")
+    is_regex = body.get("is_regex", False)
+    if not search:
+        raise HTTPException(status_code=400, detail="search text required")
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        text = repository.get_effective_patch_text(conn, patch)
+        if is_regex:
+            try:
+                new_text, count = re.subn(search, replace, text)
+            except re.error as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
+        else:
+            count = text.count(search)
+            new_text = text.replace(search, replace)
+        repository.save_patch_clean_text(conn, patch_id, new_text)
+    return JSONResponse({"text": new_text, "replacements": count})
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/reset")
+def reset_patch_text(request: Request, book_id: int, patch_id: int):
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        repository.reset_patch_clean_text(conn, patch_id)
+        text = repository.build_patch_text(conn, patch)
+    return JSONResponse({"text": text})
+
+
+@router.post("/books/{book_id}/text-studio/normalize-preview")
+async def normalize_preview(request: Request, book_id: int):
+    form = await request.form()
+    text = form.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    from app.normalization import NormalizationOptions, normalize_text
+
+    options = NormalizationOptions(
+        numbers=form.get("numbers") == "on",
+        junk=form.get("junk") == "on",
+        spellcheck=form.get("spellcheck") == "on",
+        dictionary=form.get("dictionary") == "on",
+        transliteration=form.get("transliteration") == "on",
+    )
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        rules = repository.list_replace_rules(conn, book_id)
+    return JSONResponse({"text": repository.apply_replace_rules(normalize_text(text, options), rules)})
+
+
+# ---------------------------------------------------------------------------
+# LightTTS: backends, voices, chunk listing and synthesis
+# ---------------------------------------------------------------------------
 
 
 @router.get("/text-studio/light-tts/backends")
@@ -32,6 +291,38 @@ def list_light_tts_voices(backend: str):
     return {"voices": list_voices(backend)}
 
 
+@router.get("/books/{book_id}/patches/{patch_id}/chunk-texts")
+def patch_chunk_texts(request: Request, book_id: int, patch_id: int, max_chars: int = 0):
+    """Split a patch into TTS chunks and return their text (no synthesis, no save).
+
+    Backs the per-chunk preview list. ``max_chars`` follows the same precedence as
+    preview-stream: explicit override > per-patch > global default."""
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
+        plan = repository.build_patch_chunk_plan(conn, patch, max_chars=effective_max_chars)
+        total = len(plan)
+
+        # patch.chunk_count is a fast char-count estimate; the real sentence-aware
+        # split differs. When listing with the patch's own config, reconcile the
+        # stored estimate so table, progress bar and this list agree. Skipped while
+        # processing so resume bookkeeping isn't disturbed.
+        reconciled = False
+        if max_chars == 0 and patch.status != "processing" and patch.chunk_count != total:
+            repository.update_patch_chunk_count(conn, patch_id, total)
+            reconciled = True
+
+    return JSONResponse({
+        "total": total,
+        "max_chars": effective_max_chars,
+        "reconciled": reconciled,
+        "chunks": [
+            {"index": i, "text": item["text"], "chars": len(item["text"])}
+            for i, item in enumerate(plan)
+        ],
+    })
+
+
 @router.post("/books/{book_id}/patches/reconcile-chunk-counts")
 def reconcile_chunk_counts(request: Request, book_id: int):
     with locked_conn(request) as conn:
@@ -40,10 +331,208 @@ def reconcile_chunk_counts(request: Request, book_id: int):
         updated = []
         for patch_id in repository.list_stale_chunk_count_patch_ids(conn, book_id):
             patch = repository.get_patch(conn, patch_id)
-            if patch is None:
+            if patch is None or patch.status == "processing":
                 continue
-            text = repository.get_effective_patch_text(conn, patch)
-            chunk_count = len(split_into_tts_chunks(text, max_chars=patch.max_chars or settings.tts_max_chars))
+            chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
             repository.update_patch_chunk_count(conn, patch_id, chunk_count)
             updated.append({"id": patch_id, "chunk_count": chunk_count})
     return {"updated": updated}
+
+
+@router.get("/books/{book_id}/patches/{patch_id}/chunk-audio/{index}")
+def serve_patch_chunk_audio(request: Request, book_id: int, patch_id: int, index: int):
+    """Serve one persisted chunk WAV so the preview-stream client can play chunks as
+    they land (or are reused from an earlier run)."""
+    if index < 0:
+        raise HTTPException(status_code=400, detail="invalid chunk index")
+    with locked_conn(request) as conn:
+        _require_patch(conn, book_id, patch_id)
+    path = _chunk_dir(book_id, patch_id) / f"chunk_{index:03d}.wav"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="chunk not found")
+    return FileResponse(str(path), media_type="audio/wav")
+
+
+@router.post("/books/{book_id}/text-studio/patches/{patch_id}/preview-paragraph")
+async def preview_paragraph(request: Request, book_id: int, patch_id: int):
+    """Synthesize an arbitrary snippet for listening only — nothing is saved."""
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    with_effects = body.get("with_effects", False)
+
+    with locked_conn(request) as conn:
+        _require_patch(conn, book_id, patch_id)
+        try:
+            engine = LightTTSEngine(
+                backend=body.get("backend") or settings.light_tts_backend,
+                voice=body.get("voice") or settings.light_tts_voice,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        try:
+            wav_bytes, _ = await asyncio.to_thread(engine.synthesize_to_wav_bytes, text, body.get("voice") or None)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {exc}")
+        if with_effects:
+            wav_bytes = _mix_effects(wav_bytes, text, conn)
+
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@router.get("/books/{book_id}/text-studio/patches/{patch_id}/preview-stream")
+async def preview_stream(
+    request: Request,
+    book_id: int,
+    patch_id: int,
+    backend: str = "",
+    voice: str = "",
+    with_effects: int = 0,
+    max_chars: int = 0,
+):
+    """Synthesize a whole patch with LightTTS, one chunk per SSE message.
+
+    Streaming per chunk is what makes long patches survivable: the connection never
+    idles out, and each chunk is persisted as it lands so a failed or interrupted run
+    resumes instead of restarting. Merging and marking the patch done only happens
+    once every chunk exists — audio with holes in it is never saved."""
+    with locked_conn(request) as conn:
+        patch = _require_patch(conn, book_id, patch_id)
+        effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
+        plan = repository.build_patch_chunk_plan(conn, patch, max_chars=effective_max_chars)
+
+    resolved_backend = backend or settings.light_tts_backend
+    resolved_voice = voice or settings.light_tts_voice
+    db_lock = request.app.state.db_lock
+    conn_ref = request.app.state.conn
+
+    async def _generate():
+        total = len(plan)
+        if total == 0:
+            yield _sse({"type": "error", "message": "Patch này không có chunk nào"})
+            return
+
+        book_dir = _book_patch_dir(book_id)
+        chunk_dir = _chunk_dir(book_id, patch_id)
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+
+        # Existing chunk files are only reusable when they came from the same
+        # text/split/backend/voice; a meta marker records those inputs. On a mismatch
+        # (or for files written by the worker / Drive import, which leave no marker)
+        # start from a clean dir so mixed-source audio is never merged together.
+        joined = "\n\n".join(item["text"] for item in plan)
+        meta_key = hashlib.md5(
+            f"{resolved_backend}|{resolved_voice}|{effective_max_chars}|{joined}".encode("utf-8")
+        ).hexdigest()
+        meta_path = chunk_dir / ".light_tts_meta"
+        try:
+            reusable = meta_path.read_text(encoding="utf-8").strip() == meta_key
+        except OSError:
+            reusable = False
+        if not reusable:
+            for stale in chunk_dir.glob("chunk_*.wav"):
+                stale.unlink(missing_ok=True)
+            meta_path.write_text(meta_key, encoding="utf-8")
+
+        if max_chars == 0 and patch.chunk_count != total:
+            with db_lock:
+                repository.update_patch_chunk_count(conn_ref, patch_id, total)
+
+        try:
+            engine = LightTTSEngine(backend=resolved_backend, voice=resolved_voice or None)
+        except RuntimeError as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        cache_bust = uuid.uuid4().hex[:8]
+        ok_count = 0
+        fail_count = 0
+        contiguous = 0      # length of the unbroken run of chunks present from index 0
+        prefix_open = True  # False once a gap appears — later chunks can't extend it
+        for index, item in enumerate(plan):
+            chunk_path = chunk_dir / f"chunk_{index:03d}.wav"
+            chunk_url = f"/books/{book_id}/patches/{patch_id}/chunk-audio/{index}?v={cache_bust}"
+            present = False
+            if chunk_path.is_file():
+                ok_count += 1
+                present = True
+                yield _sse({"type": "chunk", "index": index, "total": total, "url": chunk_url, "reused": True})
+            else:
+                try:
+                    wav_bytes = await asyncio.to_thread(
+                        _synth_chunk_with_retries, engine, item["text"], resolved_voice or None
+                    )
+                except Exception as exc:  # noqa: BLE001 - one bad chunk must not lose the patch
+                    fail_count += 1
+                    logger.warning("preview_stream chunk %s of patch %s failed: %s", index, patch_id, exc)
+                    yield _sse({"type": "chunk_error", "index": index, "total": total, "message": str(exc)})
+                else:
+                    chunk_path.write_bytes(wav_bytes)
+                    ok_count += 1
+                    present = True
+                    yield _sse({"type": "chunk", "index": index, "total": total, "url": chunk_url})
+
+            # Persist the contiguous prefix as we go, so a mid-stream reload (which
+            # cancels this generator) still leaves next_chunk_index matching disk.
+            if prefix_open:
+                if present:
+                    contiguous = index + 1
+                else:
+                    prefix_open = False
+                with db_lock:
+                    repository.update_patch_chunk_progress(conn_ref, patch_id, contiguous)
+
+        if ok_count == 0:
+            yield _sse({"type": "error", "message": "Tất cả chunk đều lỗi, không có audio để lưu"})
+            return
+
+        if fail_count:
+            # Incomplete: do NOT merge or mark done with holes in the audio. The
+            # synthesized chunks stay on disk; a re-run fills only the gaps.
+            yield _sse({"type": "done", "saved": False, "complete": False, "ok": ok_count, "failed": fail_count})
+            return
+
+        try:
+            audio_path = str(book_dir / f"{patch_id}.wav")
+            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
+            await asyncio.to_thread(audio_merge.concat_wavs, chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+            await asyncio.to_thread(_finish_patch_audio, plan, chunk_paths, audio_path, patch_id,
+                                    bool(with_effects), conn_ref, db_lock)
+            yield _sse({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            logger.exception("preview_stream merge/save failed for patch %s", patch_id)
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+def _finish_patch_audio(
+    plan: list[dict],
+    chunk_paths: list[str],
+    audio_path: str,
+    patch_id: int,
+    with_effects: bool,
+    conn,
+    db_lock,
+) -> None:
+    """Post-merge steps shared by every LightTTS entry point: chapter timeline sidecar,
+    optional effect mixing, and marking the patch done. Blocking — call off-thread."""
+    info = sf.info(audio_path)
+    chapters, _ = audio_merge.build_chapter_marks(
+        plan, [sf.info(path).frames for path in chunk_paths], info.samplerate, _CHUNK_PAUSE_MS,
+    )
+    audio_merge.try_write_timeline(
+        Path(audio_path).with_suffix(".timeline.json"), info.samplerate, chapters, info.frames,
+    )
+
+    if with_effects:
+        merged = Path(audio_path).read_bytes()
+        with db_lock:
+            mixed = _mix_effects(merged, "\n\n".join(item["text"] for item in plan), conn)
+        Path(audio_path).write_bytes(mixed)
+
+    with db_lock:
+        repository.mark_patch_done(conn, patch_id, audio_path)
+
+

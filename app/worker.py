@@ -15,11 +15,8 @@ the routes that touch the same connection.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import sqlite3
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,14 +237,9 @@ class PatchWorker:
 
         if not settings.tts_write_chunk_files:
             wavs = [self.engine.synthesize_chunk(item["text"], reference_wav_path=ref_wav, prompt_text=ref_text) for item in plan]
-            chapter_frames = 0
-            chapters = []
-            for i, (item, arr) in enumerate(zip(plan, wavs)):
-                if i:
-                    chapter_frames += round(self.engine.sample_rate * _CHUNK_PAUSE_MS / 1000)
-                if item["is_chapter_start"]:
-                    chapters.append({"chapter_index": item["chapter_index"], "title": item["chapter_title"], "start_frame": chapter_frames, "start_seconds": chapter_frames / self.engine.sample_rate})
-                chapter_frames += len(arr)
+            chapters, _ = audio_merge.build_chapter_marks(
+                plan, [len(arr) for arr in wavs], self.engine.sample_rate, _CHUNK_PAUSE_MS,
+            )
             audio_merge.concat_chunks_to_wav(wavs, self.engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
             self._try_write_timeline(timeline_path, self.engine.sample_rate, chapters, sf.info(audio_path).frames)
             return audio_path
@@ -270,8 +262,7 @@ class PatchWorker:
                     from_chunk=start_index,
                     total_chunks=len(chunks),
                 )
-            chapter_frames = 0
-            chapters = []
+            frame_counts = []
             for i, item in enumerate(plan):
                 chunk_path = chunk_dir / f"chunk_{i:03d}.wav"
                 if i >= start_index:
@@ -284,12 +275,10 @@ class PatchWorker:
                     self._log_event("chunk.written", patch_id=patch.id, chunk_index=i, path=str(chunk_path))
                     with self.db_lock:
                         repository.update_patch_chunk_progress(self.conn, patch.id, i + 1)
-                frames = sf.info(str(chunk_path)).frames
-                if i:
-                    chapter_frames += round(self.engine.sample_rate * _CHUNK_PAUSE_MS / 1000)
-                if item["is_chapter_start"]:
-                    chapters.append({"chapter_index": item["chapter_index"], "title": item["chapter_title"], "start_frame": chapter_frames, "start_seconds": chapter_frames / self.engine.sample_rate})
-                chapter_frames += frames
+                frame_counts.append(sf.info(str(chunk_path)).frames)
+            chapters, _ = audio_merge.build_chapter_marks(
+                plan, frame_counts, self.engine.sample_rate, _CHUNK_PAUSE_MS,
+            )
 
             chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(len(chunks))]
             audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
@@ -304,28 +293,10 @@ class PatchWorker:
         except Exception:
             raise
 
-    @staticmethod
-    def _write_timeline(path: Path, sample_rate: int, chapters: list[dict], total_frames: int) -> None:
-        payload = {"version": 1, "sample_rate": sample_rate, "total_frames": total_frames, "chapters": chapters}
-        fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as temp:
-                json.dump(payload, temp, ensure_ascii=False, indent=2)
-                temp.flush()
-                os.fsync(temp.fileno())
-            os.replace(temp_path, path)
-        except Exception:
-            try:
-                Path(temp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+    _write_timeline = staticmethod(audio_merge.write_timeline)
 
     def _try_write_timeline(self, path: Path, sample_rate: int, chapters: list[dict], total_frames: int) -> None:
-        try:
-            self._write_timeline(path, sample_rate, chapters, total_frames)
-        except Exception:
-            logger.warning("failed to write timeline sidecar %s", path, exc_info=True)
+        audio_merge.try_write_timeline(path, sample_rate, chapters, total_frames)
 
     async def _maybe_finalize_book(self, book_id: int) -> None:
         with self.db_lock:

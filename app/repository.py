@@ -915,8 +915,24 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
     return apply_replace_rules(raw, rules)
 
 
-def build_patch_chunk_plan(conn: sqlite3.Connection, patch: Patch) -> list[dict]:
-    """Build independently split TTS chunks for each included chapter."""
+def build_patch_chunk_plan(
+    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None
+) -> list[dict]:
+    """Build independently split TTS chunks for each included chapter.
+
+    A patch edited in Text Studio (``clean_text`` set) is the exception: the edited
+    text wins over the derived chapter texts, so every TTS path — worker, LightTTS,
+    Drive/Kaggle export — speaks exactly what the user saved. Free-form editing
+    destroys the chapter boundaries, so that plan carries no chapter markers and
+    therefore produces no chapter timeline.
+    """
+    limit = max_chars or patch.max_chars or _TTS_MAX_CHARS
+    if patch.clean_text:
+        return [
+            {"text": chunk, "chapter_index": None, "chapter_title": None, "is_chapter_start": False}
+            for chunk in split_into_tts_chunks(patch.clean_text, max_chars=limit)
+        ]
+
     chapters = get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)
     book = get_book(conn, patch.book_id)
     rules = list_replace_rules(conn, patch.book_id)
@@ -941,7 +957,7 @@ def build_patch_chunk_plan(conn: sqlite3.Connection, patch: Patch) -> list[dict]
         text = apply_replace_rules(text, rules)
         if not text.strip().strip(" .!?…:;,)]\"'»"):
             continue
-        chunks = split_into_tts_chunks(text, max_chars=patch.max_chars or _TTS_MAX_CHARS)
+        chunks = split_into_tts_chunks(text, max_chars=limit)
         for i, chunk in enumerate(chunks):
             plan.append({
                 "text": chunk,

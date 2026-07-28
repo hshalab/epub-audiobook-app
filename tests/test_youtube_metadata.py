@@ -387,6 +387,37 @@ def test_resolved_limits_are_validated():
         resolve_patch_youtube_metadata(_book(), _patch(), {"description": "x" * 5001})
 
 
+def _long_book(genre_tags="", title_length=60):
+    return SimpleNamespace(title="B" * title_length, automation_config=json.dumps({
+        "youtube": {"genre_tags": genre_tags}}))
+
+
+def _long_patch(name_length=50):
+    return SimpleNamespace(name="C" * name_length, chapter_start=1, chapter_end=10,
+                           patch_index=0, audio_path=None)
+
+
+def test_generated_title_is_fitted_to_youtube_limit():
+    """A long book title plus a long patch name must not blow the 100 char cap."""
+    result = resolve_patch_youtube_metadata(_long_book(), _long_patch(), None)
+    assert len(result["title"]) <= 100
+    assert result["title"].startswith("B" * 60)
+
+
+def test_generated_title_drops_genre_suffix_before_truncating_text():
+    """The genre suffix is the least useful part, so it goes first."""
+    book = _long_book(genre_tags="kinh di, huyen huyen", title_length=50)
+    result = resolve_patch_youtube_metadata(book, _long_patch(name_length=30), None)
+    assert len(result["title"]) <= 100
+    assert "kinh di" not in result["title"]
+    assert result["tags"] == ["kinh di", "huyen huyen"]
+
+
+def test_generated_title_keeps_genre_suffix_when_it_still_fits():
+    result = resolve_patch_youtube_metadata(_book(), _patch(), None)
+    assert result["title"].endswith("| kinh di, huyen huyen")
+
+
 def test_persistence_and_migration(tmp_path):
     conn = db.connect(str(tmp_path / "metadata.db"))
     db.init_schema(conn)

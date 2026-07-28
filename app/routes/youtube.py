@@ -1,6 +1,7 @@
 """YouTube OAuth and upload routes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -17,6 +18,33 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str) -> dict:
+    """Queue a video for the upload worker and return immediately.
+
+    The upload itself must not run here: these handlers hold the shared db_lock via
+    locked_conn, so a multi-minute network upload inside one would block every other
+    request (including the progress poll this feature depends on).
+    """
+    from app.upload_worker import upload_worker
+
+    if upload_worker is None or not upload_worker.get_status().get("running"):
+        raise HTTPException(status_code=503, detail="Upload worker is unavailable")
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    with locked_conn(request) as conn:
+        if not youtube.get_creds_from_db(conn):
+            raise HTTPException(status_code=400, detail="YouTube not connected")
+        upload_id = youtube.enqueue_upload(
+            conn,
+            video_path=video_path,
+            title=title,
+            description=description,
+            tags=tag_list,
+            privacy_status=privacy_status,
+        )
+    return {"upload_id": upload_id, "status": "pending"}
 
 
 @router.get("/youtube", response_class=HTMLResponse)
@@ -93,20 +121,7 @@ async def youtube_upload_manual(
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
 
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-
-    with locked_conn(request) as conn:
-        if not youtube.get_creds_from_db(conn):
-            raise HTTPException(status_code=400, detail="YouTube not connected")
-        result = youtube.upload_video(
-            conn,
-            video_path=video_path,
-            title=title,
-            description=description,
-            tags=tag_list,
-            privacy_status=privacy_status,
-        )
-    return JSONResponse(result)
+    return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status))
 
 
 @router.post("/youtube/upload-file")
@@ -128,24 +143,16 @@ async def youtube_upload_file(
     import uuid
     ext = Path(file.filename or "video.mp4").suffix or ".mp4"
     tmp_path = _TMP_DIR / f"yt_upload_{uuid.uuid4().hex[:8]}{ext}"
-    with open(tmp_path, "wb") as out:
+
+    def _save():
         import shutil
-        shutil.copyfileobj(file.file, out)
+        with open(tmp_path, "wb") as out:
+            shutil.copyfileobj(file.file, out)
 
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    # Off the event loop: a large file otherwise stalls every concurrent request.
+    await asyncio.to_thread(_save)
 
-    with locked_conn(request) as conn:
-        if not youtube.get_creds_from_db(conn):
-            raise HTTPException(status_code=400, detail="YouTube not connected")
-        result = youtube.upload_video(
-            conn,
-            video_path=str(tmp_path),
-            title=title,
-            description=description,
-            tags=tag_list,
-            privacy_status=privacy_status,
-        )
-    return JSONResponse(result)
+    return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status))
 
 
 @router.get("/youtube/uploads")
