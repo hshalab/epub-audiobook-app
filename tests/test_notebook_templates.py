@@ -148,7 +148,7 @@ def test_cell8_helpers_merge_mono_and_stereo_with_exact_pause_and_timeline():
                 sf.write(path, data, 10, subtype="PCM_16")
                 paths.append(str(path))
             result = Path(directory) / f"result-{channels}.wav"
-            timeline = helpers["merge_wav_files"](paths, str(result), 300, [{"filename": Path(p).name, "chapter_index": i, "chapter_title": f"C{i}", "is_chapter_start": True} for i, p in enumerate(paths)])
+            timeline = helpers["merge_wav_files"](paths, str(result), 300, [{"filename": Path(p).name, "chapter_index": i, "chapter_title": f"C{i}", "is_chapter_start": True, "text": "hello"} for i, p in enumerate(paths)])
             audio, rate = sf.read(result, dtype="int16", always_2d=(channels == 2))
             assert rate == 10 and len(audio) == 9
             assert np.all(audio[3:6] == 0)
@@ -261,6 +261,80 @@ def test_cell8_sidecar_pre_replace_failures_preserve_old_file_and_cleanup(monkey
             helpers["write_timeline_atomic"]({"version": 1}, str(sidecar))
         assert sidecar.read_text(encoding="utf-8") == '{"old": true}'
         assert not list(Path(directory).glob(".timeline-*.json"))
+
+
+def test_cell8_validator_requires_non_empty_text():
+    helpers = _cell8_helpers()
+    validate = helpers["validate_chunk_metadata"]
+    chunks = ["chunk_000.txt", "chunk_001.txt"]
+
+    def entry(offset, **overrides):
+        item = {
+            "filename": chunks[offset],
+            "chapter_index": 0,
+            "chapter_title": "One",
+            "is_chapter_start": offset == 0,
+            "text": "hello",
+        }
+        item.update(overrides)
+        return item
+
+    assert validate([entry(0), entry(1)], chunks) is not None
+    # four-field legacy metadata is no longer valid
+    legacy = entry(0)
+    del legacy["text"]
+    assert validate([legacy, entry(1)], chunks) is None
+    assert validate([entry(0, text=""), entry(1)], chunks) is None
+    assert validate([entry(0, text="   "), entry(1)], chunks) is None
+    assert validate([entry(0, text=123), entry(1)], chunks) is None
+
+
+def test_cell8_chunk_text_prefers_manifest_and_falls_back_to_txt(tmp_path):
+    helpers = _cell8_helpers()
+    chunk_text_for = helpers["chunk_text_for"]
+
+    inlined = {
+        "chunks": ["chunk_000.txt"],
+        "chunk_metadata": [{"filename": "chunk_000.txt", "text": "from manifest"}],
+    }
+    assert chunk_text_for(inlined, 0, str(tmp_path)) == "from manifest"
+
+    (tmp_path / "chunk_000.txt").write_text("from disk", encoding="utf-8")
+    legacy = {"chunks": ["chunk_000.txt"], "chunk_metadata": [{"filename": "chunk_000.txt"}]}
+    assert chunk_text_for(legacy, 0, str(tmp_path)) == "from disk"
+    assert chunk_text_for({"chunks": ["chunk_000.txt"]}, 0, str(tmp_path)) == "from disk"
+
+
+def test_cell8_available_wavs_merges_local_dirs_and_remote_inventory(tmp_path):
+    helpers = _cell8_helpers()
+    available_wavs = helpers["available_wavs"]
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "chunk_000.wav").write_bytes(b"")
+    (out_dir / "notes.txt").write_bytes(b"")
+
+    remote = {
+        "patches/patch_000/output/chunk_001.wav": "id1",
+        "patches/patch_000/output/nested/chunk_009.wav": "id9",
+        "patches/patch_001/output/chunk_002.wav": "id2",
+        "result/000 - a.wav": "idr",
+    }
+    names = available_wavs(
+        [str(out_dir), str(tmp_path / "missing")], remote, "patches/patch_000/output"
+    )
+    assert names == {"chunk_000.wav", "chunk_001.wav"}
+
+
+def test_batch_cell_8_uses_remote_inventory_and_lazy_fetch():
+    src = _code_cells(TEMPLATES[1])[7]
+    assert "_drive_file_ids" in src
+    assert "drive_fetch_many" in src
+    assert 'entry["result_wav"] in REMOTE' in src
+    assert "available_wavs(" in src
+    assert "chunk_text_for(" in src
+    assert "find_wav" not in src
+    assert "os.listdir" in src
 
 
 def test_cell8_persist_failures_are_caught_separately():
