@@ -87,6 +87,10 @@ class JobLogger:
 
 
 def tail(job_id: int, lines: int = 500) -> str:
+    # `lines` đến từ query param ?tail= của /queue/jobs/{id}/log, nên phải chặn dưới:
+    # all_lines[-0:] là CẢ file chứ không phải rỗng, và đó là bẫy slice âm quen thuộc.
+    if lines <= 0:
+        return ""
     path = job_log_path(job_id)
     if not path.is_file():
         return ""
@@ -107,9 +111,15 @@ def read_events(job_id: int, *, from_line: int = 0) -> tuple[list[dict[str, Any]
     if not path.is_file():
         return [], from_line
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return [], from_line
+    raw = text.splitlines()
+    # Dòng cuối chưa có '\n' là dòng đang được ghi dở. Bỏ nó ra khỏi lượt này —
+    # nếu đếm nó vào `seen` mà không parse được, cursor sẽ nhảy qua và lần đọc sau
+    # bỏ luôn dòng đó dù lúc ấy nó đã hoàn chỉnh. Event mất hẳn, không phải chậm.
+    if raw and not text.endswith("\n"):
+        raw.pop()
     events: list[dict[str, Any]] = []
     seen = 0
     for line in raw:

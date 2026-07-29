@@ -67,6 +67,29 @@ def test_read_events_resumes_from_a_line_offset():
     assert second == [{"type": "done"}]
 
 
+def test_a_half_written_trailing_event_is_not_lost():
+    """Cầu SSE tail file này trong lúc job còn ghi. Nếu lần đọc rơi đúng vào lúc dòng
+    @@EVENT cuối chưa xong, dòng đó phải bị bỏ qua lượt này rồi giao ở lượt sau —
+    không được đếm vào cursor rồi biến mất vĩnh viễn."""
+    logger = joblog.JobLogger(11, "light_tts")
+    logger.emit({"type": "chunk", "index": 0})
+    logger.close()
+
+    path = joblog.job_log_path(11)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write('@@EVENT {"type":"chunk","index":1')   # cụt, chưa có newline
+
+    events, cursor = joblog.read_events(11)
+    assert [e["index"] for e in events] == [0]
+    assert cursor == 1
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("}\n")                                   # ghi nốt phần còn lại
+
+    events, _ = joblog.read_events(11, from_line=cursor)
+    assert [e["index"] for e in events] == [1]
+
+
 def test_errors_are_mirrored_to_the_app_logger(caplog):
     with caplog.at_level(logging.WARNING, logger="app.jobqueue.joblog"):
         logger = joblog.JobLogger(5, "video")
@@ -95,6 +118,14 @@ def test_tail_returns_only_the_last_n_lines():
 
 def test_tail_of_a_job_with_no_log_is_empty():
     assert joblog.tail(999) == ""
+
+
+def test_tail_with_zero_lines_returns_nothing():
+    """all_lines[-0:] là cả file, không phải rỗng — cái bẫy slice âm quen thuộc."""
+    logger = joblog.JobLogger(12, "video")
+    logger.log("một dòng")
+    logger.close()
+    assert joblog.tail(12, lines=0) == ""
 
 
 def test_purge_deletes_logs_of_old_finished_jobs():
