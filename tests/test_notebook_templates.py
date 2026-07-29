@@ -428,3 +428,15 @@ def test_cell4_lists_before_downloading_and_is_thread_safe():
     assert "def drive_persist(" in src
     # the old walk that downloaded while listing must be gone
     assert "def _sync_down(" not in src
+
+
+def test_batch_notebook_has_no_result_zip_cell():
+    nb = json.loads(TEMPLATES[1].read_text(encoding="utf-8"))
+    assert len(nb["cells"]) == 9
+    for cell in nb["cells"]:
+        src = "".join(cell["source"])
+        assert "make_archive" not in src
+        assert "results.zip" not in src
+        assert "Cell 9" not in src
+    # Cell 8 must still be the eighth code cell for the other tests in this file
+    assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[1])[7]
