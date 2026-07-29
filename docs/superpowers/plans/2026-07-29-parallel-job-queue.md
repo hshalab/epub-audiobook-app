@@ -1425,7 +1425,8 @@ git commit -m "feat(queue): add per-job log files with structured @@EVENT lines"
 class JobContext:
     def __init__(self, job: Job, conn, logger: JobLogger,
                  cancel_check: Callable[[], bool], *,
-                 flush_interval: float = 1.0, clock: Callable[[], float] = time.monotonic)
+                 flush_interval: float = 1.0, clock: Callable[[], float] = time.monotonic,
+                 on_write: Callable[[int, int, str | None], None] | None = None)
     job: Job
     conn: sqlite3.Connection
     def progress(self, current: int, total: int | None = None, phase: str | None = None) -> None
@@ -1554,6 +1555,29 @@ def test_heartbeat_touches_the_row_without_moving_progress():
     assert after.heartbeat_at >= before.heartbeat_at
 
 
+def test_on_write_hook_fires_on_every_db_write_and_only_then():
+    """Runner dùng hook này thay cho việc bọc lại _write. Nó phải theo đúng nhịp
+    throttle: gọi progress() liên tục không được làm hook nổ liên tục."""
+    clock = _FakeClock()
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#0")
+    seen = []
+    ctx = JobContext(
+        job, conn, JobLogger(job_id, "video"), lambda: False, clock=clock,
+        on_write=lambda current, total, phase: seen.append((current, total, phase)),
+    )
+
+    ctx.progress(1, 10, phase="encoding")      # ghi
+    clock.advance(0.01)
+    ctx.progress(2, 10, phase="encoding")      # bị chặn
+    clock.advance(1.0)
+    ctx.progress(3, 10, phase="encoding")      # ghi
+
+    assert seen == [(1, 10, "encoding"), (3, 10, "encoding")]
+
+
 def test_should_cancel_reflects_the_supplied_check():
     clock = _FakeClock()
     flag = {"stop": False}
@@ -1614,6 +1638,7 @@ class JobContext:
         *,
         flush_interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
+        on_write: Callable[[int, int, str | None], None] | None = None,
     ):
         self.job = job
         self.conn = conn
@@ -1621,6 +1646,10 @@ class JobContext:
         self._cancel_check = cancel_check
         self._flush_interval = flush_interval
         self._clock = clock
+        # Runner dùng hook này để mirror tiến độ vào tracker trong bộ nhớ, tránh cho
+        # /health phải đọc DB mỗi lần được gọi. Không có nó, runner sẽ phải thò tay
+        # vào thuộc tính private của lớp này.
+        self._on_write = on_write
 
         self._current = job.progress_current
         self._total = job.progress_total
@@ -1668,6 +1697,8 @@ class JobContext:
         )
         self._written = (self._current, self._total, self._phase)
         self._last_write_at = now
+        if self._on_write is not None:
+            self._on_write(self._current, self._total, self._phase)
 
     # ----------------------------------------------------------------- log
 
@@ -1692,7 +1723,7 @@ class JobContext:
 pytest tests/test_jobqueue_context.py -v
 ```
 
-Kỳ vọng: 9 passed.
+Kỳ vọng: 10 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1942,6 +1973,24 @@ async def test_a_fatal_error_skips_retry(conn_factory):
     assert job.status == "failed"
     assert job.attempt_count == 1
     assert job.error_message == "thiếu file nguồn"
+
+
+@pytest.mark.asyncio
+async def test_a_type_with_capacity_zero_is_disabled_but_still_queues(conn_factory):
+    """Trần 0 = tắt loại đó. Job vẫn được enqueue và nằm chờ, không bị mất."""
+    conn = conn_factory()
+    store.enqueue(conn, "off")
+    store.enqueue(conn, "on")
+    ran = []
+    q = _queue(conn_factory, concurrency={"off": 0, "on": 2})
+    q.register("off", lambda ctx: ran.append("off"))
+    q.register("on", lambda ctx: ran.append("on"))
+    await q.start()
+    await asyncio.sleep(0.3)
+    await q.stop(timeout=5)
+    assert ran == ["on"]
+    assert store.list_jobs(conn, job_type="off")[0].status == "pending"
+    assert {p["job_type"]: p["capacity"] for p in q.pool_status()}["off"] == 0
 
 
 @pytest.mark.asyncio
@@ -2196,6 +2245,13 @@ class JobQueue:
             max_workers=total + 4, thread_name_prefix="jobqueue",
         )
         for job_type in self._specs:
+            # Trần 0 = loại này bị tắt (vd voxcpm_tts trên máy không GPU). Không dựng
+            # dispatcher cho nó: asyncio.Semaphore(0) sẽ treo vĩnh viễn ở acquire() và
+            # loop không bao giờ quay lại kiểm self._stop. Job vẫn xếp hàng bình thường
+            # và sẽ chạy khi bật lại.
+            if self.capacity(job_type) <= 0:
+                logger.info("event=queue.type_disabled job_type=%s", job_type)
+                continue
             self._tasks.append(asyncio.create_task(self._dispatch_loop(job_type)))
         self._tasks.append(asyncio.create_task(self._reaper_loop()))
         logger.info(
@@ -2321,16 +2377,18 @@ class JobQueue:
         làm cho song song thật sự xảy ra thay vì tất cả xếp hàng sau db_lock."""
         conn = self._conn_factory()
         job_logger = JobLogger(job.id, job.job_type)
-        ctx = JobContext(job, conn, job_logger, lambda: self._should_cancel(conn, job.id))
-        # Cho tracker thấy tiến độ mà không cần đọc DB — /health đọc rất thường xuyên.
-        original_write = ctx._write
 
-        def _tracked_write(now: float) -> None:
-            original_write(now)
-            tracker.current = ctx._current
-            tracker.total = ctx._total
+        # Mirror tiến độ vào tracker trong bộ nhớ để /health và pool_status không phải
+        # đọc DB mỗi lần được gọi. Hook chạy theo đúng nhịp throttle của JobContext.
+        def _track(current: int, total: int, phase: str | None) -> None:
+            tracker.current = current
+            tracker.total = total
 
-        ctx._write = _tracked_write   # type: ignore[method-assign]
+        ctx = JobContext(
+            job, conn, job_logger,
+            lambda: self._should_cancel(conn, job.id),
+            on_write=_track,
+        )
 
         job_logger.log(f"bắt đầu job {job.id} ({job.job_type}), lần thử {job.attempt_count}")
         try:
@@ -2423,10 +2481,10 @@ class JobQueue:
         return tracker.total if tracker else 0
 ```
 
-Lưu ý cho người triển khai: `ctx._write` bị bọc lại trong `_execute` để tracker cập nhật
-mà không phải đọc DB. Đây là chỗ duy nhất chạm vào thuộc tính `_`-prefix của
-`JobContext`; nếu bạn thấy cách khác gọn hơn (ví dụ thêm callback công khai vào
-`JobContext.__init__`), làm cách đó và sửa test tương ứng — đừng nhân bản logic throttle.
+Lưu ý cho người triển khai: tracker được cập nhật qua tham số công khai `on_write` của
+`JobContext` (Task 5), **không** bằng cách bọc lại `ctx._write`. Không có thuộc tính
+`_`-prefix nào của `JobContext` được chạm tới từ `runner.py`, và logic throttle không bị
+nhân bản — hook chạy đúng nhịp mà `JobContext` đã quyết định.
 
 - [ ] **Step 4: Cập nhật `app/jobqueue/__init__.py`**
 
@@ -4283,13 +4341,23 @@ from app.jobqueue.runner import JobQueue, parse_concurrency
 logger = logging.getLogger(__name__)
 
 
-def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
+def build_queue(
+    conn_factory: Callable[[], sqlite3.Connection], *, enable_voxcpm: bool = True
+) -> JobQueue:
+    """`enable_voxcpm=False` (từ settings.enable_worker) chỉ đặt trần của voxcpm_tts về 0.
+    Ba loại còn lại vẫn chạy: cờ đó có nghĩa "máy này không có GPU", chứ không phải
+    "đừng chạy gì cả". Trần 0 làm dispatcher của loại đó không bao giờ claim được job,
+    nhưng job vẫn xếp hàng bình thường và sẽ chạy khi bật lại."""
     from app import repository
+
+    concurrency = parse_concurrency(
+        settings.queue_concurrency, default=settings.queue_default_concurrency)
+    if not enable_voxcpm:
+        concurrency["voxcpm_tts"] = 0
 
     queue = JobQueue(
         conn_factory,
-        concurrency=parse_concurrency(
-            settings.queue_concurrency, default=settings.queue_default_concurrency),
+        concurrency=concurrency,
         default_concurrency=settings.queue_default_concurrency,
         poll_interval=settings.worker_poll_interval,
         reap_after_seconds=settings.queue_reap_after_seconds,
@@ -4362,14 +4430,19 @@ Thay khối dựng worker (dòng 79–113 của bản hiện tại) bằng:
     if removed:
         logging.info("event=queue.log_purge removed=%s", removed)
 
-    job_queue = None
-    if settings.enable_worker:
-        job_queue = build_queue(lambda: db.connect(settings.db_path))
-        await job_queue.start()
-        logging.info(
-            "event=queue.config %s",
-            " ".join(f"{p['job_type']}={p['capacity']}" for p in job_queue.pool_status()),
-        )
+    # Queue LUÔN được dựng. enable_worker chỉ tắt riêng VoxCPM — đó là ý nghĩa gốc của
+    # cờ này ("máy dev không có GPU"), và main.py cũ có comment nói rõ nó cố ý không
+    # chặn upload queue. Gộp cả hai vào một cờ sẽ tái tạo đúng cái bug từng làm
+    # youtube_uploads không bao giờ được rút.
+    job_queue = build_queue(
+        lambda: db.connect(settings.db_path),
+        enable_voxcpm=settings.enable_worker,
+    )
+    await job_queue.start()
+    logging.info(
+        "event=queue.config %s",
+        " ".join(f"{p['job_type']}={p['capacity']}" for p in job_queue.pool_status()),
+    )
     # app.state.worker giữ tên cũ: /health và routes/queue.py đọc qua nó.
     app.state.job_queue = job_queue
     app.state.worker = job_queue
@@ -4393,10 +4466,22 @@ from app.jobqueue import joblog
 from app.jobqueue.backfill import backfill_pending_jobs, build_queue
 ```
 
-Chú ý: `enable_worker=false` giờ tắt **cả** upload lẫn TTS. Bản cũ cố ý không gắn
-UploadWorker vào cờ này. Nếu bạn cần dựng queue mà không chạy TTS trong dev, đặt
-`QUEUE_CONCURRENCY="voxcpm_tts=0,..."` — `capacity` 0 làm dispatcher của loại đó không
-bao giờ claim được. Ghi điều này vào `README.md` mục cấu hình.
+Chú ý: `enable_worker=false` **chỉ** tắt VoxCPM, đúng như ý nghĩa gốc của cờ ("máy dev
+không có GPU"). Video, upload YouTube và LightTTS vẫn chạy. Bản `main.py` cũ có comment
+nói rõ cờ này cố ý không chặn upload queue — gộp cả hai sẽ tái tạo đúng cái bug từng
+làm `youtube_uploads` không bao giờ được rút. Thêm test khẳng định điều này:
+
+```python
+def test_enable_worker_false_only_disables_voxcpm(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "enable_worker", False)
+    queue = build_queue(lambda: db.connect(str(tmp_path / "a.db")), enable_voxcpm=False)
+    caps = {p["job_type"]: p["capacity"] for p in queue.pool_status()}
+    assert caps["voxcpm_tts"] == 0
+    assert caps["video"] == 2
+    assert caps["youtube_upload"] == 1
+    assert caps["light_tts"] == 10
+```
 
 - [ ] **Step 5: Chạy test, xác nhận pass**
 
@@ -5331,16 +5416,24 @@ Với mỗi test fail, phân loại:
 Thêm vào `tests/test_db_lock_contention.py`:
 
 ```python
-def test_queue_handlers_never_touch_the_shared_db_lock(tmp_path, monkeypatch):
+def test_queue_handlers_never_touch_the_shared_db_lock():
     """Điểm mấu chốt của cả thiết kế: nếu handler đi qua db_lock thì 10 worker chỉ là
     con số trên giấy. Handler nhận connection riêng qua ctx.conn — chưa từng có, và
-    không được phép có, tham chiếu tới app.state.db_lock trong app/jobqueue/."""
-    import subprocess
-    out = subprocess.run(
-        ["grep", "-rn", "db_lock", "app/jobqueue/"],
-        capture_output=True, text=True,
-    )
-    assert out.stdout.strip() == "", f"jobqueue tham chiếu db_lock:\n{out.stdout}"
+    không được phép có, tham chiếu tới app.state.db_lock trong app/jobqueue/.
+
+    Quét bằng pathlib chứ không gọi grep qua subprocess: repo này chạy trên Windows,
+    nơi grep không chắc có trên PATH của tiến trình Python."""
+    from pathlib import Path
+    import app.jobqueue
+
+    root = Path(app.jobqueue.__file__).parent
+    offenders = [
+        f"{path.relative_to(root)}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "db_lock" in line
+    ]
+    assert offenders == [], f"jobqueue tham chiếu db_lock: {offenders}"
 ```
 
 - [ ] **Step 6: Chạy toàn bộ suite**
@@ -5387,8 +5480,12 @@ chung, mỗi loại có trần song song riêng:
 | `QUEUE_LOG_RETENTION_DAYS` | `7` | số ngày giữ log job trong `data/logs/jobs/` |
 | `QUEUE_REAP_AFTER_SECONDS` | `120` | job `running` im lặng quá lâu bị trả về `pending` |
 
-Đặt một loại về `0` để tắt hẳn nó — ví dụ máy dev không có GPU:
-`QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"`.
+Đặt một loại về `0` để tắt hẳn nó: `QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"`.
+Loại bị tắt vẫn nhận job vào hàng đợi, chỉ là không có worker nào chạy chúng cho tới khi
+bật lại.
+
+`ENABLE_WORKER=false` là lối tắt cho trường hợp hay gặp nhất — máy dev không có GPU. Nó
+**chỉ** đặt `voxcpm_tts` về 0; video, upload YouTube và LightTTS vẫn chạy bình thường.
 
 Theo dõi ở `/queue`. Log chi tiết của từng job nằm ở `data/logs/jobs/<job_id>.log`;
 `data/app.log` chỉ nhận dòng WARNING trở lên.
