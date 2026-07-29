@@ -449,20 +449,54 @@ def enqueue(conn, job_type: str, *, payload: dict | None = None, book_id: int | 
 def get(conn, job_id: int) -> Job | None
 def find_live_by_dedupe(conn, dedupe_key: str) -> Job | None
 def claim(conn, job_type: str, worker_id: str, *, now: str | None = None) -> Job | None
-def write_progress(conn, job_id: int, *, current: int, total: int,
-                   phase: str | None, now: str | None = None) -> None
-def heartbeat(conn, job_id: int, *, now: str | None = None) -> None
-def finish(conn, job_id: int, result: dict | None = None) -> None
+
+# Năm hàm dưới nhận worker_id tùy chọn. Khi được truyền, câu UPDATE mang thêm
+# `AND worker_id=?` và hàm trả về False/None nếu không khớp dòng nào — xem mục
+# "Fencing" bên dưới. Bỏ trống worker_id = ghi không rào, dành cho route admin.
+def write_progress(conn, job_id: int, *, current: int, total: int, phase: str | None,
+                   now: str | None = None, worker_id: str | None = None) -> bool
+def heartbeat(conn, job_id: int, *, now: str | None = None,
+              worker_id: str | None = None) -> bool
+def finish(conn, job_id: int, result: dict | None = None, *,
+           worker_id: str | None = None) -> bool
 def fail(conn, job_id: int, error: str, *, fatal: bool = False,
-         max_attempts: int | None = None) -> str          # trả về status mới
+         max_attempts: int | None = None,
+         worker_id: str | None = None) -> str | None      # None = bị rào chặn
 def request_cancel(conn, job_id: int) -> str | None      # 'cancelled' | 'cancelling' | None
-def mark_cancelled(conn, job_id: int) -> None
+def mark_cancelled(conn, job_id: int, *, worker_id: str | None = None) -> bool
 def retry(conn, job_id: int) -> bool
 def reap_stale(conn, *, older_than_seconds: int, now: str | None = None) -> list[int]
 def list_jobs(conn, *, job_type=None, status=None, book_id=None, limit: int = 100) -> list[Job]
 def counts(conn) -> dict[str, dict[str, int]]            # {job_type: {status: n}}
 def pending_count(conn, job_type: str) -> int
 ```
+
+#### Fencing: vì sao năm hàm kia cần `worker_id`
+
+`claim()` là hàm duy nhất có guard chống race. Không có gì khác phân biệt được "tiến
+trình đã chết" với "tiến trình còn sống nhưng im lặng", nên kịch bản này xảy ra thật:
+
+```
+worker A claim job 5 → chạy ffmpeg 40 phút, không báo tiến độ lần nào
+reaper (120s) tưởng A đã chết → job 5 quay về 'pending'
+worker B claim job 5 → cùng một job chạy hai lần
+A xong → finish(5) ghi đè lên lượt chạy đang dở của B
+```
+
+Với `QUEUE_REAP_AFTER_SECONDS=120`, cả `video` (khoảng lặng giữa `ffmpeg_start` và
+`ffmpeg_done` của một sách dài là hàng chục phút) lẫn `youtube_upload`
+(`youtube.process_upload` là cả lần transfer, không có heartbeat bên trong) đều rơi
+vào đây — nghĩa là upload trùng một video lên YouTube.
+
+Hai lớp phòng thủ, cả hai đều cần:
+
+1. **Rào ghi (task này).** Khi `worker_id` được truyền, câu UPDATE mang thêm
+   `AND worker_id=?`. Worker đã bị reap ghi vào là no-op, không phá được lượt chạy
+   của worker mới. `JobContext` (Task 5) truyền `job.worker_id` vào mọi lời gọi.
+2. **Heartbeat trong lúc chạy dài (Task 5, 8, 9).** `ctx.keep_alive()` giữ nhịp tim
+   trong suốt một bước dài, để job không bị reap ngay từ đầu.
+
+Rào ghi là chốt chặn đúng đắn; heartbeat là thứ tránh lãng phí một lần encode/upload.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -689,6 +723,98 @@ def test_retry_refuses_a_running_job():
     assert store.retry(conn, job_id) is False
 
 
+def test_a_reaped_worker_cannot_finish_a_job_someone_else_now_owns():
+    """Kịch bản zombie: A bị reap giữa chừng, B claim lại, rồi A mới xong. Lần ghi
+    muộn của A phải là no-op, không được đè lên lượt chạy của B."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    b = store.claim(conn, "video", "video#B")
+    assert b.worker_id == "video#B"
+
+    assert store.finish(conn, job_id, {"from": "A"}, worker_id=a.worker_id) is False
+    job = store.get(conn, job_id)
+    assert job.status == RUNNING
+    assert job.worker_id == "video#B"
+    assert job.result is None
+
+    assert store.finish(conn, job_id, {"from": "B"}, worker_id=b.worker_id) is True
+    assert store.get(conn, job_id).result == {"from": "B"}
+
+
+def test_a_reaped_worker_cannot_fail_a_job_someone_else_now_owns():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+
+    assert store.fail(conn, job_id, "A nói hỏng", worker_id=a.worker_id) is None
+    job = store.get(conn, job_id)
+    assert job.status == RUNNING
+    assert job.error_message is None
+
+
+def test_a_reaped_worker_cannot_move_progress_or_heartbeat():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+
+    assert store.write_progress(
+        conn, job_id, current=99, total=99, phase="ma", worker_id=a.worker_id) is False
+    assert store.heartbeat(conn, job_id, worker_id=a.worker_id) is False
+    job = store.get(conn, job_id)
+    assert job.progress_current == 0
+    assert job.phase is None
+
+
+def test_a_reaped_worker_cannot_mark_cancelled():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+    assert store.mark_cancelled(conn, job_id, worker_id=a.worker_id) is False
+    assert store.get(conn, job_id).status == RUNNING
+
+
+def test_the_owning_worker_writes_normally():
+    """Rào chỉ chặn kẻ lạ — chủ sở hữu thật vẫn ghi được như thường."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#A")
+    assert store.write_progress(
+        conn, job_id, current=2, total=5, phase="encoding", worker_id=job.worker_id) is True
+    assert store.heartbeat(conn, job_id, worker_id=job.worker_id) is True
+    assert store.finish(conn, job_id, {"ok": True}, worker_id=job.worker_id) is True
+    assert store.get(conn, job_id).status == DONE
+
+
+def test_writes_without_a_worker_id_are_unfenced():
+    """Route admin gọi không kèm worker_id và vẫn phải ghi được."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    store.claim(conn, "video", "video#A")
+    assert store.finish(conn, job_id, {"by": "admin"}) is True
+    assert store.get(conn, job_id).status == DONE
+
+
+def test_fail_on_a_missing_job_returns_none():
+    conn = _conn()
+    assert store.fail(conn, 4242, "không tồn tại") is None
+
+
 def test_reap_returns_a_stale_running_job_to_pending():
     conn = _conn()
     job_id = store.enqueue(conn, "video")
@@ -875,44 +1001,66 @@ def claim(
 
 # ------------------------------------------------------------ tiến độ / nhịp tim
 
+def _fence(worker_id: str | None) -> tuple[str, list]:
+    """Mảnh WHERE tùy chọn rào theo chủ sở hữu. Truyền worker_id thì câu UPDATE chỉ
+    khớp khi job vẫn thuộc về worker đó — worker đã bị reap ghi vào là no-op."""
+    return (" AND worker_id=?", [worker_id]) if worker_id is not None else ("", [])
+
+
 def write_progress(
     conn: sqlite3.Connection, job_id: int, *, current: int, total: int,
-    phase: str | None, now: str | None = None,
-) -> None:
+    phase: str | None, now: str | None = None, worker_id: str | None = None,
+) -> bool:
     stamp = now or _now()
-    conn.execute(
-        """UPDATE job SET progress_current=?, progress_total=?, phase=?,
-                          heartbeat_at=?, updated_at=? WHERE id=?""",
-        (current, total, phase, stamp, stamp, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET progress_current=?, progress_total=?, phase=?,
+                           heartbeat_at=?, updated_at=? WHERE id=?{guard}""",
+        [current, total, phase, stamp, stamp, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
-def heartbeat(conn: sqlite3.Connection, job_id: int, *, now: str | None = None) -> None:
+def heartbeat(
+    conn: sqlite3.Connection, job_id: int, *, now: str | None = None,
+    worker_id: str | None = None,
+) -> bool:
     stamp = now or _now()
-    conn.execute("UPDATE job SET heartbeat_at=?, updated_at=? WHERE id=?", (stamp, stamp, job_id))
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"UPDATE job SET heartbeat_at=?, updated_at=? WHERE id=?{guard}",
+        [stamp, stamp, job_id] + extra,
+    )
     conn.commit()
+    return cur.rowcount > 0
 
 
 # ------------------------------------------------------------------- kết thúc
 
-def finish(conn: sqlite3.Connection, job_id: int, result: dict | None = None) -> None:
+def finish(
+    conn: sqlite3.Connection, job_id: int, result: dict | None = None, *,
+    worker_id: str | None = None,
+) -> bool:
     now = _now()
-    conn.execute(
-        """UPDATE job SET status='done', result_json=?, error_message=NULL,
-                          finished_at=?, heartbeat_at=?, updated_at=? WHERE id=?""",
-        (json.dumps(result) if result is not None else None, now, now, now, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET status='done', result_json=?, error_message=NULL,
+                           finished_at=?, heartbeat_at=?, updated_at=? WHERE id=?{guard}""",
+        [json.dumps(result) if result is not None else None, now, now, now, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
 def fail(
     conn: sqlite3.Connection, job_id: int, error: str, *, fatal: bool = False,
-    max_attempts: int | None = None,
-) -> str:
+    max_attempts: int | None = None, worker_id: str | None = None,
+) -> str | None:
     """Trả về trạng thái mới: 'pending' nếu còn lượt retry, 'failed' nếu hết
-    (hoặc fatal=True). Cắt error về 4000 ký tự — traceback của ffmpeg có thể rất dài
-    và cột này được đọc trên mọi trang danh sách.
+    (hoặc fatal=True). Trả về None khi bị rào chặn — job đã không còn thuộc về
+    worker_id truyền vào, nên lần ghi này bị bỏ qua. Cắt error về 4000 ký tự:
+    traceback của ffmpeg có thể rất dài và cột này được đọc trên mọi trang danh sách.
 
     `max_attempts` cho phép runner áp số của HandlerSpec, đè lên giá trị đã lưu trên
     dòng job. Cần thiết vì job có thể được enqueue trước khi handler đăng ký (backfill,
@@ -920,27 +1068,30 @@ def fail(
     now = _now()
     job = get(conn, job_id)
     if job is None:
-        return FAILED
+        return None
+    if worker_id is not None and job.worker_id != worker_id:
+        return None
     message = (error or "")[:4000]
     limit = job.max_attempts if max_attempts is None else max_attempts
+    guard, extra = _fence(worker_id)
     if not fatal and job.attempt_count < limit:
         retry_at = (
             datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds(job.attempt_count))
         ).isoformat()
-        conn.execute(
-            """UPDATE job SET status='pending', error_message=?, next_retry_at=?,
-                              worker_id=NULL, updated_at=? WHERE id=?""",
-            (message, retry_at, now, job_id),
+        cur = conn.execute(
+            f"""UPDATE job SET status='pending', error_message=?, next_retry_at=?,
+                               worker_id=NULL, updated_at=? WHERE id=?{guard}""",
+            [message, retry_at, now, job_id] + extra,
         )
         conn.commit()
-        return PENDING
-    conn.execute(
-        """UPDATE job SET status='failed', error_message=?, finished_at=?,
-                          worker_id=NULL, updated_at=? WHERE id=?""",
-        (message, now, now, job_id),
+        return PENDING if cur.rowcount > 0 else None
+    cur = conn.execute(
+        f"""UPDATE job SET status='failed', error_message=?, finished_at=?,
+                           worker_id=NULL, updated_at=? WHERE id=?{guard}""",
+        [message, now, now, job_id] + extra,
     )
     conn.commit()
-    return FAILED
+    return FAILED if cur.rowcount > 0 else None
 
 
 # ---------------------------------------------------------------- hủy / retry
@@ -964,14 +1115,18 @@ def request_cancel(conn: sqlite3.Connection, job_id: int) -> str | None:
     return CANCELLING
 
 
-def mark_cancelled(conn: sqlite3.Connection, job_id: int) -> None:
+def mark_cancelled(
+    conn: sqlite3.Connection, job_id: int, *, worker_id: str | None = None
+) -> bool:
     now = _now()
-    conn.execute(
-        """UPDATE job SET status='cancelled', finished_at=?, worker_id=NULL,
-                          updated_at=? WHERE id=?""",
-        (now, now, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET status='cancelled', finished_at=?, worker_id=NULL,
+                           updated_at=? WHERE id=?{guard}""",
+        [now, now, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
 def retry(conn: sqlite3.Connection, job_id: int) -> bool:
@@ -1059,7 +1214,9 @@ def pending_count(conn: sqlite3.Connection, job_type: str) -> int:
 pytest tests/test_jobqueue_store.py -v
 ```
 
-Kỳ vọng: 25 passed. Nếu `test_claim_is_atomic_across_threads` fail, đọc kỹ: nó là bài test quan trọng nhất của task này, đừng nới lỏng assert để cho qua.
+Kỳ vọng: 33 passed. Hai bài quan trọng nhất của task này là
+`test_claim_is_atomic_across_threads` và nhóm `test_a_reaped_worker_cannot_*` — nếu chúng
+fail thì sửa code, đừng nới lỏng assert để cho qua.
 
 - [ ] **Step 5: Commit**
 
@@ -1180,6 +1337,37 @@ def test_read_events_resumes_from_a_line_offset():
     logger.close()
     second, _ = joblog.read_events(4, from_line=cursor)
     assert second == [{"type": "done"}]
+
+
+def test_a_half_written_trailing_event_is_not_lost():
+    """Cầu SSE tail file này trong lúc job còn ghi. Nếu lần đọc rơi đúng vào lúc dòng
+    @@EVENT cuối chưa xong, dòng đó phải bị bỏ qua lượt này rồi giao ở lượt sau —
+    không được đếm vào cursor rồi biến mất vĩnh viễn."""
+    logger = joblog.JobLogger(11, "light_tts")
+    logger.emit({"type": "chunk", "index": 0})
+    logger.close()
+
+    path = joblog.job_log_path(11)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write('@@EVENT {"type":"chunk","index":1')   # cụt, chưa có newline
+
+    events, cursor = joblog.read_events(11)
+    assert [e["index"] for e in events] == [0]
+    assert cursor == 1
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("}\n")                                   # ghi nốt phần còn lại
+
+    events, _ = joblog.read_events(11, from_line=cursor)
+    assert [e["index"] for e in events] == [1]
+
+
+def test_tail_with_zero_lines_returns_nothing():
+    """all_lines[-0:] là cả file, không phải rỗng — cái bẫy slice âm quen thuộc."""
+    logger = joblog.JobLogger(12, "video")
+    logger.log("một dòng")
+    logger.close()
+    assert joblog.tail(12, lines=0) == ""
 
 
 def test_errors_are_mirrored_to_the_app_logger(caplog):
@@ -1334,6 +1522,10 @@ class JobLogger:
 
 
 def tail(job_id: int, lines: int = 500) -> str:
+    # `lines` đến từ query param ?tail= của /queue/jobs/{id}/log, nên phải chặn dưới:
+    # all_lines[-0:] là CẢ file chứ không phải rỗng, và đó là bẫy slice âm quen thuộc.
+    if lines <= 0:
+        return ""
     path = job_log_path(job_id)
     if not path.is_file():
         return ""
@@ -1354,9 +1546,15 @@ def read_events(job_id: int, *, from_line: int = 0) -> tuple[list[dict[str, Any]
     if not path.is_file():
         return [], from_line
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return [], from_line
+    raw = text.splitlines()
+    # Dòng cuối chưa có '\n' là dòng đang được ghi dở. Bỏ nó ra khỏi lượt này —
+    # nếu đếm nó vào `seen` mà không parse được, cursor sẽ nhảy qua và lần đọc sau
+    # bỏ luôn dòng đó dù lúc ấy nó đã hoàn chỉnh. Event mất hẳn, không phải chậm.
+    if raw and not text.endswith("\n"):
+        raw.pop()
     events: list[dict[str, Any]] = []
     seen = 0
     for line in raw:
@@ -1400,7 +1598,7 @@ def purge_old_logs(conn: sqlite3.Connection, *, retention_days: int | None = Non
 pytest tests/test_jobqueue_joblog.py -v
 ```
 
-Kỳ vọng: 10 passed.
+Kỳ vọng: 12 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1425,7 +1623,9 @@ git commit -m "feat(queue): add per-job log files with structured @@EVENT lines"
 class JobContext:
     def __init__(self, job: Job, conn, logger: JobLogger,
                  cancel_check: Callable[[], bool], *,
-                 flush_interval: float = 1.0, clock: Callable[[], float] = time.monotonic)
+                 flush_interval: float = 1.0, clock: Callable[[], float] = time.monotonic,
+                 on_write: Callable[[int, int, str | None], None] | None = None,
+                 conn_factory: Callable[[], sqlite3.Connection] | None = None)
     job: Job
     conn: sqlite3.Connection
     def progress(self, current: int, total: int | None = None, phase: str | None = None) -> None
@@ -1434,6 +1634,9 @@ class JobContext:
     def log(self, message: str, level: int = logging.INFO) -> None
     def emit(self, event: dict) -> None
     def should_cancel(self) -> bool
+    def lost_ownership(self) -> bool
+    @contextmanager
+    def keep_alive(self, interval: float = 30.0)   # giữ nhịp tim quanh một bước dài
 ```
 
 - [ ] **Step 1: Viết test thất bại**
@@ -1554,6 +1757,29 @@ def test_heartbeat_touches_the_row_without_moving_progress():
     assert after.heartbeat_at >= before.heartbeat_at
 
 
+def test_on_write_hook_fires_on_every_db_write_and_only_then():
+    """Runner dùng hook này thay cho việc bọc lại _write. Nó phải theo đúng nhịp
+    throttle: gọi progress() liên tục không được làm hook nổ liên tục."""
+    clock = _FakeClock()
+    conn = db.connect(":memory:")
+    db.init_schema(conn)
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#0")
+    seen = []
+    ctx = JobContext(
+        job, conn, JobLogger(job_id, "video"), lambda: False, clock=clock,
+        on_write=lambda current, total, phase: seen.append((current, total, phase)),
+    )
+
+    ctx.progress(1, 10, phase="encoding")      # ghi
+    clock.advance(0.01)
+    ctx.progress(2, 10, phase="encoding")      # bị chặn
+    clock.advance(1.0)
+    ctx.progress(3, 10, phase="encoding")      # ghi
+
+    assert seen == [(1, 10, "encoding"), (3, 10, "encoding")]
+
+
 def test_should_cancel_reflects_the_supplied_check():
     clock = _FakeClock()
     flag = {"stop": False}
@@ -1561,6 +1787,57 @@ def test_should_cancel_reflects_the_supplied_check():
     assert ctx.should_cancel() is False
     flag["stop"] = True
     assert ctx.should_cancel() is True
+
+
+def test_losing_ownership_flips_should_cancel(tmp_path):
+    """Job bị reap rồi worker khác claim: lần ghi tiến độ tiếp theo bị rào chặn, và
+    handler được báo dừng qua should_cancel()."""
+    clock = _FakeClock()
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#A")
+    ctx = JobContext(job, conn, JobLogger(job_id, "video"), lambda: False, clock=clock)
+
+    ctx.progress(1, 10, phase="encoding")
+    assert ctx.should_cancel() is False
+    assert ctx.lost_ownership() is False
+
+    conn.execute("UPDATE job SET worker_id='video#B' WHERE id=?", (job_id,))
+    conn.commit()
+    clock.advance(1.0)
+    ctx.progress(2, 10, phase="encoding")
+
+    assert ctx.lost_ownership() is True
+    assert ctx.should_cancel() is True
+    assert store.get(conn, job_id).progress_current == 1   # ghi của A không lọt qua
+
+
+def test_keep_alive_beats_while_a_long_step_runs(tmp_path):
+    import time as real_time
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=NULL WHERE id=?", (job_id,))
+    conn.commit()
+    ctx = JobContext(
+        job, conn, JobLogger(job_id, "video"), lambda: False,
+        conn_factory=lambda: db.connect(str(tmp_path / "a.db")),
+    )
+
+    with ctx.keep_alive(interval=0.05):
+        real_time.sleep(0.25)
+
+    assert store.get(conn, job_id).heartbeat_at is not None
+
+
+def test_keep_alive_is_a_no_op_without_a_conn_factory(tmp_path):
+    """Test nào không quan tâm tới nhịp tim thì không phải dựng connection factory."""
+    clock = _FakeClock()
+    ctx, _, _ = _ctx(clock)
+    with ctx.keep_alive(interval=0.01):
+        pass
 
 
 def test_log_and_emit_reach_the_job_log_file():
@@ -1614,6 +1891,8 @@ class JobContext:
         *,
         flush_interval: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
+        on_write: Callable[[int, int, str | None], None] | None = None,
+        conn_factory: Callable[[], sqlite3.Connection] | None = None,
     ):
         self.job = job
         self.conn = conn
@@ -1621,6 +1900,15 @@ class JobContext:
         self._cancel_check = cancel_check
         self._flush_interval = flush_interval
         self._clock = clock
+        # Runner dùng hook này để mirror tiến độ vào tracker trong bộ nhớ, tránh cho
+        # /health phải đọc DB mỗi lần được gọi. Không có nó, runner sẽ phải thò tay
+        # vào thuộc tính private của lớp này.
+        self._on_write = on_write
+        # keep_alive() cần connection riêng: thread giữ nhịp tim không được dùng chung
+        # self.conn với handler đang chạy (sqlite3 connection không an toàn khi hai
+        # thread dùng cùng lúc). None => keep_alive thành no-op, dùng trong test.
+        self._conn_factory = conn_factory
+        self._lost_ownership = False
 
         self._current = job.progress_current
         self._total = job.progress_total
@@ -1650,8 +1938,47 @@ class JobContext:
     def heartbeat(self) -> None:
         """Báo còn sống khi không có tiến độ mới để báo — handler nào chạy một bước
         dài (upload một file lớn) phải gọi cái này, nếu không reaper sẽ tưởng nó chết."""
-        store.heartbeat(self.conn, self.job.id)
+        if not store.heartbeat(self.conn, self.job.id, worker_id=self.job.worker_id):
+            self._lost_ownership = True
         self._last_write_at = self._clock()
+
+    @contextmanager
+    def keep_alive(self, interval: float = 30.0):
+        """Giữ nhịp tim trong suốt một bước dài không tự báo tiến độ được — encode
+        ffmpeg, hay một lần upload YouTube. Không có nó, reaper (mặc định 120s) sẽ
+        tưởng worker đã chết, trả job về 'pending', và một worker thứ hai chạy lại
+        đúng công việc đó.
+
+        Thread giữ nhịp mở connection riêng mỗi nhịp: sqlite3 connection không an toàn
+        khi hai thread dùng cùng lúc, và handler đang giữ self.conn."""
+        if self._conn_factory is None:
+            yield
+            return
+
+        stop = threading.Event()
+
+        def _beat() -> None:
+            while not stop.wait(interval):
+                try:
+                    conn = self._conn_factory()
+                    try:
+                        alive = store.heartbeat(
+                            conn, self.job.id, worker_id=self.job.worker_id)
+                    finally:
+                        conn.close()
+                except sqlite3.Error:
+                    continue      # một nhịp lỡ không đáng làm hỏng job
+                if not alive:
+                    self._lost_ownership = True
+                    return        # job không còn của mình: ngừng đập, để handler tự dừng
+
+        thread = threading.Thread(target=_beat, name=f"keepalive-{self.job.id}", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5.0)
 
     def flush(self, *, force: bool = True) -> None:
         """Đẩy giá trị đang treo xuống DB. Runner gọi khi job kết thúc, nên con số
@@ -1662,12 +1989,18 @@ class JobContext:
             self._write(self._clock())
 
     def _write(self, now: float) -> None:
-        store.write_progress(
+        if not store.write_progress(
             self.conn, self.job.id,
             current=self._current, total=self._total, phase=self._phase,
-        )
+            worker_id=self.job.worker_id,
+        ):
+            # Job đã bị reap và giao cho worker khác. Ghi tiếp là đè lên lượt chạy của
+            # họ, nên dừng lại và để should_cancel() bảo handler thoát.
+            self._lost_ownership = True
         self._written = (self._current, self._total, self._phase)
         self._last_write_at = now
+        if self._on_write is not None:
+            self._on_write(self._current, self._total, self._phase)
 
     # ----------------------------------------------------------------- log
 
@@ -1683,8 +2016,17 @@ class JobContext:
     # ----------------------------------------------------------------- hủy
 
     def should_cancel(self) -> bool:
-        return self._cancel_check()
+        """True khi có người bấm hủy, HOẶC khi job đã không còn thuộc về worker này.
+        Gộp hai thứ vào một cờ để handler chỉ phải kiểm một chỗ ở ranh giới chunk."""
+        return self._lost_ownership or self._cancel_check()
+
+    def lost_ownership(self) -> bool:
+        """Runner dùng để phân biệt 'bị hủy' với 'bị reap rồi cướp mất'."""
+        return self._lost_ownership
 ```
+
+Import thêm ở đầu `context.py`: `import sqlite3`, `import threading`, và
+`from contextlib import contextmanager`.
 
 - [ ] **Step 4: Chạy test, xác nhận pass**
 
@@ -1692,7 +2034,7 @@ class JobContext:
 pytest tests/test_jobqueue_context.py -v
 ```
 
-Kỳ vọng: 9 passed.
+Kỳ vọng: 13 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1945,6 +2287,24 @@ async def test_a_fatal_error_skips_retry(conn_factory):
 
 
 @pytest.mark.asyncio
+async def test_a_type_with_capacity_zero_is_disabled_but_still_queues(conn_factory):
+    """Trần 0 = tắt loại đó. Job vẫn được enqueue và nằm chờ, không bị mất."""
+    conn = conn_factory()
+    store.enqueue(conn, "off")
+    store.enqueue(conn, "on")
+    ran = []
+    q = _queue(conn_factory, concurrency={"off": 0, "on": 2})
+    q.register("off", lambda ctx: ran.append("off"))
+    q.register("on", lambda ctx: ran.append("on"))
+    await q.start()
+    await asyncio.sleep(0.3)
+    await q.stop(timeout=5)
+    assert ran == ["on"]
+    assert store.list_jobs(conn, job_type="off")[0].status == "pending"
+    assert {p["job_type"]: p["capacity"] for p in q.pool_status()}["off"] == 0
+
+
+@pytest.mark.asyncio
 async def test_pause_stops_claiming(conn_factory):
     conn = conn_factory()
     store.enqueue(conn, "demo")
@@ -1983,6 +2343,39 @@ async def test_cancelling_a_running_job_is_seen_by_the_handler(conn_factory):
     await q.stop(timeout=5)
     assert saw_cancel.is_set()
     assert store.get(conn, job_id).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_stolen_job_is_not_clobbered_by_the_old_worker(conn_factory):
+    """Job bị reap giữa chừng rồi worker khác claim. Lượt chạy cũ xong sau, và kết quả
+    của nó phải bị bỏ qua thay vì ghi đè lên chủ mới."""
+    conn = conn_factory()
+    job_id = store.enqueue(conn, "demo")
+    started = threading.Event()
+    release = threading.Event()
+
+    def handler(ctx):
+        started.set()
+        release.wait(5)
+        return {"from": "old"}
+
+    q = _queue(conn_factory)
+    q.register("demo", handler)
+    await q.start()
+    await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+
+    # Mô phỏng reaper + worker mới cướp job trong lúc handler cũ còn chạy.
+    conn.execute(
+        "UPDATE job SET status='running', worker_id='demo#stolen' WHERE id=?", (job_id,))
+    conn.commit()
+    release.set()
+    await asyncio.sleep(0.3)
+    await q.stop(timeout=5)
+
+    job = store.get(conn, job_id)
+    assert job.status == "running"
+    assert job.worker_id == "demo#stolen"
+    assert job.result is None
 
 
 @pytest.mark.asyncio
@@ -2196,6 +2589,13 @@ class JobQueue:
             max_workers=total + 4, thread_name_prefix="jobqueue",
         )
         for job_type in self._specs:
+            # Trần 0 = loại này bị tắt (vd voxcpm_tts trên máy không GPU). Không dựng
+            # dispatcher cho nó: asyncio.Semaphore(0) sẽ treo vĩnh viễn ở acquire() và
+            # loop không bao giờ quay lại kiểm self._stop. Job vẫn xếp hàng bình thường
+            # và sẽ chạy khi bật lại.
+            if self.capacity(job_type) <= 0:
+                logger.info("event=queue.type_disabled job_type=%s", job_type)
+                continue
             self._tasks.append(asyncio.create_task(self._dispatch_loop(job_type)))
         self._tasks.append(asyncio.create_task(self._reaper_loop()))
         logger.info(
@@ -2321,38 +2721,56 @@ class JobQueue:
         làm cho song song thật sự xảy ra thay vì tất cả xếp hàng sau db_lock."""
         conn = self._conn_factory()
         job_logger = JobLogger(job.id, job.job_type)
-        ctx = JobContext(job, conn, job_logger, lambda: self._should_cancel(conn, job.id))
-        # Cho tracker thấy tiến độ mà không cần đọc DB — /health đọc rất thường xuyên.
-        original_write = ctx._write
 
-        def _tracked_write(now: float) -> None:
-            original_write(now)
-            tracker.current = ctx._current
-            tracker.total = ctx._total
+        # Mirror tiến độ vào tracker trong bộ nhớ để /health và pool_status không phải
+        # đọc DB mỗi lần được gọi. Hook chạy theo đúng nhịp throttle của JobContext.
+        def _track(current: int, total: int, phase: str | None) -> None:
+            tracker.current = current
+            tracker.total = total
 
-        ctx._write = _tracked_write   # type: ignore[method-assign]
+        ctx = JobContext(
+            job, conn, job_logger,
+            lambda: self._should_cancel(conn, job.id),
+            on_write=_track,
+            conn_factory=self._conn_factory,
+        )
 
+        owner = job.worker_id
         job_logger.log(f"bắt đầu job {job.id} ({job.job_type}), lần thử {job.attempt_count}")
         try:
             result = spec.fn(ctx)
             ctx.flush()
+            if ctx.lost_ownership():
+                self._log_stolen(job_logger, job)
+                return
             if self._should_cancel(conn, job.id):
-                store.mark_cancelled(conn, job.id)
+                store.mark_cancelled(conn, job.id, worker_id=owner)
                 job_logger.log("job bị hủy", level=logging.WARNING)
                 return
-            store.finish(conn, job.id, result if isinstance(result, dict) else None)
+            store.finish(
+                conn, job.id, result if isinstance(result, dict) else None, worker_id=owner)
             job_logger.log("job xong")
         except asyncio.CancelledError:
             ctx.flush()
-            store.mark_cancelled(conn, job.id)
+            if ctx.lost_ownership():
+                self._log_stolen(job_logger, job)
+                return
+            store.mark_cancelled(conn, job.id, worker_id=owner)
             job_logger.log("job bị hủy", level=logging.WARNING)
         except JobFatalError as exc:
             ctx.flush()
-            store.fail(conn, job.id, str(exc), fatal=True)
+            if ctx.lost_ownership():
+                self._log_stolen(job_logger, job)
+                return
+            store.fail(conn, job.id, str(exc), fatal=True, worker_id=owner)
             job_logger.log(f"lỗi không retry được: {exc}", level=logging.ERROR)
         except Exception as exc:  # noqa: BLE001 - một job hỏng không được làm chết pool
             ctx.flush()
-            new_status = store.fail(conn, job.id, str(exc), max_attempts=spec.max_attempts)
+            if ctx.lost_ownership():
+                self._log_stolen(job_logger, job)
+                return
+            new_status = store.fail(
+                conn, job.id, str(exc), max_attempts=spec.max_attempts, worker_id=owner)
             job_logger.log(
                 f"job lỗi ({new_status}): {exc!r}", level=logging.ERROR,
             )
@@ -2360,6 +2778,21 @@ class JobQueue:
         finally:
             job_logger.close()
             conn.close()
+
+    def _log_stolen(self, job_logger: JobLogger, job) -> None:
+        """Job này đã bị reaper thu hồi và giao cho worker khác trong lúc ta đang chạy.
+        Mọi lần ghi của ta đã bị rào chặn, nên không có gì để dọn — chỉ ghi lại, vì nếu
+        chuyện này xảy ra thường xuyên thì QUEUE_REAP_AFTER_SECONDS đang đặt quá thấp
+        so với thời gian chạy thật của loại job đó."""
+        job_logger.log(
+            f"job {job.id} đã bị thu hồi khỏi {job.worker_id} và giao cho worker khác; "
+            "kết quả của lượt chạy này bị bỏ qua",
+            level=logging.WARNING,
+        )
+        logger.warning(
+            "event=queue.job_stolen job_id=%s job_type=%s worker_id=%s",
+            job.id, job.job_type, job.worker_id,
+        )
 
     def _should_cancel(self, conn: sqlite3.Connection, job_id: int) -> bool:
         with self._lock:
@@ -2423,10 +2856,10 @@ class JobQueue:
         return tracker.total if tracker else 0
 ```
 
-Lưu ý cho người triển khai: `ctx._write` bị bọc lại trong `_execute` để tracker cập nhật
-mà không phải đọc DB. Đây là chỗ duy nhất chạm vào thuộc tính `_`-prefix của
-`JobContext`; nếu bạn thấy cách khác gọn hơn (ví dụ thêm callback công khai vào
-`JobContext.__init__`), làm cách đó và sửa test tương ứng — đừng nhân bản logic throttle.
+Lưu ý cho người triển khai: tracker được cập nhật qua tham số công khai `on_write` của
+`JobContext` (Task 5), **không** bằng cách bọc lại `ctx._write`. Không có thuộc tính
+`_`-prefix nào của `JobContext` được chạm tới từ `runner.py`, và logic throttle không bị
+nhân bản — hook chạy đúng nhịp mà `JobContext` đã quyết định.
 
 - [ ] **Step 4: Cập nhật `app/jobqueue/__init__.py`**
 
@@ -2447,7 +2880,7 @@ __all__ = [
 pytest tests/test_jobqueue_runner.py -v
 ```
 
-Kỳ vọng: 16 passed. `test_concurrency_cap_is_never_exceeded` là bài quan trọng nhất — nếu
+Kỳ vọng: 18 passed. `test_concurrency_cap_is_never_exceeded` là bài quan trọng nhất — nếu
 `peak == 1` thì handler đang chạy tuần tự, kiểm tra `run_in_executor` có nhận đúng
 `self._executor` không.
 
@@ -2995,6 +3428,36 @@ def test_progress_events_are_logged_and_phase_is_set(tmp_path, monkeypatch):
     assert store.get(conn, job_id).phase == "encoding"
 
 
+def test_the_render_runs_inside_keep_alive(tmp_path, monkeypatch):
+    """Giữa ffmpeg_start và ffmpeg_done của một sách dài có thể là hàng chục phút
+    không event nào. Ngoài keep_alive thì reaper sẽ cho worker khác render lại."""
+    from contextlib import contextmanager
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    bj = _book_job(conn)
+    events = []
+
+    @contextmanager
+    def _spy(interval=30.0):
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    ctx, _ = _ctx(conn, bj.id)
+    monkeypatch.setattr(ctx, "keep_alive", _spy)
+    monkeypatch.setattr(video_handler.settings, "youtube_auto_upload", False)
+
+    def fake_generate(patches, book, out_path, **kw):
+        events.append("render")
+        open(out_path, "wb").close()
+
+    monkeypatch.setattr(video_handler.video_gen, "generate_full_video", fake_generate)
+
+    video_handler.handle(ctx)
+
+    assert events == ["enter", "render", "exit"]
+
+
 def test_a_render_failure_marks_the_book_job_failed_and_reraises(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
@@ -3173,21 +3636,26 @@ def _render(ctx, book_job_id: int, book_id: int) -> str:
         ctx.log(f"{event} {detail}".strip(), level=level)
         ctx.heartbeat()
 
-    video_gen.generate_full_video(
-        done_patches, book, out_path,
-        default_image=settings.default_background_image,
-        use_nvenc=settings.use_nvenc,
-        music_path=music_path,
-        music_volume=book.music_volume,
-        codec=video_config["codec"],
-        quality=video_config["quality"],
-        audio_bitrate=video_config["audio_bitrate"],
-        video_config=video_config,
-        intro_audio=intro_audio,
-        outro_audio=outro_audio,
-        font_path=settings.default_font_path or None,
-        on_progress=_on_progress,
-    )
+    # keep_alive là bắt buộc, không phải tùy chọn: giữa segment.ffmpeg_start và
+    # segment.ffmpeg_done của một sách dài có thể là hàng chục phút không một event nào.
+    # Không có nó, reaper (mặc định 120s) sẽ tưởng worker chết và cho worker thứ hai
+    # render lại đúng video đó.
+    with ctx.keep_alive():
+        video_gen.generate_full_video(
+            done_patches, book, out_path,
+            default_image=settings.default_background_image,
+            use_nvenc=settings.use_nvenc,
+            music_path=music_path,
+            music_volume=book.music_volume,
+            codec=video_config["codec"],
+            quality=video_config["quality"],
+            audio_bitrate=video_config["audio_bitrate"],
+            video_config=video_config,
+            intro_audio=intro_audio,
+            outro_audio=outro_audio,
+            font_path=settings.default_font_path or None,
+            on_progress=_on_progress,
+        )
     return out_path
 
 
@@ -3225,7 +3693,7 @@ def _maybe_enqueue_upload(ctx, book_id: int, output_path: str) -> None:
 pytest tests/test_jobqueue_handler_video.py -v
 ```
 
-Kỳ vọng: 8 passed.
+Kỳ vọng: 9 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -3318,6 +3786,34 @@ def test_successful_upload_returns_the_video_id(tmp_path, monkeypatch):
     ctx, _ = _ctx(conn, upload_id)
 
     assert handler.handle(ctx) == {"youtube_video_id": "abc123"}
+
+
+def test_the_transfer_runs_inside_keep_alive(tmp_path, monkeypatch):
+    """process_upload là cả lần transfer nhiều phút. Nếu nó chạy ngoài keep_alive,
+    reaper sẽ trả job về pending giữa chừng và worker thứ hai upload trùng video."""
+    from contextlib import contextmanager
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    upload_id = _upload_row(conn)
+    ctx, _ = _ctx(conn, upload_id)
+    events = []
+
+    @contextmanager
+    def _spy(interval=30.0):
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    monkeypatch.setattr(ctx, "keep_alive", _spy)
+    monkeypatch.setattr(
+        handler.youtube, "process_upload",
+        lambda c, uid: events.append("transfer") or {"status": "done", "youtube_video_id": "x"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda c, uid: None)
+
+    handler.handle(ctx)
+
+    assert events == ["enter", "transfer", "exit"]
 
 
 def test_a_failed_transfer_marks_the_upload_and_raises(tmp_path, monkeypatch):
@@ -3436,7 +3932,11 @@ def handle(ctx) -> dict:
         update_video(ctx.conn, video_id, upload_status="uploading")
 
     ctx.log(f"bắt đầu upload {upload_id}")
-    result = youtube.process_upload(ctx.conn, upload_id)
+    # process_upload là cả lần transfer nhiều phút và không tự báo tiến độ. Không có
+    # keep_alive, reaper sẽ trả job về 'pending' giữa chừng và một worker thứ hai
+    # upload lại đúng video đó lên YouTube.
+    with ctx.keep_alive():
+        result = youtube.process_upload(ctx.conn, upload_id)
 
     if result.get("status") != "done":
         error = result.get("error") or result.get("status") or "upload thất bại"
@@ -3482,7 +3982,7 @@ def handle(ctx) -> dict:
 pytest tests/test_jobqueue_handler_youtube.py -v
 ```
 
-Kỳ vọng: 6 passed.
+Kỳ vọng: 7 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -4283,13 +4783,23 @@ from app.jobqueue.runner import JobQueue, parse_concurrency
 logger = logging.getLogger(__name__)
 
 
-def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
+def build_queue(
+    conn_factory: Callable[[], sqlite3.Connection], *, enable_voxcpm: bool = True
+) -> JobQueue:
+    """`enable_voxcpm=False` (từ settings.enable_worker) chỉ đặt trần của voxcpm_tts về 0.
+    Ba loại còn lại vẫn chạy: cờ đó có nghĩa "máy này không có GPU", chứ không phải
+    "đừng chạy gì cả". Trần 0 làm dispatcher của loại đó không bao giờ claim được job,
+    nhưng job vẫn xếp hàng bình thường và sẽ chạy khi bật lại."""
     from app import repository
+
+    concurrency = parse_concurrency(
+        settings.queue_concurrency, default=settings.queue_default_concurrency)
+    if not enable_voxcpm:
+        concurrency["voxcpm_tts"] = 0
 
     queue = JobQueue(
         conn_factory,
-        concurrency=parse_concurrency(
-            settings.queue_concurrency, default=settings.queue_default_concurrency),
+        concurrency=concurrency,
         default_concurrency=settings.queue_default_concurrency,
         poll_interval=settings.worker_poll_interval,
         reap_after_seconds=settings.queue_reap_after_seconds,
@@ -4362,14 +4872,19 @@ Thay khối dựng worker (dòng 79–113 của bản hiện tại) bằng:
     if removed:
         logging.info("event=queue.log_purge removed=%s", removed)
 
-    job_queue = None
-    if settings.enable_worker:
-        job_queue = build_queue(lambda: db.connect(settings.db_path))
-        await job_queue.start()
-        logging.info(
-            "event=queue.config %s",
-            " ".join(f"{p['job_type']}={p['capacity']}" for p in job_queue.pool_status()),
-        )
+    # Queue LUÔN được dựng. enable_worker chỉ tắt riêng VoxCPM — đó là ý nghĩa gốc của
+    # cờ này ("máy dev không có GPU"), và main.py cũ có comment nói rõ nó cố ý không
+    # chặn upload queue. Gộp cả hai vào một cờ sẽ tái tạo đúng cái bug từng làm
+    # youtube_uploads không bao giờ được rút.
+    job_queue = build_queue(
+        lambda: db.connect(settings.db_path),
+        enable_voxcpm=settings.enable_worker,
+    )
+    await job_queue.start()
+    logging.info(
+        "event=queue.config %s",
+        " ".join(f"{p['job_type']}={p['capacity']}" for p in job_queue.pool_status()),
+    )
     # app.state.worker giữ tên cũ: /health và routes/queue.py đọc qua nó.
     app.state.job_queue = job_queue
     app.state.worker = job_queue
@@ -4393,10 +4908,22 @@ from app.jobqueue import joblog
 from app.jobqueue.backfill import backfill_pending_jobs, build_queue
 ```
 
-Chú ý: `enable_worker=false` giờ tắt **cả** upload lẫn TTS. Bản cũ cố ý không gắn
-UploadWorker vào cờ này. Nếu bạn cần dựng queue mà không chạy TTS trong dev, đặt
-`QUEUE_CONCURRENCY="voxcpm_tts=0,..."` — `capacity` 0 làm dispatcher của loại đó không
-bao giờ claim được. Ghi điều này vào `README.md` mục cấu hình.
+Chú ý: `enable_worker=false` **chỉ** tắt VoxCPM, đúng như ý nghĩa gốc của cờ ("máy dev
+không có GPU"). Video, upload YouTube và LightTTS vẫn chạy. Bản `main.py` cũ có comment
+nói rõ cờ này cố ý không chặn upload queue — gộp cả hai sẽ tái tạo đúng cái bug từng
+làm `youtube_uploads` không bao giờ được rút. Thêm test khẳng định điều này:
+
+```python
+def test_enable_worker_false_only_disables_voxcpm(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "enable_worker", False)
+    queue = build_queue(lambda: db.connect(str(tmp_path / "a.db")), enable_voxcpm=False)
+    caps = {p["job_type"]: p["capacity"] for p in queue.pool_status()}
+    assert caps["voxcpm_tts"] == 0
+    assert caps["video"] == 2
+    assert caps["youtube_upload"] == 1
+    assert caps["light_tts"] == 10
+```
 
 - [ ] **Step 5: Chạy test, xác nhận pass**
 
@@ -5331,16 +5858,24 @@ Với mỗi test fail, phân loại:
 Thêm vào `tests/test_db_lock_contention.py`:
 
 ```python
-def test_queue_handlers_never_touch_the_shared_db_lock(tmp_path, monkeypatch):
+def test_queue_handlers_never_touch_the_shared_db_lock():
     """Điểm mấu chốt của cả thiết kế: nếu handler đi qua db_lock thì 10 worker chỉ là
     con số trên giấy. Handler nhận connection riêng qua ctx.conn — chưa từng có, và
-    không được phép có, tham chiếu tới app.state.db_lock trong app/jobqueue/."""
-    import subprocess
-    out = subprocess.run(
-        ["grep", "-rn", "db_lock", "app/jobqueue/"],
-        capture_output=True, text=True,
-    )
-    assert out.stdout.strip() == "", f"jobqueue tham chiếu db_lock:\n{out.stdout}"
+    không được phép có, tham chiếu tới app.state.db_lock trong app/jobqueue/.
+
+    Quét bằng pathlib chứ không gọi grep qua subprocess: repo này chạy trên Windows,
+    nơi grep không chắc có trên PATH của tiến trình Python."""
+    from pathlib import Path
+    import app.jobqueue
+
+    root = Path(app.jobqueue.__file__).parent
+    offenders = [
+        f"{path.relative_to(root)}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "db_lock" in line
+    ]
+    assert offenders == [], f"jobqueue tham chiếu db_lock: {offenders}"
 ```
 
 - [ ] **Step 6: Chạy toàn bộ suite**
@@ -5387,8 +5922,12 @@ chung, mỗi loại có trần song song riêng:
 | `QUEUE_LOG_RETENTION_DAYS` | `7` | số ngày giữ log job trong `data/logs/jobs/` |
 | `QUEUE_REAP_AFTER_SECONDS` | `120` | job `running` im lặng quá lâu bị trả về `pending` |
 
-Đặt một loại về `0` để tắt hẳn nó — ví dụ máy dev không có GPU:
-`QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"`.
+Đặt một loại về `0` để tắt hẳn nó: `QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"`.
+Loại bị tắt vẫn nhận job vào hàng đợi, chỉ là không có worker nào chạy chúng cho tới khi
+bật lại.
+
+`ENABLE_WORKER=false` là lối tắt cho trường hợp hay gặp nhất — máy dev không có GPU. Nó
+**chỉ** đặt `voxcpm_tts` về 0; video, upload YouTube và LightTTS vẫn chạy bình thường.
 
 Theo dõi ở `/queue`. Log chi tiết của từng job nằm ở `data/logs/jobs/<job_id>.log`;
 `data/app.log` chỉ nhận dòng WARNING trở lên.
