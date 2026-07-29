@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import logging.handlers
 import threading
@@ -16,11 +15,10 @@ from fastapi.templating import Jinja2Templates
 from app import db, repository
 from app.config import settings
 from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
-from app.tts_engine import VoxCPMEngine
-from app.upload_worker import init_worker
-# Aliased: the `from app.routes import ... youtube` above binds the routes module to that name.
-from app.youtube import is_configured as youtube_is_configured
-from app.worker import PatchWorker
+import asyncio
+
+from app.jobqueue import joblog
+from app.jobqueue.backfill import backfill_pending_jobs, build_queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,62 +77,34 @@ async def lifespan(app: FastAPI):
     db_lock = threading.Lock()
     app.state.conn = conn
     app.state.db_lock = db_lock
-    worker_task: asyncio.Task | None = None
-    if settings.enable_worker:
-        engine = VoxCPMEngine()
-        worker = PatchWorker(
-            conn,
-            engine,
-            settings.data_root,
-            settings.worker_poll_interval,
-            db_lock,
-            shutdown_timeout=settings.worker_shutdown_timeout_seconds,
-        )
-        app.state.worker = worker
-        worker_task = asyncio.create_task(worker.run_forever())
+    backfilled = backfill_pending_jobs(conn)
+    if any(backfilled.values()):
         logging.info(
-            "worker started (poll_interval=%s s, shutdown_timeout=%s s)",
-            settings.worker_poll_interval,
-            settings.worker_shutdown_timeout_seconds,
+            "event=queue.backfill voxcpm_tts=%s video=%s youtube_upload=%s",
+            backfilled["voxcpm_tts"], backfilled["video"], backfilled["youtube_upload"],
         )
-    else:
-        app.state.worker = None
 
-    # Without this the module-level singleton stays None, so nothing ever drains
-    # youtube_uploads rows left at 'pending' and /publish always answers 503.
-    # Deliberately not gated on enable_worker: that flag suppresses the TTS loop in dev
-    # (no GPU), which has nothing to do with draining the upload queue.
-    uploader = None
-    if youtube_is_configured():
-        uploader = init_worker(conn, db_lock)
-        await uploader.start()
-    else:
-        logging.info("upload worker not started: YouTube credentials are not configured")
-    app.state.upload_worker = uploader
+    removed = joblog.purge_old_logs(conn)
+    if removed:
+        logging.info("event=queue.log_purge removed=%s", removed)
+
+    job_queue = None
+    if settings.enable_worker:
+        job_queue = build_queue(lambda: db.connect(settings.db_path))
+        await job_queue.start()
+        logging.info(
+            "event=queue.config %s",
+            " ".join(f"{p['job_type']}={p['capacity']}" for p in job_queue.pool_status()),
+        )
+    app.state.job_queue = job_queue
+    app.state.worker = job_queue
+    app.state.upload_worker = None
 
     try:
         yield
     finally:
-        if uploader is not None:
-            await uploader.stop()
-        if worker_task is not None:
-            worker.stop()
-            try:
-                await asyncio.wait_for(worker_task, timeout=settings.worker_shutdown_timeout_seconds)
-            except asyncio.TimeoutError:
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    "worker did not stop within %s s; cancelling",
-                    settings.worker_shutdown_timeout_seconds,
-                )
-                worker.log_shutdown_timeout()
-                worker_task.cancel()
-                try:
-                    await worker_task
-                except asyncio.CancelledError:
-                    pass
-            except asyncio.CancelledError:
-                pass
+        if job_queue is not None:
+            await job_queue.stop(timeout=settings.worker_shutdown_timeout_seconds)
         conn.close()
 
 

@@ -28,9 +28,8 @@ def _enqueue(request: Request, video_path: str, title: str, description: str, ta
     locked_conn, so a multi-minute network upload inside one would block every other
     request (including the progress poll this feature depends on).
     """
-    from app.upload_worker import upload_worker
-
-    if upload_worker is None or not upload_worker.get_status().get("running"):
+    from app.jobqueue import store
+    if getattr(request.app.state, "job_queue", None) is None:
         raise HTTPException(status_code=503, detail="Upload worker is unavailable")
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -46,6 +45,8 @@ def _enqueue(request: Request, video_path: str, title: str, description: str, ta
             privacy_status=privacy_status,
             playlist_id=playlist_id,
         )
+        store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id},
+                      dedupe_key=f"youtube_upload:upload={upload_id}")
     return {"upload_id": upload_id, "status": "pending"}
 
 

@@ -21,7 +21,7 @@ def parse_concurrency(spec: str, *, default: int) -> dict[str, int]:
             value = int(value)
         except ValueError:
             continue
-        if value > 0 and name.strip():
+        if value >= 0 and name.strip():
             out[name.strip()] = value
     return out
 
@@ -85,7 +85,10 @@ class JobQueue:
             self._cancel.add(job_id)
 
     async def _dispatch(self, job_type):
-        sem = asyncio.Semaphore(self.capacity(job_type))
+        capacity = self.capacity(job_type)
+        if capacity <= 0:
+            return
+        sem = asyncio.Semaphore(capacity)
         conn = self._conn_factory()
         sequence = 0
         try:

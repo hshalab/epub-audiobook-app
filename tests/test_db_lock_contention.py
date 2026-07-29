@@ -35,6 +35,16 @@ def _insert_book(conn, *, book_id=1, final_audio_path="/tmp/final.wav"):
     conn.commit()
 
 
+def test_queue_handlers_never_touch_the_shared_db_lock(tmp_path, monkeypatch):
+    from pathlib import Path
+    matches = []
+    for path in Path("app/jobqueue").rglob("*.py"):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "db_lock" in line:
+                matches.append(f"{path}:{line_number}: {line}")
+    assert not matches, "jobqueue references db_lock:\n" + "\n".join(matches)
+
+
 class _LockProbe:
     """Records whether db_lock was already held at the moment a slow call started."""
 

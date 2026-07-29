@@ -630,15 +630,14 @@ async def _run_single_video(
         from app import youtube
         if settings.youtube_auto_upload and youtube.is_configured():
             try:
-                from app.upload_worker import upload_worker
-                upload_worker.enqueue(
-                    video_id=video_db_id,
-                    title=finfo["original_name"],
-                    description=music_attribution,
-                    tags=settings.youtube_default_tags,
-                    privacy=settings.youtube_default_privacy,
-                    video_path=str(final_path),
+                from app.jobqueue import store
+                upload_id = youtube.enqueue_upload(
+                    conn, str(final_path), finfo["original_name"], music_attribution,
+                    [t.strip() for t in settings.youtube_default_tags.split(",") if t.strip()],
+                    settings.youtube_default_privacy, video_id=video_db_id or None,
                 )
+                store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id, "video_id": video_db_id or None},
+                              dedupe_key=f"youtube_upload:upload={upload_id}")
             except Exception as e:
                 logger.warning("Auto-upload enqueue failed: %s", e)
         return True

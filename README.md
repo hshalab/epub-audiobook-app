@@ -48,6 +48,19 @@ Key settings:
 - `USE_NVENC` — Hardware-accelerated video encoding
 - `YOUTUBE_*` — YouTube upload credentials and defaults
 
+### Job Queue
+
+All background work (VoxCPM TTS, LightTTS, video rendering, and YouTube uploads) runs through one queue with a separate concurrency cap per job type.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUEUE_CONCURRENCY` | `voxcpm_tts=1,video=2,youtube_upload=1` | Per-type concurrency caps |
+| `QUEUE_DEFAULT_CONCURRENCY` | `10` | Cap for unlisted types, currently `light_tts` |
+| `QUEUE_LOG_RETENTION_DAYS` | `7` | Days to retain logs in `data/logs/jobs/` |
+| `QUEUE_REAP_AFTER_SECONDS` | `120` | Requeue silent running jobs after this period |
+
+Set a type to `0` to disable it, for example `QUEUE_CONCURRENCY="voxcpm_tts=0,video=2,youtube_upload=1"` on a machine without a GPU. Queue status is available at `/queue`; detailed logs are stored under `data/logs/jobs/`.
+
 ### ffmpeg/ffprobe
 
 The app needs `ffmpeg` and `ffprobe` binaries for audio merging and video generation. Place `ffmpeg.exe` and `ffprobe.exe` in `assets/bin/` (they are tracked via Git LFS, so they may already be present after cloning).

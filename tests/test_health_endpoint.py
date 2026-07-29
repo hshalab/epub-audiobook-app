@@ -49,3 +49,6 @@ def test_health_returns_503_when_heartbeat_is_stale(client):
     assert payload["status"] == "degraded"
     assert "reason" in payload
     assert "heartbeat" in payload["reason"].lower()
+    for key in ("status", "worker_state", "current_patch_id", "current_chunk_index",
+                "current_chunk_count", "queue_depth", "last_heartbeat_at"):
+        assert key in payload, f"missing legacy key: {key}"

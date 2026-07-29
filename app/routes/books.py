@@ -431,7 +431,12 @@ def trigger_video(request: Request, book_id: int):
         existing = repository.get_book_job(conn, book_id, "video")
         if existing is not None:
             return RedirectResponse(url=f"/books/{book_id}", status_code=303)
-        repository.enqueue_book_job(conn, book_id, "video")
+        book_job = repository.enqueue_book_job(conn, book_id, "video")
+        from app.jobqueue import store
+        store.enqueue(
+            conn, "video", payload={"book_job_id": book_job.id}, book_id=book_id,
+            dedupe_key=f"video:book_job={book_job.id}",
+        )
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

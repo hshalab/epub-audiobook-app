@@ -4,18 +4,48 @@ status; the buttons that drive state changes live here."""
 from __future__ import annotations
 
 import logging
+import asyncio
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
 
 from app import repository
 from app.deps import locked_conn
 from app.config import settings
+from app.jobqueue import joblog, store
+from app.jobqueue.backfill import backfill_pending_jobs
+from app.jobqueue.models import TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
+
+_JOB_FIELDS = ("id", "job_type", "status", "priority", "book_id", "phase",
+               "progress_current", "progress_total", "error_message", "attempt_count",
+               "max_attempts", "worker_id", "created_at", "started_at", "finished_at",
+               "updated_at")
+
+
+def _job_dict(job) -> dict:
+    data = {name: getattr(job, name) for name in _JOB_FIELDS}
+    data["payload"] = job.payload
+    data["result"] = job.result
+    data["percent"] = (min(100, round(job.progress_current * 100 / job.progress_total))
+                       if job.progress_total else 0)
+    return data
+
+
+def _pools(worker) -> list[dict]:
+    if worker is None or not hasattr(worker, "pool_status"):
+        return []
+    try:
+        return worker.pool_status()
+    except Exception:
+        return []
 
 
 def _worker_snapshot(worker) -> dict:
@@ -56,6 +86,7 @@ def health(request: Request):
             "current_chunk_count": 0,
             "queue_depth": 0,
             "last_heartbeat_at": None,
+            "pools": _pools(worker),
         }
     last_hb = _parse_iso(worker.last_heartbeat_at)
     now = datetime.now(timezone.utc)
@@ -65,6 +96,8 @@ def health(request: Request):
         reason = (
             f"no heartbeat within {threshold:.1f}s (last: {worker.last_heartbeat_at})"
         )
+        with locked_conn(request) as conn:
+            queue_depth = repository.get_queue_stats(conn)["patch"]["pending"]
         return JSONResponse(
             {
                 "status": "degraded",
@@ -73,7 +106,9 @@ def health(request: Request):
                 "current_patch_id": worker.current_patch_id,
                 "current_chunk_index": getattr(worker, "current_chunk_index", 0),
                 "current_chunk_count": getattr(worker, "current_chunk_count", 0),
+                "queue_depth": queue_depth,
                 "last_heartbeat_at": worker.last_heartbeat_at,
+                "pools": _pools(worker),
             },
             status_code=503,
         )
@@ -86,13 +121,98 @@ def health(request: Request):
         **_worker_snapshot(worker),
         "queue_depth": stats["patch"]["pending"],
         "last_heartbeat_at": worker.last_heartbeat_at,
+        "pools": _pools(worker),
     }
 
 
 @router.get("/queue/stats")
 def queue_stats(request: Request):
     with locked_conn(request) as conn:
-        return repository.get_queue_stats(conn)
+        stats = repository.get_queue_stats(conn)
+        stats["jobs"] = store.counts(conn)
+        return stats
+
+
+@router.get("/queue", response_class=HTMLResponse)
+def queue_page(request: Request):
+    queue = getattr(request.app.state, "job_queue", None)
+    with locked_conn(request) as conn:
+        jobs = [_job_dict(job) for job in store.list_jobs(conn, limit=200)]
+    return templates.TemplateResponse(request, "queue.html", {
+        "jobs": jobs, "pools": _pools(queue),
+    })
+
+
+@router.get("/queue/jobs")
+def list_jobs(request: Request, type: str = "", status: str = "",
+              book_id: int | None = None, limit: int = 100):
+    with locked_conn(request) as conn:
+        jobs = store.list_jobs(conn, job_type=type or None, status=status or None,
+                               book_id=book_id, limit=limit)
+    return {"jobs": [_job_dict(job) for job in jobs]}
+
+
+@router.get("/queue/jobs/{job_id}")
+def job_detail(request: Request, job_id: int):
+    with locked_conn(request) as conn:
+        job = store.get(conn, job_id)
+    if job is None:
+        raise HTTPException(404, detail=f"job {job_id} không tồn tại")
+    return _job_dict(job)
+
+
+@router.get("/queue/jobs/{job_id}/log", response_class=PlainTextResponse)
+def job_log(request: Request, job_id: int, tail: int = 500):
+    with locked_conn(request) as conn:
+        if store.get(conn, job_id) is None:
+            raise HTTPException(404, detail=f"job {job_id} không tồn tại")
+    return joblog.tail(job_id, lines=tail)
+
+
+@router.get("/queue/jobs/{job_id}/stream")
+async def job_stream(request: Request, job_id: int):
+    with locked_conn(request) as conn:
+        if store.get(conn, job_id) is None:
+            raise HTTPException(404, detail=f"job {job_id} không tồn tại")
+
+    async def stream():
+        cursor = 0
+        while True:
+            events, cursor = await asyncio.to_thread(
+                joblog.read_events, job_id, from_line=cursor
+            )
+            for event in events:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            with locked_conn(request) as conn:
+                job = store.get(conn, job_id)
+            if job is None:
+                return
+            yield f"data: {json.dumps({'type': 'progress', **_job_dict(job)}, ensure_ascii=False, default=str)}\n\n"
+            if job.status in TERMINAL_STATUSES or await request.is_disconnected():
+                return
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.post("/queue/jobs/{job_id}/cancel")
+def cancel_job(request: Request, job_id: int):
+    with locked_conn(request) as conn:
+        status = store.request_cancel(conn, job_id)
+    if status is None:
+        raise HTTPException(409, detail="job đã kết thúc hoặc không tồn tại")
+    queue = getattr(request.app.state, "job_queue", None)
+    if queue is not None and hasattr(queue, "request_cancel"):
+        queue.request_cancel(job_id)
+    return {"job_id": job_id, "status": status}
+
+
+@router.post("/queue/jobs/{job_id}/retry")
+def retry_job(request: Request, job_id: int):
+    with locked_conn(request) as conn:
+        if not store.retry(conn, job_id):
+            raise HTTPException(409, detail="chỉ retry được job đã kết thúc")
+    return {"job_id": job_id, "retried": True}
 
 
 @router.post("/queue/requeue-stuck")
@@ -103,6 +223,8 @@ def requeue_stuck(request: Request):
     runs at startup in main.lifespan."""
     with locked_conn(request) as conn:
         resumed = repository.requeue_stuck_processing_returning(conn)
+        repository.requeue_stuck_book_jobs(conn)
+        backfill_pending_jobs(conn)
     logger.info(
         "event=queue.requeue_stuck count=%s",
         len(resumed),
@@ -130,6 +252,7 @@ def retry_failed_patches(request: Request, book_id: int):
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         n = repository.retry_all_failed_patches_for_book(conn, book_id)
+        backfill_pending_jobs(conn)
     logger.info("retry_all_failed book_id=%s reset=%s", book_id, n)
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -146,8 +269,15 @@ def regenerate_video(request: Request, book_id: int):
                 detail="a video job for this book is already processing; wait for it to finish",
             )
         if existing is not None:
+            stale = store.find_live_by_dedupe(conn, f"video:book_job={existing.id}")
+            if stale is not None:
+                store.request_cancel(conn, stale.id)
+                if store.get(conn, stale.id).status == "cancelling":
+                    store.mark_cancelled(conn, stale.id)
             repository.delete_book_job(conn, book_id, "video")
-        repository.enqueue_book_job(conn, book_id, "video")
+        book_job = repository.enqueue_book_job(conn, book_id, "video")
+        store.enqueue(conn, "video", payload={"book_job_id": book_job.id}, book_id=book_id,
+                      dedupe_key=f"video:book_job={book_job.id}")
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
 
@@ -159,6 +289,10 @@ def reset_all_jobs(request: Request):
     an env flag (RESET_ALL_JOBS_ON_STARTUP=true in dev)."""
     with locked_conn(request) as conn:
         summary = repository.reset_all_jobs(conn)
+        cleared = conn.execute("DELETE FROM job").rowcount
+        conn.commit()
+        summary["jobs_cleared"] = cleared
+        summary["jobs_enqueued"] = sum(backfill_pending_jobs(conn).values())
     logger.info(
         "event=queue.reset_all patches_reset=%s book_jobs_reset=%s books_reset=%s files_deleted=%s",
         summary["patches_reset"],
