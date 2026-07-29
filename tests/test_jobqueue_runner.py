@@ -50,6 +50,12 @@ def test_parse_concurrency_ignores_malformed_entries():
 def test_parse_concurrency_empty_is_empty():
     assert parse_concurrency("", default=10) == {}
 
+
+def test_parse_concurrency_preserves_zero_as_disabled():
+    assert parse_concurrency("voxcpm_tts=0,video=2", default=10) == {
+        "voxcpm_tts": 0, "video": 2,
+    }
+
 def test_capacity_uses_config_or_default():
     q = JobQueue(lambda: None, concurrency={"video": 2}, default_concurrency=10)
     q.register("video", lambda ctx: {}); q.register("light_tts", lambda ctx: {})
