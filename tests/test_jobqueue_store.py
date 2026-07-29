@@ -218,6 +218,98 @@ def test_retry_refuses_a_running_job():
     assert store.retry(conn, job_id) is False
 
 
+def test_a_reaped_worker_cannot_finish_a_job_someone_else_now_owns():
+    """Kịch bản zombie: A bị reap giữa chừng, B claim lại, rồi A mới xong. Lần ghi
+    muộn của A phải là no-op, không được đè lên lượt chạy của B."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    b = store.claim(conn, "video", "video#B")
+    assert b.worker_id == "video#B"
+
+    assert store.finish(conn, job_id, {"from": "A"}, worker_id=a.worker_id) is False
+    job = store.get(conn, job_id)
+    assert job.status == RUNNING
+    assert job.worker_id == "video#B"
+    assert job.result is None
+
+    assert store.finish(conn, job_id, {"from": "B"}, worker_id=b.worker_id) is True
+    assert store.get(conn, job_id).result == {"from": "B"}
+
+
+def test_a_reaped_worker_cannot_fail_a_job_someone_else_now_owns():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+
+    assert store.fail(conn, job_id, "A nói hỏng", worker_id=a.worker_id) is None
+    job = store.get(conn, job_id)
+    assert job.status == RUNNING
+    assert job.error_message is None
+
+
+def test_a_reaped_worker_cannot_move_progress_or_heartbeat():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+
+    assert store.write_progress(
+        conn, job_id, current=99, total=99, phase="ma", worker_id=a.worker_id) is False
+    assert store.heartbeat(conn, job_id, worker_id=a.worker_id) is False
+    job = store.get(conn, job_id)
+    assert job.progress_current == 0
+    assert job.phase is None
+
+
+def test_a_reaped_worker_cannot_mark_cancelled():
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    a = store.claim(conn, "video", "video#A")
+    conn.execute("UPDATE job SET heartbeat_at=? WHERE id=?", (_iso(-3600), job_id))
+    conn.commit()
+    store.reap_stale(conn, older_than_seconds=120)
+    store.claim(conn, "video", "video#B")
+    assert store.mark_cancelled(conn, job_id, worker_id=a.worker_id) is False
+    assert store.get(conn, job_id).status == RUNNING
+
+
+def test_the_owning_worker_writes_normally():
+    """Rào chỉ chặn kẻ lạ — chủ sở hữu thật vẫn ghi được như thường."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    job = store.claim(conn, "video", "video#A")
+    assert store.write_progress(
+        conn, job_id, current=2, total=5, phase="encoding", worker_id=job.worker_id) is True
+    assert store.heartbeat(conn, job_id, worker_id=job.worker_id) is True
+    assert store.finish(conn, job_id, {"ok": True}, worker_id=job.worker_id) is True
+    assert store.get(conn, job_id).status == DONE
+
+
+def test_writes_without_a_worker_id_are_unfenced():
+    """Route admin gọi không kèm worker_id và vẫn phải ghi được."""
+    conn = _conn()
+    job_id = store.enqueue(conn, "video")
+    store.claim(conn, "video", "video#A")
+    assert store.finish(conn, job_id, {"by": "admin"}) is True
+    assert store.get(conn, job_id).status == DONE
+
+
+def test_fail_on_a_missing_job_returns_none():
+    conn = _conn()
+    assert store.fail(conn, 4242, "không tồn tại") is None
+
+
 def test_reap_returns_a_stale_running_job_to_pending():
     conn = _conn()
     job_id = store.enqueue(conn, "video")

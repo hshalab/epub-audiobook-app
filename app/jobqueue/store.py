@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from app.jobqueue.models import (
-    CANCELLED, CANCELLING, DONE, FAILED, PENDING, RUNNING, TERMINAL_STATUSES, Job,
+    CANCELLED, CANCELLING, FAILED, PENDING, TERMINAL_STATUSES, Job,
 )
 
 _BASE_BACKOFF_SECONDS = 30
@@ -114,44 +114,66 @@ def claim(
 
 # ------------------------------------------------------------ tiến độ / nhịp tim
 
+def _fence(worker_id: str | None) -> tuple[str, list]:
+    """Mảnh WHERE tùy chọn rào theo chủ sở hữu. Truyền worker_id thì câu UPDATE chỉ
+    khớp khi job vẫn thuộc về worker đó — worker đã bị reap ghi vào là no-op."""
+    return (" AND worker_id=?", [worker_id]) if worker_id is not None else ("", [])
+
+
 def write_progress(
     conn: sqlite3.Connection, job_id: int, *, current: int, total: int,
-    phase: str | None, now: str | None = None,
-) -> None:
+    phase: str | None, now: str | None = None, worker_id: str | None = None,
+) -> bool:
     stamp = now or _now()
-    conn.execute(
-        """UPDATE job SET progress_current=?, progress_total=?, phase=?,
-                          heartbeat_at=?, updated_at=? WHERE id=?""",
-        (current, total, phase, stamp, stamp, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET progress_current=?, progress_total=?, phase=?,
+                           heartbeat_at=?, updated_at=? WHERE id=?{guard}""",
+        [current, total, phase, stamp, stamp, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
-def heartbeat(conn: sqlite3.Connection, job_id: int, *, now: str | None = None) -> None:
+def heartbeat(
+    conn: sqlite3.Connection, job_id: int, *, now: str | None = None,
+    worker_id: str | None = None,
+) -> bool:
     stamp = now or _now()
-    conn.execute("UPDATE job SET heartbeat_at=?, updated_at=? WHERE id=?", (stamp, stamp, job_id))
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"UPDATE job SET heartbeat_at=?, updated_at=? WHERE id=?{guard}",
+        [stamp, stamp, job_id] + extra,
+    )
     conn.commit()
+    return cur.rowcount > 0
 
 
 # ------------------------------------------------------------------- kết thúc
 
-def finish(conn: sqlite3.Connection, job_id: int, result: dict | None = None) -> None:
+def finish(
+    conn: sqlite3.Connection, job_id: int, result: dict | None = None, *,
+    worker_id: str | None = None,
+) -> bool:
     now = _now()
-    conn.execute(
-        """UPDATE job SET status='done', result_json=?, error_message=NULL,
-                          finished_at=?, heartbeat_at=?, updated_at=? WHERE id=?""",
-        (json.dumps(result) if result is not None else None, now, now, now, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET status='done', result_json=?, error_message=NULL,
+                           finished_at=?, heartbeat_at=?, updated_at=? WHERE id=?{guard}""",
+        [json.dumps(result) if result is not None else None, now, now, now, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
 def fail(
     conn: sqlite3.Connection, job_id: int, error: str, *, fatal: bool = False,
-    max_attempts: int | None = None,
-) -> str:
+    max_attempts: int | None = None, worker_id: str | None = None,
+) -> str | None:
     """Trả về trạng thái mới: 'pending' nếu còn lượt retry, 'failed' nếu hết
-    (hoặc fatal=True). Cắt error về 4000 ký tự — traceback của ffmpeg có thể rất dài
-    và cột này được đọc trên mọi trang danh sách.
+    (hoặc fatal=True). Trả về None khi bị rào chặn — job đã không còn thuộc về
+    worker_id truyền vào, nên lần ghi này bị bỏ qua. Cắt error về 4000 ký tự:
+    traceback của ffmpeg có thể rất dài và cột này được đọc trên mọi trang danh sách.
 
     `max_attempts` cho phép runner áp số của HandlerSpec, đè lên giá trị đã lưu trên
     dòng job. Cần thiết vì job có thể được enqueue trước khi handler đăng ký (backfill,
@@ -159,27 +181,30 @@ def fail(
     now = _now()
     job = get(conn, job_id)
     if job is None:
-        return FAILED
+        return None
+    if worker_id is not None and job.worker_id != worker_id:
+        return None
     message = (error or "")[:4000]
     limit = job.max_attempts if max_attempts is None else max_attempts
+    guard, extra = _fence(worker_id)
     if not fatal and job.attempt_count < limit:
         retry_at = (
             datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds(job.attempt_count))
         ).isoformat()
-        conn.execute(
-            """UPDATE job SET status='pending', error_message=?, next_retry_at=?,
-                              worker_id=NULL, updated_at=? WHERE id=?""",
-            (message, retry_at, now, job_id),
+        cur = conn.execute(
+            f"""UPDATE job SET status='pending', error_message=?, next_retry_at=?,
+                               worker_id=NULL, updated_at=? WHERE id=?{guard}""",
+            [message, retry_at, now, job_id] + extra,
         )
         conn.commit()
-        return PENDING
-    conn.execute(
-        """UPDATE job SET status='failed', error_message=?, finished_at=?,
-                          worker_id=NULL, updated_at=? WHERE id=?""",
-        (message, now, now, job_id),
+        return PENDING if cur.rowcount > 0 else None
+    cur = conn.execute(
+        f"""UPDATE job SET status='failed', error_message=?, finished_at=?,
+                           worker_id=NULL, updated_at=? WHERE id=?{guard}""",
+        [message, now, now, job_id] + extra,
     )
     conn.commit()
-    return FAILED
+    return FAILED if cur.rowcount > 0 else None
 
 
 # ---------------------------------------------------------------- hủy / retry
@@ -203,14 +228,18 @@ def request_cancel(conn: sqlite3.Connection, job_id: int) -> str | None:
     return CANCELLING
 
 
-def mark_cancelled(conn: sqlite3.Connection, job_id: int) -> None:
+def mark_cancelled(
+    conn: sqlite3.Connection, job_id: int, *, worker_id: str | None = None
+) -> bool:
     now = _now()
-    conn.execute(
-        """UPDATE job SET status='cancelled', finished_at=?, worker_id=NULL,
-                          updated_at=? WHERE id=?""",
-        (now, now, job_id),
+    guard, extra = _fence(worker_id)
+    cur = conn.execute(
+        f"""UPDATE job SET status='cancelled', finished_at=?, worker_id=NULL,
+                           updated_at=? WHERE id=?{guard}""",
+        [now, now, job_id] + extra,
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
 def retry(conn: sqlite3.Connection, job_id: int) -> bool:
