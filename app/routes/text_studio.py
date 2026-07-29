@@ -401,122 +401,51 @@ async def preview_stream(
     with_effects: int = 0,
     max_chars: int = 0,
 ):
-    """Synthesize a whole patch with LightTTS, one chunk per SSE message.
+    """Enqueue LightTTS and forward the job log's structured SSE events."""
+    from app.jobqueue import joblog, store
+    from app.jobqueue.handlers.light_tts import dedupe_key
+    from app.jobqueue.models import TERMINAL_STATUSES
 
-    Streaming per chunk is what makes long patches survivable: the connection never
-    idles out, and each chunk is persisted as it lands so a failed or interrupted run
-    resumes instead of restarting. Merging and marking the patch done only happens
-    once every chunk exists — audio with holes in it is never saved."""
     with locked_conn(request) as conn:
-        patch = _require_patch(conn, book_id, patch_id)
-        effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
-        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch, max_chars=effective_max_chars)
-    # Off the lock and off the event loop: normalizing a long patch is seconds of CPU.
-    plan = await asyncio.to_thread(repository.build_chunk_plan_from_inputs, plan_inputs)
+        _require_patch(conn, book_id, patch_id)
+    key = dedupe_key(patch_id)
+    payload = {"patch_id": patch_id, "book_id": book_id, "backend": backend, "voice": voice,
+               "max_chars": max_chars, "with_effects": with_effects}
+    with locked_conn(request) as conn:
+        existing = store.find_live_by_dedupe(conn, key)
+        if existing is not None:
+            job_id = existing.id
+        else:
+            job_id = store.enqueue(conn, "light_tts", payload=payload, book_id=book_id, dedupe_key=key)
+            if job_id is None:
+                live = store.find_live_by_dedupe(conn, key)
+                job_id = live.id if live else None
+    if job_id is None:
+        async def _bail():
+            yield _sse({"type": "error", "message": "Không tạo được job LightTTS"})
+        return StreamingResponse(_bail(), media_type="text/event-stream")
 
-    resolved_backend = backend or settings.light_tts_backend
-    resolved_voice = voice or settings.light_tts_voice
-    db_lock = request.app.state.db_lock
-    conn_ref = request.app.state.conn
-
-    async def _generate():
-        total = len(plan)
-        if total == 0:
-            yield _sse({"type": "error", "message": "Patch này không có chunk nào"})
-            return
-
-        book_dir = _book_patch_dir(book_id)
-        chunk_dir = _chunk_dir(book_id, patch_id)
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-
-        # Existing chunk files are only reusable when they came from the same
-        # text/split/backend/voice; a meta marker records those inputs. On a mismatch
-        # (or for files written by the worker / Drive import, which leave no marker)
-        # start from a clean dir so mixed-source audio is never merged together.
-        joined = "\n\n".join(item["text"] for item in plan)
-        meta_key = hashlib.md5(
-            f"{resolved_backend}|{resolved_voice}|{effective_max_chars}|{joined}".encode("utf-8")
-        ).hexdigest()
-        meta_path = chunk_dir / ".light_tts_meta"
-        try:
-            reusable = meta_path.read_text(encoding="utf-8").strip() == meta_key
-        except OSError:
-            reusable = False
-        if not reusable:
-            for stale in chunk_dir.glob("chunk_*.wav"):
-                stale.unlink(missing_ok=True)
-            meta_path.write_text(meta_key, encoding="utf-8")
-
-        if max_chars == 0 and patch.chunk_count != total:
-            with db_lock:
-                repository.update_patch_chunk_count(conn_ref, patch_id, total)
-
-        try:
-            engine = LightTTSEngine(backend=resolved_backend, voice=resolved_voice or None)
-        except RuntimeError as exc:
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        cache_bust = uuid.uuid4().hex[:8]
-        ok_count = 0
-        fail_count = 0
-        contiguous = 0      # length of the unbroken run of chunks present from index 0
-        prefix_open = True  # False once a gap appears — later chunks can't extend it
-        for index, item in enumerate(plan):
-            chunk_path = chunk_dir / f"chunk_{index:03d}.wav"
-            chunk_url = f"/books/{book_id}/patches/{patch_id}/chunk-audio/{index}?v={cache_bust}"
-            present = False
-            if chunk_path.is_file():
-                ok_count += 1
-                present = True
-                yield _sse({"type": "chunk", "index": index, "total": total, "url": chunk_url, "reused": True})
-            else:
-                try:
-                    wav_bytes = await asyncio.to_thread(
-                        _synth_chunk_with_retries, engine, item["text"], resolved_voice or None
-                    )
-                except Exception as exc:  # noqa: BLE001 - one bad chunk must not lose the patch
-                    fail_count += 1
-                    logger.warning("preview_stream chunk %s of patch %s failed: %s", index, patch_id, exc)
-                    yield _sse({"type": "chunk_error", "index": index, "total": total, "message": str(exc)})
-                else:
-                    chunk_path.write_bytes(wav_bytes)
-                    ok_count += 1
-                    present = True
-                    yield _sse({"type": "chunk", "index": index, "total": total, "url": chunk_url})
-
-            # Persist the contiguous prefix as we go, so a mid-stream reload (which
-            # cancels this generator) still leaves next_chunk_index matching disk.
-            if prefix_open:
-                if present:
-                    contiguous = index + 1
-                else:
-                    prefix_open = False
-                with db_lock:
-                    repository.update_patch_chunk_progress(conn_ref, patch_id, contiguous)
-
-        if ok_count == 0:
-            yield _sse({"type": "error", "message": "Tất cả chunk đều lỗi, không có audio để lưu"})
-            return
-
-        if fail_count:
-            # Incomplete: do NOT merge or mark done with holes in the audio. The
-            # synthesized chunks stay on disk; a re-run fills only the gaps.
-            yield _sse({"type": "done", "saved": False, "complete": False, "ok": ok_count, "failed": fail_count})
-            return
-
-        try:
-            audio_path = str(book_dir / f"{patch_id}.wav")
-            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
-            await asyncio.to_thread(audio_merge.concat_wavs, chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
-            await asyncio.to_thread(_finish_patch_audio, plan, chunk_paths, audio_path, patch_id,
-                                    bool(with_effects), conn_ref, db_lock)
-            yield _sse({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
-        except Exception as exc:  # noqa: BLE001 - surfaced to the client
-            logger.exception("preview_stream merge/save failed for patch %s", patch_id)
-            yield _sse({"type": "error", "message": str(exc)})
-
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    async def _bridge():
+        cursor = 0
+        while True:
+            events, cursor = await asyncio.to_thread(joblog.read_events, job_id, from_line=cursor)
+            for event in events:
+                yield _sse(event)
+            with locked_conn(request) as conn:
+                job = store.get(conn, job_id)
+            if job is None:
+                return
+            if job.status in TERMINAL_STATUSES:
+                tail_events, _ = await asyncio.to_thread(joblog.read_events, job_id, from_line=cursor)
+                for event in tail_events:
+                    yield _sse(event)
+                if job.status == "failed":
+                    yield _sse({"type": "error", "message": job.error_message or "job thất bại"})
+                return
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.3)
+    return StreamingResponse(_bridge(), media_type="text/event-stream")
 
 
 def _finish_patch_audio(
@@ -546,5 +475,4 @@ def _finish_patch_audio(
 
     with db_lock:
         repository.mark_patch_done(conn, patch_id, audio_path)
-
 

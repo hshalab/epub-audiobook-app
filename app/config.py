@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     piper_voices_dir: str = ""
     # How many times to attempt each LightTTS chunk before reporting it failed.
     light_tts_chunk_retries: int = 3
+    queue_concurrency: str = "voxcpm_tts=1,video=2,youtube_upload=1"
+    queue_default_concurrency: int = 10
+    queue_log_retention_days: int = 7
+    queue_reap_after_seconds: int = 120
 
 
     @staticmethod

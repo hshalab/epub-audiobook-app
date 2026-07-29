@@ -78,8 +78,8 @@ def _claim_next(conn, table, order_col="id"):
 
 def _update_patch_chunk(conn, patch_id, **cols):
     sets = ", ".join(f"{k} = ?" for k in cols)
-    values = list(cols.values()) + [patch_id]
-    conn.execute(f"UPDATE patch SET {sets}, updated_at=? WHERE id=?", values + [_now()])
+    values = list(cols.values()) + [_now(), patch_id]
+    conn.execute(f"UPDATE patch SET {sets}, updated_at=? WHERE id=?", values)
     conn.commit()
 
 

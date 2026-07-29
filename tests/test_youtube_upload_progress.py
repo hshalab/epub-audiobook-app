@@ -145,6 +145,7 @@ def _client(tmp_path):
     app.state.conn = conn
     app.state.db_lock = threading.Lock()
     app.state.worker = None
+    app.state.job_queue = object()
     return conn, TestClient(app)
 
 
@@ -182,7 +183,7 @@ def test_upload_route_reports_when_no_worker_can_drain_the_queue(tmp_path, monke
     )
     conn.commit()
     monkeypatch.setattr(youtube, "is_configured", lambda: True)
-    monkeypatch.setattr(upload_worker, "upload_worker", None)
+    app.state.job_queue = None
 
     res = client.post("/youtube/upload", data={"video_path": "/tmp/v.mp4", "title": "T"})
 
@@ -190,19 +191,13 @@ def test_upload_route_reports_when_no_worker_can_drain_the_queue(tmp_path, monke
     assert conn.execute("SELECT COUNT(*) FROM youtube_uploads").fetchone()[0] == 0
 
 
-def test_lifespan_starts_the_upload_worker(tmp_path, monkeypatch):
+def test_lifespan_starts_the_job_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "life.db"))
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
-    monkeypatch.setattr(settings, "enable_worker", False)
-    monkeypatch.setattr("app.main.youtube_is_configured", lambda: True)
-    monkeypatch.setattr(upload_worker, "upload_worker", None)
-
+    monkeypatch.setattr(settings, "enable_worker", True)
     with TestClient(app):
-        assert app.state.upload_worker is not None
-        assert app.state.upload_worker.get_status()["running"]
-        assert upload_worker.upload_worker is app.state.upload_worker
-
-    assert not app.state.upload_worker.get_status()["running"]
+        assert app.state.job_queue is app.state.worker
+        assert app.state.job_queue is not None
 
 
 def test_youtube_page_polls_for_progress():

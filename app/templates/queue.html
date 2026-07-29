@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Hàng đợi job</h1>
+
+<div class="pools">
+{% for pool in pools %}
+    <span class="pool"><strong>{{ pool.job_type }}</strong> {{ pool.running }}/{{ pool.capacity }} đang chạy · {{ pool.pending }} chờ</span>
+{% endfor %}
+</div>
+
+<div class="filters">
+    <label>Loại
+        <select id="f-type">
+            <option value="">tất cả</option>
+            <option value="voxcpm_tts">voxcpm_tts</option>
+            <option value="light_tts">light_tts</option>
+            <option value="video">video</option>
+            <option value="youtube_upload">youtube_upload</option>
+        </select>
+    </label>
+    <label>Trạng thái
+        <select id="f-status">
+            <option value="">tất cả</option>
+            <option value="pending">pending</option>
+            <option value="running">running</option>
+            <option value="done">done</option>
+            <option value="failed">failed</option>
+            <option value="cancelled">cancelled</option>
+        </select>
+    </label>
+    <label><input type="checkbox" id="f-auto" checked> Tự cập nhật</label>
+</div>
+
+<table class="static-table" id="jobs">
+    <thead><tr><th>ID</th><th>Loại</th><th>Sách</th><th>Trạng thái</th><th>Tiến độ</th><th>Lần thử</th><th>Lỗi</th><th></th></tr></thead>
+    <tbody></tbody>
+</table>
+<pre id="log-view" hidden></pre>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOBS = {{ jobs | tojson }};
+const TERMINAL = new Set(["done", "failed", "cancelled"]);
+const NOT_CANCELLABLE = new Set(["youtube_upload"]);
+
+function cell(row, value, title) {
+    const td = document.createElement("td");
+    td.textContent = value == null ? "" : String(value);
+    if (title) td.title = title;
+    row.appendChild(td);
+    return td;
+}
+
+function button(row, label, attribute, id, disabled) {
+    const td = row.lastElementChild || row.appendChild(document.createElement("td"));
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.dataset[attribute] = id;
+    button.disabled = disabled;
+    td.appendChild(button);
+}
+
+function render(jobs) {
+    const body = document.querySelector("#jobs tbody");
+    body.replaceChildren();
+    for (const job of jobs) {
+        const row = document.createElement("tr");
+        cell(row, job.id);
+        cell(row, job.job_type);
+        cell(row, job.book_id);
+        cell(row, job.status + (job.phase ? " / " + job.phase : ""));
+        const progress = document.createElement("td");
+        if (job.progress_total) {
+            const bar = document.createElement("progress");
+            bar.value = job.progress_current;
+            bar.max = job.progress_total;
+            progress.append(bar, document.createTextNode(` ${job.percent}%`));
+        } else progress.textContent = "—";
+        row.appendChild(progress);
+        cell(row, `${job.attempt_count}/${job.max_attempts}`);
+        cell(row, job.error_message, job.error_message || "");
+        row.appendChild(document.createElement("td"));
+        button(row, "Log", "log", job.id, false);
+        button(row, "Hủy", "cancel", job.id, TERMINAL.has(job.status) || NOT_CANCELLABLE.has(job.job_type));
+        button(row, "Chạy lại", "retry", job.id, !TERMINAL.has(job.status));
+        body.appendChild(row);
+    }
+}
+
+async function refresh() {
+    const params = new URLSearchParams();
+    const type = document.getElementById("f-type").value;
+    const status = document.getElementById("f-status").value;
+    if (type) params.set("type", type);
+    if (status) params.set("status", status);
+    const response = await fetch("/queue/jobs?" + params);
+    if (response.ok) render((await response.json()).jobs);
+}
+
+document.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (target.dataset.log) {
+        const view = document.getElementById("log-view");
+        view.hidden = false;
+        const response = await fetch(`/queue/jobs/${target.dataset.log}/log`);
+        view.textContent = await response.text();
+    } else if (target.dataset.cancel || target.dataset.retry) {
+        const action = target.dataset.cancel ? "cancel" : "retry";
+        await fetch(`/queue/jobs/${target.dataset[action]}/${action}`, {method: "POST"});
+        await refresh();
+    }
+});
+document.getElementById("f-type").addEventListener("change", refresh);
+document.getElementById("f-status").addEventListener("change", refresh);
+setInterval(() => { if (document.getElementById("f-auto").checked) refresh(); }, 2000);
+render(JOBS);
+</script>
+{% endblock %}

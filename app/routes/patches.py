@@ -1089,9 +1089,7 @@ async def publish_patch(request: Request, book_id: int, patch_id: int):
         book, patch = _youtube_patch(conn, book_id, patch_id)
         if not youtube.is_configured() or not youtube.get_creds_from_db(conn):
             raise HTTPException(400, "YouTube connection is required")
-        from app.upload_worker import upload_worker
-        worker = upload_worker
-        if worker is None or not worker.get_status().get("running"):
+        if getattr(request.app.state, "job_queue", None) is None:
             raise HTTPException(503, "Upload worker is unavailable")
         override = {k: v for k, v in data.items() if k != "force_new"}
         if any(k in {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"} for k in override):

@@ -3,6 +3,7 @@ page's batch "Run Selected" drives."""
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 import soundfile as sf
@@ -11,6 +12,10 @@ from fastapi.testclient import TestClient
 from app import repository
 from app.config import settings
 from app.epub_parser import ParsedChapter
+from app.jobqueue import store
+from app.jobqueue.context import JobContext
+from app.jobqueue.joblog import JobLogger
+from app.jobqueue.models import JobFatalError
 from app.main import app
 
 
@@ -66,6 +71,47 @@ def fake_engine(monkeypatch):
     _FakeEngine.calls = []
     monkeypatch.setattr(text_studio, "LightTTSEngine", _FakeEngine)
     return _FakeEngine
+
+
+@pytest.fixture()
+def synchronous_light_tts(monkeypatch, fake_engine):
+    """Run queued LightTTS jobs inline while retaining the preview SSE bridge."""
+    from app.jobqueue.handlers import light_tts
+
+    monkeypatch.setattr(light_tts, "_build_engine", lambda backend, voice: fake_engine(backend, voice))
+    original_enqueue = store.enqueue
+
+    def enqueue_and_run(conn, job_type, *args, **kwargs):
+        job_id = original_enqueue(conn, job_type, *args, **kwargs)
+        if job_type != "light_tts":
+            return job_id
+        error = []
+
+        def run():
+            job = store.claim(conn, job_type, "test-light-tts")
+            ctx = JobContext(job, conn, JobLogger(job_id, job_type), lambda: False)
+            try:
+                result = light_tts.handle(ctx)
+                ctx.flush()
+                store.finish(conn, job_id, result)
+            except JobFatalError as exc:
+                ctx.flush()
+                store.fail(conn, job_id, str(exc), fatal=True)
+            except Exception as exc:  # pragma: no cover - preserves runner behavior
+                error.append(exc)
+                ctx.flush()
+                store.fail(conn, job_id, str(exc), fatal=True)
+            finally:
+                ctx.close()
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join()
+        if error:
+            raise error[0]
+        return job_id
+
+    monkeypatch.setattr(store, "enqueue", enqueue_and_run)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +258,7 @@ def _stream_events(client, url):
         ]
 
 
-def test_preview_stream_synthesizes_merges_and_marks_done(client, book_and_patch, fake_engine):
+def test_preview_stream_synthesizes_merges_and_marks_done(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
     events = _stream_events(
         client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream?backend=edge-tts",
@@ -226,7 +272,7 @@ def test_preview_stream_synthesizes_merges_and_marks_done(client, book_and_patch
     assert sf.info(stored.audio_path).frames > 0
 
 
-def test_preview_stream_writes_a_chapter_timeline(client, book_and_patch, fake_engine):
+def test_preview_stream_writes_a_chapter_timeline(client, book_and_patch, fake_engine, synchronous_light_tts):
     from app.youtube_metadata import load_timeline
 
     book, patch = book_and_patch
@@ -238,7 +284,7 @@ def test_preview_stream_writes_a_chapter_timeline(client, book_and_patch, fake_e
     assert [c["title"] for c in timeline["chapters"]] == ["Chương một", "Chương hai"]
 
 
-def test_preview_stream_speaks_the_edited_text(client, book_and_patch, fake_engine):
+def test_preview_stream_speaks_the_edited_text(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
     client.put(f"/books/{book.id}/text-studio/patches/{patch.id}", json={"text": "Chỉ đọc câu này."})
 
@@ -247,7 +293,7 @@ def test_preview_stream_speaks_the_edited_text(client, book_and_patch, fake_engi
     assert fake_engine.calls == ["Chỉ đọc câu này."]
 
 
-def test_preview_stream_reuses_chunks_from_an_earlier_identical_run(client, book_and_patch, fake_engine):
+def test_preview_stream_reuses_chunks_from_an_earlier_identical_run(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
     url = f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream"
     _stream_events(client, url)
@@ -258,7 +304,7 @@ def test_preview_stream_reuses_chunks_from_an_earlier_identical_run(client, book
     assert all(e.get("reused") for e in events if e["type"] == "chunk")
 
 
-def test_preview_stream_resynthesizes_after_the_text_changes(client, book_and_patch, fake_engine):
+def test_preview_stream_resynthesizes_after_the_text_changes(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
     url = f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream"
     _stream_events(client, url)
@@ -270,7 +316,7 @@ def test_preview_stream_resynthesizes_after_the_text_changes(client, book_and_pa
 
 
 def test_preview_stream_keeps_good_chunks_and_refuses_to_save_a_holey_patch(
-    client, book_and_patch, fake_engine, monkeypatch
+    client, book_and_patch, fake_engine, monkeypatch, synchronous_light_tts
 ):
     book, patch = book_and_patch
     original = _FakeEngine.synthesize_to_wav_bytes
@@ -299,7 +345,7 @@ def test_preview_stream_keeps_good_chunks_and_refuses_to_save_a_holey_patch(
     assert events[-1]["complete"] is True
 
 
-def test_preview_stream_reports_a_total_engine_failure(client, book_and_patch, fake_engine, monkeypatch):
+def test_preview_stream_reports_a_total_engine_failure(client, book_and_patch, fake_engine, monkeypatch, synchronous_light_tts):
     book, patch = book_and_patch
     monkeypatch.setattr(settings, "light_tts_chunk_retries", 1)
     monkeypatch.setattr(
@@ -331,7 +377,7 @@ def test_preview_paragraph_requires_text(client, book_and_patch, fake_engine):
     assert response.status_code == 400
 
 
-def test_chunk_audio_is_served_after_a_run(client, book_and_patch, fake_engine):
+def test_chunk_audio_is_served_after_a_run(client, book_and_patch, fake_engine, synchronous_light_tts):
     book, patch = book_and_patch
     _stream_events(client, f"/books/{book.id}/text-studio/patches/{patch.id}/preview-stream")
 

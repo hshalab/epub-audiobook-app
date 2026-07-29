@@ -21,6 +21,7 @@ def _client(tmp_path):
     app.state.conn = conn
     app.state.db_lock = threading.Lock()
     app.state.worker = None
+    app.state.job_queue = object()
     return conn, TestClient(app)
 
 
