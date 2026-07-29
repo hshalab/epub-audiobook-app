@@ -33,7 +33,7 @@ def test_enqueue_snapshots_metadata_and_is_idempotent(tmp_path, monkeypatch):
     second = enqueue_patch_publish(conn, patch_id)
 
     assert first["patch_id"] == patch_id
-    assert json.loads(first["config_snapshot"])["title"].startswith("Book - Tap 1")
+    assert json.loads(first["config_snapshot"])["title"].startswith("Book - Tập 1")
     assert json.loads(first["config_snapshot"])["automation"]["youtube"]["mode"] == "none"
     assert first["id"] == second["id"]
     assert conn.execute("SELECT COUNT(*) FROM patch_pipeline").fetchone()[0] == 1
@@ -66,6 +66,21 @@ def test_thumbnail_path_must_exist_before_enqueue_is_complete(tmp_path, monkeypa
     patch_id = _seed(conn)
     monkeypatch.setattr("app.patch_publishing.ensure_patch_overlay", lambda *args, **kwargs: "/missing/thumb.png")
     assert enqueue_patch_publish(conn, patch_id)["thumbnail_status"] == "pending"
+
+
+def test_publish_thumbnail_uses_default_font(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "test.db")); db.init_schema(conn)
+    patch_id = _seed(conn)
+    seen = []
+    monkeypatch.setattr("app.config.settings.default_font_path", "default.ttf")
+    monkeypatch.setattr(
+        "app.patch_publishing.ensure_patch_overlay",
+        lambda book, patch, font: seen.append(font) or "/missing/thumb.png",
+    )
+
+    enqueue_patch_publish(conn, patch_id)
+
+    assert seen == ["default.ttf"]
 
 
 def test_migration_enforces_unique_book_channel_playlist_map(tmp_path):

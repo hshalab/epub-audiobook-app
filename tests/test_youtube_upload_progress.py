@@ -219,3 +219,28 @@ def test_youtube_upload_form_hands_off_to_the_queue():
     handler = handler[:handler.index("</script>")]
     assert "location.reload()" in handler
     assert "Upload thành công" not in handler
+
+
+def test_standalone_upload_keeps_description_and_playlist(db_conn):
+    upload_id = youtube.enqueue_upload(
+        db_conn,
+        "video.mp4",
+        "Title",
+        description="Full description",
+        playlist_id="PL123",
+    )
+
+    row = db_conn.execute(
+        "SELECT description, metadata_snapshot FROM youtube_uploads WHERE id=?", (upload_id,)
+    ).fetchone()
+    assert row["description"] == "Full description"
+    assert json.loads(row["metadata_snapshot"])["automation"]["youtube"] == {
+        "playlist_mode": "existing",
+        "playlist_id": "PL123",
+    }
+
+
+def test_youtube_upload_form_sends_playlist():
+    source = (Path(__file__).parents[1] / "app" / "templates" / "youtube.html").read_text(encoding="utf-8")
+    assert 'id="yt-playlist"' in source
+    assert "fd.append('playlist_id', playlist)" in source

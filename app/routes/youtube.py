@@ -10,6 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app import db as app_db
 from app import youtube
 from app.config import settings
 from app.deps import locked_conn
@@ -20,7 +21,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
-def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str) -> dict:
+def _enqueue(request: Request, video_path: str, title: str, description: str, tags: str, privacy_status: str, playlist_id: str = "") -> dict:
     """Queue a video for the upload worker and return immediately.
 
     The upload itself must not run here: these handlers hold the shared db_lock via
@@ -43,8 +44,26 @@ def _enqueue(request: Request, video_path: str, title: str, description: str, ta
             description=description,
             tags=tag_list,
             privacy_status=privacy_status,
+            playlist_id=playlist_id,
         )
     return {"upload_id": upload_id, "status": "pending"}
+
+
+def _list_playlists_off_lock(request: Request) -> list[dict]:
+    """Page through the channel's playlists on a throwaway connection.
+
+    list_playlists is a paginated network round-trip. Running it under locked_conn would
+    hold the shared db_lock - and therefore every other request - for as long as the
+    YouTube API takes to answer, so it gets its own connection instead.
+    """
+    database = request.app.state.conn.execute("PRAGMA database_list").fetchone()[2]
+    if not database or database == ":memory:":
+        return youtube.list_playlists(request.app.state.conn)
+    api_conn = app_db.connect(database)
+    try:
+        return youtube.list_playlists(api_conn)
+    finally:
+        api_conn.close()
 
 
 @router.get("/youtube", response_class=HTMLResponse)
@@ -53,6 +72,10 @@ def youtube_page(request: Request):
         creds = youtube.get_creds_from_db(conn)
         connected = creds is not None and bool(creds.get("channel_name"))
         uploads = youtube.list_uploads(conn, limit=30)
+    try:
+        playlists = _list_playlists_off_lock(request) if connected else []
+    except Exception:
+        playlists = []
     return templates.TemplateResponse(request, "youtube.html", {
         "request": request,
         "connected": connected,
@@ -60,6 +83,7 @@ def youtube_page(request: Request):
         "uploads": uploads,
         "configured": youtube.is_configured(),
         "auto_upload": settings.youtube_auto_upload,
+        "playlists": playlists,
     })
 
 
@@ -117,11 +141,12 @@ async def youtube_upload_manual(
     description: str = Form(default=""),
     tags: str = Form(default=""),
     privacy_status: str = Form(default="private"),
+    playlist_id: str = Form(default=""),
 ):
     if not youtube.is_configured():
         raise HTTPException(status_code=400, detail="YouTube not configured")
 
-    return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status))
+    return JSONResponse(_enqueue(request, video_path, title, description, tags, privacy_status, playlist_id))
 
 
 @router.post("/youtube/upload-file")
@@ -132,6 +157,7 @@ async def youtube_upload_file(
     description: str = Form(default=""),
     tags: str = Form(default=""),
     privacy_status: str = Form(default="private"),
+    playlist_id: str = Form(default=""),
 ):
     """Upload a video file directly (for standalone videos not yet on disk)."""
     if not youtube.is_configured():
@@ -152,7 +178,7 @@ async def youtube_upload_file(
     # Off the event loop: a large file otherwise stalls every concurrent request.
     await asyncio.to_thread(_save)
 
-    return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status))
+    return JSONResponse(_enqueue(request, str(tmp_path), title, description, tags, privacy_status, playlist_id))
 
 
 @router.get("/youtube/uploads")

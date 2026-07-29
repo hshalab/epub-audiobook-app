@@ -26,8 +26,8 @@
 <nav class="book-nav" aria-label="Điều hướng nội dung sách">
     <button type="button" data-open-dialog="studio-modal">Studio Setup</button>
     <a href="/books/{{ book.id }}/text-studio">Text Studio</a>
-    {% if patches %}<a href="#patches-card">Patches</a>{% endif %}
-    <a href="#patch-bottom-nav">Export</a>
+    {% if patches %}<a href="#patches-section">Patches</a>{% endif %}
+    <a href="#patches-section" onclick="document.querySelector('.patch-pagination')?.scrollIntoView({behavior:'smooth'});return false;">Export</a>
     <details class="book-tools">
         <summary>Tools</summary>
         <div class="book-tools-menu">
@@ -76,7 +76,11 @@
         <div class="form-group">
             <label for="patch-{{ field }}">{{ field_label }}</label>
             <div class="field-with-action">
+                {% if field == 'description' %}
+                <textarea id="patch-{{ field }}" data-patch-field="{{ field }}" rows="5"></textarea>
+                {% else %}
                 <input id="patch-{{ field }}" data-patch-field="{{ field }}">
+                {% endif %}
                 <button type="button" class="btn-outline btn-sm" data-use-book-default="{{ field }}">Use book default</button>
             </div>
         </div>
@@ -399,10 +403,9 @@
     </div>
 {% endif %}
 
-<div class="card book-panel" id="patches-card">
-    <div class="card-header">
-        <h3 style="margin:0">Patches ({{ patches|length }})</h3>
-    </div>
+<div class="card-header" id="patches-section" style="scroll-margin-top:4.5rem">
+    <h3 style="margin:0">Patches ({{ patches|length }})</h3>
+</div>
     <details id="build-section" style="margin-bottom:var(--space-md)">
         <summary style="cursor:pointer;font-weight:500;font-size:var(--font-size-sm)">Auto-build Patches</summary>
         <form id="auto-build-form" class="auto-build-form" style="margin-top:var(--space-sm)">
@@ -539,7 +542,6 @@
         No patches yet. Configure text replace rules above, then click <strong>Auto-build</strong> to create patches and start processing.
     </p>
     {% endif %}
-</div>
 
 <div class="patch-bottom-nav" id="patch-bottom-nav">
     <span id="patch-selection-count" class="batch-selection-count"></span>
@@ -1184,7 +1186,7 @@ function savePatchState(search) {
     try { localStorage.setItem(PATCH_STORAGE_KEY, JSON.stringify({search: search})); } catch (_) {}
 }
 
-// The patches table is NOT the first table in #patches-card (the auto-build
+// The patches table is NOT the first table in the patches section (the auto-build
 // preview table comes first). Resolve the real patches <tbody> via the
 // select-all checkbox that lives in the patches table header.
 function patchesTbody() {

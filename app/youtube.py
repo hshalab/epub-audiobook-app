@@ -24,7 +24,7 @@ try:
     from google_auth_oauthlib.flow import Flow
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
-    from googleapiclient.http import MediaFileUpload
+    from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
     _GOOGLE_IMPORTS_OK = True
 except ModuleNotFoundError:
     _GOOGLE_IMPORTS_OK = False
@@ -380,6 +380,7 @@ def enqueue_upload(
     tags: list[str] | None = None,
     privacy_status: str | None = None,
     video_id: int | None = None,
+    playlist_id: str = "",
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
 
@@ -387,12 +388,15 @@ def enqueue_upload(
     """
     if privacy_status is None:
         privacy_status = settings.youtube_default_privacy
+    metadata_snapshot = json.dumps({"automation": {"youtube": {
+        "playlist_mode": "existing", "playlist_id": playlist_id,
+    }}}) if playlist_id else None
     now = _now_iso()
     cursor = conn.execute(
         """INSERT INTO youtube_uploads
-           (video_id, video_path, title, description, tags, privacy_status, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
-        (video_id, video_path, title, description, json.dumps(tags or []), privacy_status, now),
+           (video_id, video_path, title, description, tags, privacy_status, status, metadata_snapshot, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        (video_id, video_path, title, description, json.dumps(tags or []), privacy_status, metadata_snapshot, now),
     )
     conn.commit()
     return cursor.lastrowid
@@ -467,8 +471,38 @@ def set_thumbnail(conn: sqlite3.Connection, youtube_video_id: str, thumbnail_pat
     """Set the custom thumbnail for a published video."""
     _require_google_imports()
     service = get_youtube_service(conn)
-    media = MediaFileUpload(thumbnail_path, mimetype="image/png")
-    service.thumbnails().set(videoId=youtube_video_id, media_body=media).execute()
+    upload_path = Path(thumbnail_path)
+    temporary_path = None
+    try:
+        if upload_path.stat().st_size > 2 * 1024 * 1024:
+            import tempfile
+            from PIL import Image
+
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as output:
+                temporary_path = Path(output.name)
+            with Image.open(upload_path) as image:
+                image = image.convert("RGB")
+                image.thumbnail((1280, 720))
+                quality = 85
+                image.save(temporary_path, "JPEG", quality=quality, optimize=True)
+                while temporary_path.stat().st_size > 2 * 1024 * 1024 and quality > 10:
+                    quality -= 10
+                    image.save(temporary_path, "JPEG", quality=quality, optimize=True)
+            upload_path = temporary_path
+        mimetype = "image/jpeg" if upload_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        if temporary_path:
+            # MediaFileUpload keeps its file handle open for the lifetime of the
+            # object, which on Windows makes the unlink below fail with WinError 32.
+            # Thumbnails are capped at 2MB, so upload the temp file from memory.
+            import io
+
+            media = MediaIoBaseUpload(io.BytesIO(temporary_path.read_bytes()), mimetype=mimetype)
+        else:
+            media = MediaFileUpload(str(upload_path), mimetype=mimetype)
+        service.thumbnails().set(videoId=youtube_video_id, media_body=media).execute()
+    finally:
+        if temporary_path:
+            temporary_path.unlink(missing_ok=True)
 
 
 def list_playlists(conn: sqlite3.Connection, max_results: int = 50) -> list[dict]:

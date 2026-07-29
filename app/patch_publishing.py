@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app import image_overlay, video_gen, youtube
+from app.config import settings
 from app.image_overlay import ensure_patch_overlay
 from app.repository import get_book, get_patch
 from app.video_repository import upsert_patch_video
-from app.youtube_metadata import get_book_youtube_config, get_patch_youtube_override, resolve_patch_youtube_metadata
+from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
+                                  resolve_patch_chapter_range, resolve_patch_youtube_metadata)
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
 
@@ -22,6 +25,37 @@ def _now() -> str:
 def _row(conn, patch_id):
     row = conn.execute("SELECT * FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
     return dict(row) if row else None
+
+
+def fetch_thumbnail_inputs(conn: sqlite3.Connection, patch_id: int):
+    """Read what warm_patch_thumbnail needs. Cheap: two row lookups and a config read."""
+    patch = get_patch(conn, patch_id)
+    book = get_book(conn, patch.book_id) if patch else None
+    if not patch or not book:
+        return None
+    if not get_book_youtube_config(conn, patch.book_id).get("auto_upload"):
+        return None
+    return book, patch
+
+
+def warm_patch_thumbnail(inputs) -> None:
+    """Render the patch thumbnail ahead of time, outside the shared db_lock.
+
+    enqueue_patch_publish renders it too, but ensure_patch_overlay is cached: it only
+    redraws when the file is missing or the background is newer. Doing it here first turns
+    the call under the lock into a stat check instead of a full PIL render, which would
+    otherwise stall every request once per finished patch.
+    """
+    if inputs is None:
+        return
+    book, patch = inputs
+    try:
+        ensure_patch_overlay(book, patch, settings.default_font_path or None)
+    except Exception:  # noqa: BLE001 - purely an optimization; the real render still runs
+        logging.getLogger(__name__).warning(
+            "thumbnail pre-render failed for patch %s; falling back to rendering under the lock",
+            patch.id, exc_info=True,
+        )
 
 
 def on_patch_audio_ready(conn: sqlite3.Connection, patch_id: int) -> dict | None:
@@ -43,16 +77,17 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         return existing
     metadata = resolve_patch_youtube_metadata(book, patch, get_patch_youtube_override(conn, patch_id))
     metadata["automation"] = {"youtube": metadata.pop("youtube")}
+    chapter_start, chapter_end, patch_name = resolve_patch_chapter_range(patch)
     metadata["playlist_template_values"] = {
         "book_title": book.title,
         "episode_number": patch.patch_index + 1,
-        "chapter_start": patch.chapter_start,
-        "chapter_end": patch.chapter_end,
-        "patch_name": patch.name or "",
+        "chapter_start": chapter_start,
+        "chapter_end": chapter_end,
+        "patch_name": patch_name,
         "genre_tags": ",".join(metadata.get("tags", [])),
     }
     media = {"patch_id": patch_id, "audio_path": patch.audio_path, "source_image": patch.image_path, "thumbnail_path": existing["thumbnail_path"] if existing else None}
-    thumbnail = ensure_patch_overlay(book, patch, None) or media["thumbnail_path"]
+    thumbnail = ensure_patch_overlay(book, patch, settings.default_font_path or None) or media["thumbnail_path"]
     thumbnail_ready = bool(thumbnail and Path(thumbnail).is_file())
     media["thumbnail_path"] = thumbnail
     now = _now()
@@ -129,7 +164,7 @@ def run_patch_publish_stage(conn: sqlite3.Connection, patch_id: int) -> dict:
         if row["thumbnail_status"] != "done":
             current_stage = "thumbnail"
             patch = get_patch(conn, patch_id); book = get_book(conn, patch.book_id)
-            path = ensure_patch_overlay(book, patch, None)
+            path = ensure_patch_overlay(book, patch, settings.default_font_path or None)
             if not path or not Path(path).is_file(): raise ValueError("patch thumbnail could not be created")
             conn.execute("UPDATE patch_pipeline SET stage='video', thumbnail_status='done', thumbnail_path=? WHERE patch_id=?", (path, patch_id)); conn.commit()
         row = _row(conn, patch_id)

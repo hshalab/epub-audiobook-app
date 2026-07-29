@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import sqlite3
 import time
@@ -7,6 +8,67 @@ from pathlib import Path
 import pytest
 
 from app import db, youtube
+
+
+def test_set_thumbnail_compresses_images_over_youtube_limit(tmp_path, monkeypatch):
+    from PIL import Image
+
+    source = tmp_path / "large.png"
+    Image.frombytes("RGB", (1200, 1200), os.urandom(1200 * 1200 * 3)).save(source)
+    uploaded = {}
+
+    class Service:
+        def thumbnails(self): return self
+        def set(self, **kwargs): return self
+        def execute(self): return {}
+
+    def media_io(fd, mimetype):
+        uploaded["size"] = len(fd.read())
+        uploaded["mimetype"] = mimetype
+        return object()
+
+    def media_file(path, mimetype):
+        raise AssertionError("compressed temp file must not go through MediaFileUpload")
+
+    monkeypatch.setattr(youtube, "get_youtube_service", lambda conn: Service())
+    monkeypatch.setattr(youtube, "MediaIoBaseUpload", media_io)
+    monkeypatch.setattr(youtube, "MediaFileUpload", media_file)
+
+    youtube.set_thumbnail(None, "video", str(source))
+
+    assert source.stat().st_size > 2 * 1024 * 1024
+    assert uploaded["size"] <= 2 * 1024 * 1024
+    assert uploaded["mimetype"] == "image/jpeg"
+
+
+def test_set_thumbnail_temp_file_deletable_despite_open_media_handle(tmp_path, monkeypatch):
+    # googleapiclient's MediaFileUpload opens the file in its constructor and never
+    # closes it; on Windows the finally-block unlink of the compressed temp jpg then
+    # fails with WinError 32. set_thumbnail must not hand the temp file to it.
+    from PIL import Image
+
+    source = tmp_path / "large.png"
+    Image.frombytes("RGB", (1200, 1200), os.urandom(1200 * 1200 * 3)).save(source)
+
+    class Service:
+        def thumbnails(self): return self
+        def set(self, **kwargs): return self
+        def execute(self): return {}
+
+    held = []
+
+    class HoldingMediaFileUpload:
+        def __init__(self, path, mimetype):
+            held.append(open(path, "rb"))
+
+    monkeypatch.setattr(youtube, "get_youtube_service", lambda conn: Service())
+    monkeypatch.setattr(youtube, "MediaFileUpload", HoldingMediaFileUpload)
+
+    try:
+        youtube.set_thumbnail(None, "video", str(source))
+    finally:
+        for handle in held:
+            handle.close()
 
 
 def test_bulk_delete_ui_sends_raw_id_list():

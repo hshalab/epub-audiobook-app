@@ -89,6 +89,13 @@
                         <option value="public">Public</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label for="yt-playlist">Playlist</label>
+                    <select name="playlist_id" id="yt-playlist">
+                        <option value="">Không thêm vào playlist</option>
+                        {% for playlist in playlists %}<option value="{{ playlist.id }}">{{ playlist.title }}</option>{% endfor %}
+                    </select>
+                </div>
             </div>
             <button type="submit" class="btn-youtube" id="btn-yt-upload">Upload to YouTube</button>
         </form>
@@ -219,6 +226,7 @@ document.getElementById('yt-upload-form').addEventListener('submit', async funct
     const desc = document.getElementById('yt-desc').value;
     const tags = document.getElementById('yt-tags').value;
     const privacy = document.getElementById('yt-privacy').value;
+    const playlist = document.getElementById('yt-playlist').value;
     const statusEl = document.getElementById('yt-upload-status');
 
     if (!fileInput.files.length || !title) { alert('File và title là bắt buộc'); return; }
@@ -229,6 +237,7 @@ document.getElementById('yt-upload-form').addEventListener('submit', async funct
     fd.append('description', desc);
     fd.append('tags', tags);
     fd.append('privacy_status', privacy);
+    fd.append('playlist_id', playlist);
 
     const btn = document.getElementById('btn-yt-upload');
     btn.disabled = true;

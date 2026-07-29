@@ -112,6 +112,7 @@ def test_patch_youtube_modal_renders_override_controls_and_metadata_flow(client,
     html = client.get(f"/books/{seeded_book.id}").text
     for field in ("title", "description", "genre_tags", "privacy_status"):
         assert f'id="patch-{field}"' in html
+    assert '<textarea id="patch-description"' in html
     assert "Use book default" in html
     assert "/youtube-metadata" in html
     assert "response.ok" in html
