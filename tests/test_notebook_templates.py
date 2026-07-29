@@ -440,3 +440,19 @@ def test_batch_notebook_has_no_result_zip_cell():
         assert "Cell 9" not in src
     # Cell 8 must still be the eighth code cell for the other tests in this file
     assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[1])[7]
+
+
+def test_single_patch_cell_8_reads_text_from_the_manifest():
+    src = _code_cells(TEMPLATES[0])[7]
+    assert 'manifest.get("chunk_metadata")' in src
+    assert 'metadata[offset].get("text")' in src
+    assert 'enumerate(manifest["chunks"])' in src
+    # The manifest is the primary source. The chunk_NNN.txt read survives only as a
+    # guarded fallback for older packages attached whole as a Kaggle dataset, so it
+    # must appear AFTER the manifest lookup, not instead of it.
+    assert src.index('metadata[offset].get("text")') < src.index(
+        "open(os.path.join(FOLDER_PATH, chunk_filename)"
+    )
+    # START_INDEX / END_INDEX windowing must survive
+    assert "START_INDEX" in src
+    assert "END_INDEX" in src
