@@ -351,3 +351,80 @@ def test_cell8_persist_failures_are_caught_separately():
         )
     ]
     assert len(persist_try_bodies) >= 2
+
+
+def _cell4_helpers():
+    src = _code_cells(TEMPLATES[1])[3]
+    match = re.search(r"^# BEGIN CELL 4 HELPERS$(.*?)^# END CELL 4 HELPERS$", src, re.M | re.S)
+    assert match, "Cell 4 helper block missing"
+    namespace = {}
+    exec(match.group(1), namespace)
+    return namespace
+
+
+def _fake_batch_inventory(patch_count=3, merged=0, chunks_per_patch=2):
+    """Remote inventory for a batch where the first `merged` patches are finished."""
+    manifest = {
+        "reference_wav": "reference.wav",
+        "patches": [
+            {
+                "patch_id": i,
+                "patch_index": i,
+                "folder": f"patches/patch_{i:03d}",
+                "result_wav": f"result/{i:03d} - p.wav",
+            }
+            for i in range(patch_count)
+        ],
+    }
+    remote = {"batch_manifest.json": "id", "reference.wav": "id", "music/bg.mp3": "id"}
+    for i, entry in enumerate(manifest["patches"]):
+        remote[f"{entry['folder']}/manifest.json"] = "id"
+        remote[f"{entry['folder']}/background.jpg"] = "id"
+        if i < merged:
+            remote[entry["result_wav"]] = "id"
+            for c in range(chunks_per_patch):
+                remote[f"{entry['folder']}/output/chunk_{c:03d}.wav"] = "id"
+    return manifest, remote
+
+
+def test_cell4_plan_downloads_only_manifests_and_reference():
+    plan_batch_downloads = _cell4_helpers()["plan_batch_downloads"]
+    manifest, remote = _fake_batch_inventory(patch_count=3, merged=3)
+
+    planned = plan_batch_downloads(manifest, remote)
+
+    assert set(planned) == {
+        "batch_manifest.json",
+        "reference.wav",
+        "patches/patch_000/manifest.json",
+        "patches/patch_001/manifest.json",
+        "patches/patch_002/manifest.json",
+    }
+    # A fully merged batch downloads no chunk WAV, no result, no background, no music.
+    for rel in planned:
+        assert "/output/" not in rel
+        assert not rel.startswith("result/")
+        assert not rel.startswith("music/")
+        assert "background" not in rel
+
+
+def test_cell4_plan_skips_paths_absent_from_the_inventory():
+    plan_batch_downloads = _cell4_helpers()["plan_batch_downloads"]
+    manifest, remote = _fake_batch_inventory(patch_count=2, merged=0)
+    del remote["patches/patch_001/manifest.json"]
+    del remote["reference.wav"]
+
+    planned = plan_batch_downloads(manifest, remote)
+
+    assert planned == ["batch_manifest.json", "patches/patch_000/manifest.json"]
+
+
+def test_cell4_lists_before_downloading_and_is_thread_safe():
+    src = _code_cells(TEMPLATES[1])[3]
+    assert "plan_batch_downloads(" in src
+    assert "ThreadPoolExecutor" in src
+    assert "threading.local()" in src
+    assert "def drive_fetch_many(" in src
+    assert "def drive_persist(" in src
+    # the old walk that downloaded while listing must be gone
+    assert "def _sync_down(" not in src
