@@ -1339,6 +1339,37 @@ def test_read_events_resumes_from_a_line_offset():
     assert second == [{"type": "done"}]
 
 
+def test_a_half_written_trailing_event_is_not_lost():
+    """Cầu SSE tail file này trong lúc job còn ghi. Nếu lần đọc rơi đúng vào lúc dòng
+    @@EVENT cuối chưa xong, dòng đó phải bị bỏ qua lượt này rồi giao ở lượt sau —
+    không được đếm vào cursor rồi biến mất vĩnh viễn."""
+    logger = joblog.JobLogger(11, "light_tts")
+    logger.emit({"type": "chunk", "index": 0})
+    logger.close()
+
+    path = joblog.job_log_path(11)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write('@@EVENT {"type":"chunk","index":1')   # cụt, chưa có newline
+
+    events, cursor = joblog.read_events(11)
+    assert [e["index"] for e in events] == [0]
+    assert cursor == 1
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("}\n")                                   # ghi nốt phần còn lại
+
+    events, _ = joblog.read_events(11, from_line=cursor)
+    assert [e["index"] for e in events] == [1]
+
+
+def test_tail_with_zero_lines_returns_nothing():
+    """all_lines[-0:] là cả file, không phải rỗng — cái bẫy slice âm quen thuộc."""
+    logger = joblog.JobLogger(12, "video")
+    logger.log("một dòng")
+    logger.close()
+    assert joblog.tail(12, lines=0) == ""
+
+
 def test_errors_are_mirrored_to_the_app_logger(caplog):
     with caplog.at_level(logging.WARNING, logger="app.jobqueue.joblog"):
         logger = joblog.JobLogger(5, "video")
@@ -1491,6 +1522,10 @@ class JobLogger:
 
 
 def tail(job_id: int, lines: int = 500) -> str:
+    # `lines` đến từ query param ?tail= của /queue/jobs/{id}/log, nên phải chặn dưới:
+    # all_lines[-0:] là CẢ file chứ không phải rỗng, và đó là bẫy slice âm quen thuộc.
+    if lines <= 0:
+        return ""
     path = job_log_path(job_id)
     if not path.is_file():
         return ""
@@ -1511,9 +1546,15 @@ def read_events(job_id: int, *, from_line: int = 0) -> tuple[list[dict[str, Any]
     if not path.is_file():
         return [], from_line
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return [], from_line
+    raw = text.splitlines()
+    # Dòng cuối chưa có '\n' là dòng đang được ghi dở. Bỏ nó ra khỏi lượt này —
+    # nếu đếm nó vào `seen` mà không parse được, cursor sẽ nhảy qua và lần đọc sau
+    # bỏ luôn dòng đó dù lúc ấy nó đã hoàn chỉnh. Event mất hẳn, không phải chậm.
+    if raw and not text.endswith("\n"):
+        raw.pop()
     events: list[dict[str, Any]] = []
     seen = 0
     for line in raw:
@@ -1557,7 +1598,7 @@ def purge_old_logs(conn: sqlite3.Connection, *, retention_days: int | None = Non
 pytest tests/test_jobqueue_joblog.py -v
 ```
 
-Kỳ vọng: 10 passed.
+Kỳ vọng: 12 passed.
 
 - [ ] **Step 6: Commit**
 
