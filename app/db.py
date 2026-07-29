@@ -76,6 +76,34 @@ CREATE TABLE IF NOT EXISTS book_job (
 CREATE INDEX IF NOT EXISTS idx_book_job_status ON book_job(status, book_id, id);
 CREATE INDEX IF NOT EXISTS idx_book_job_book_type ON book_job(book_id, job_type);
 
+CREATE TABLE IF NOT EXISTS job (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    priority INTEGER NOT NULL DEFAULT 100,
+    book_id INTEGER,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    dedupe_key TEXT,
+    phase TEXT,
+    progress_current INTEGER NOT NULL DEFAULT 0,
+    progress_total INTEGER NOT NULL DEFAULT 0,
+    result_json TEXT,
+    error_message TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    next_retry_at TEXT,
+    worker_id TEXT,
+    heartbeat_at TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_claim ON job(status, job_type, priority, id);
+CREATE INDEX IF NOT EXISTS idx_job_book ON job(book_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
+    WHERE dedupe_key IS NOT NULL AND status IN ('pending','running');
+
 CREATE TABLE IF NOT EXISTS drive_oauth_client (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT NOT NULL,
