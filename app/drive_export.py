@@ -4,8 +4,8 @@ re-imported. See app/google_drive.py for the Drive API calls and
 app/routes/patches.py for the export/import routes that tie it together.
 
 Two package shapes exist:
-- single patch: chunk_NNN.txt + manifest.json + notebook at the package root
-  (build_export_package / build_export_zip), and
+- single patch: manifest.json (chunk text inlined in chunk_metadata) + notebook at
+  the package root (build_export_package / build_export_zip), and
 - batch: several patches under patches/patch_NNN/ with a batch_manifest.json and
   a batch notebook at the root (build_batch_export_package / build_batch_export_zip),
   so one Colab/Kaggle run can synthesize and merge every selected patch.
@@ -90,7 +90,7 @@ def _write_patch_files(
     reference_rel: str | None,
     overlay_image_path: str | None = None,
 ) -> dict:
-    """Write chunk_NNN.txt files + manifest.json + background image for one patch into
+    """Write manifest.json (with chunk text inlined) + background image for one patch into
     dest_dir and return the manifest dict. overlay_image_path is the pre-rendered
     background image (text already baked in by Pillow); falls back to raw background."""
     plan = repository.build_patch_chunk_plan(conn, patch)
@@ -102,8 +102,9 @@ def _write_patch_files(
     chunk_filenames = []
     chunk_metadata = []
     for i, item in enumerate(plan):
+        # chunk_NNN.txt is a logical id only - the text itself travels in the manifest,
+        # so a whole patch is one file to download instead of one per chunk.
         filename = f"chunk_{i:03d}.txt"
-        (dest_dir / filename).write_text(item["text"], encoding="utf-8")
         chunk_filenames.append(filename)
         chunk_metadata.append(
             {
@@ -111,6 +112,7 @@ def _write_patch_files(
                 "chapter_index": item["chapter_index"],
                 "chapter_title": item["chapter_title"],
                 "is_chapter_start": item["is_chapter_start"],
+                "text": item["text"],
             }
         )
 
@@ -150,6 +152,15 @@ def _write_patch_files(
     return manifest
 
 
+def package_chunk_count(package_dir: Path) -> int:
+    """Chunk count of a built single-patch package, read from its manifest.
+
+    Chunk texts no longer exist as separate files, so callers cannot count
+    chunk_NNN.txt to learn how big a package is."""
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    return int(manifest["chunk_count"])
+
+
 def _copy_music_to_package(book: Book, conn: sqlite3.Connection, package_dir: Path) -> str | None:
     """Copy the book's music file into package_dir/music/ and return the relative path,
     or None if the book has no music assigned."""
@@ -171,7 +182,7 @@ def build_export_package(
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
 ) -> Path:
-    """Write manifest.json + chunk_NNN.txt + background image + optional music + notebook
+    """Write manifest.json + background image + optional music + notebook
     template into a fresh temp directory. Caller is responsible for deleting it."""
     from app import image_overlay
 

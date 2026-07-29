@@ -55,7 +55,7 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
 
     metadata = manifest["chunk_metadata"]
     assert all(
-        list(item.keys()) == ["filename", "chapter_index", "chapter_title", "is_chapter_start"]
+        list(item.keys()) == ["filename", "chapter_index", "chapter_title", "is_chapter_start", "text"]
         for item in metadata
     )
     assert manifest["chunks"] == [f"chunk_{i:03d}.txt" for i in range(5)]
@@ -63,16 +63,14 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
     assert all(isinstance(name, str) for name in manifest["chunks"] + manifest["expected_outputs"])
     assert [item["chapter_index"] for item in metadata] == [0, 0, 0, 1, 1]
     assert [item["is_chapter_start"] for item in metadata] == [True, False, False, True, False]
-    assert [
-        (tmp_path / name).read_text(encoding="utf-8") for name in manifest["chunks"]
-    ] == [
+    assert [item["text"] for item in metadata] == [
         "Alpha one.",
         "Alpha two.",
         "Alpha three.",
         "Beta one.",
         "Beta two.",
     ]
-    assert all("Never export" not in text for text in manifest["chunks"])
+    assert all("Never export" not in item["text"] for item in metadata)
     assert [manifest[key] for key in ("patch_id", "book_id", "book_title", "patch_name", "chapter_start", "chapter_end", "max_chars", "chunk_count", "reference_wav", "reference_transcript", "voxcpm_model_id", "background_image")] == [
         patch.id, patch.book_id, book.title, str(patch.patch_index), 0, 4, 18, 5, None, None, "openbmb/VoxCPM2", "background.jpg"
     ]
@@ -87,3 +85,31 @@ def test_write_patch_files_rejects_empty_plan(conn, tmp_path):
     patch = repository.get_patch(connection, patch.id)
     with pytest.raises(ValueError, match=f"patch {patch.id} has no text to export"):
         drive_export._write_patch_files(connection, book, patch, tmp_path, None)
+
+
+def test_write_patch_files_inlines_text_and_writes_no_txt_files(conn, tmp_path):
+    connection, book, patch = conn
+    dest = tmp_path / "patch"
+    manifest = drive_export._write_patch_files(connection, book, patch, dest, "reference.wav")
+
+    assert list(dest.glob("chunk_*.txt")) == []
+
+    plan = repository.build_patch_chunk_plan(connection, patch)
+    metadata = manifest["chunk_metadata"]
+    assert len(metadata) == len(plan)
+    assert manifest["chunks"] == [f"chunk_{i:03d}.txt" for i in range(len(plan))]
+    assert manifest["expected_outputs"] == [f"chunk_{i:03d}.wav" for i in range(len(plan))]
+
+    for entry, item in zip(metadata, plan):
+        assert set(entry) == {
+            "filename", "chapter_index", "chapter_title", "is_chapter_start", "text",
+        }
+        assert entry["text"] == item["text"]
+        assert entry["text"].strip()
+
+
+def test_package_chunk_count_reads_the_manifest(conn, tmp_path):
+    connection, book, patch = conn
+    dest = tmp_path / "patch"
+    manifest = drive_export._write_patch_files(connection, book, patch, dest, "reference.wav")
+    assert drive_export.package_chunk_count(dest) == manifest["chunk_count"]
