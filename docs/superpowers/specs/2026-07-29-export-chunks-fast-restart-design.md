@@ -130,8 +130,13 @@ This turns roughly 1000 FUSE stats per Colab run into about 20 directory listing
 ### Chunk text
 
 Chunk text SHALL come from `chunk_metadata[i]["text"]`. When that field is absent, Cell 8 SHALL
-fall back to reading `chunk_NNN.txt` from the patch directory, so an older exported zip attached as
-a Kaggle dataset still runs.
+fall back to reading `chunk_NNN.txt` from the patch directory.
+
+That fallback serves the zip-dataset path only, where the whole package is already present under
+`/kaggle/input` and nothing is downloaded. It SHALL NOT be extended to the Drive path: Cell 4 does
+not download `chunk_NNN.txt`, so a legacy Drive folder driven by a new notebook has no local text
+to fall back to. This is not a supported combination — a package and its notebook are always
+exported together.
 
 ### Merge
 
