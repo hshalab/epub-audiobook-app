@@ -231,3 +231,10 @@ Tests SHALL verify:
 - A separate `progress.json` state file; the remote inventory is already authoritative and free,
   and a second source of truth can disagree with it.
 - Changing the app-side import paths.
+- Moving an in-progress batch to a different Drive account to continue it. That is a manual,
+  Colab-only workflow and needs no code: the folder is copied cloud-to-cloud with `rclone copy`,
+  Cell 3 relocates it by `batch_id`, and Cell 8 resumes from the `output/` chunk WAVs that travel
+  with it. Import keeps working as long as `result/` is copied back into the original
+  `patch_export.local_folder_path`, which the import route reads directly. No equivalent is built
+  for Kaggle: the `drive.file` scope cannot see a folder the app's OAuth client did not create, and
+  the zip-dataset fallback cannot persist new chunks back to Drive.
