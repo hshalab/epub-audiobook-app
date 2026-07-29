@@ -41,7 +41,7 @@
 </nav>
 
 <dialog id="youtube-settings-modal" class="book-modal">
-    <div class="card-header"><h3 style="margin:0">YouTube settings</h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
+    <div class="card-header ui-modal-header"><h3 style="margin:0">YouTube settings</h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
     <form id="youtube-settings-form" class="form-grid">
         <label><input type="checkbox" name="auto_upload" {% if youtube_config.auto_upload %}checked{% endif %}> Auto-upload</label>
         <label>Privacy <select name="privacy_status"><option value="private" {% if youtube_config.privacy_status == 'private' %}selected{% endif %}>Private</option><option value="unlisted" {% if youtube_config.privacy_status == 'unlisted' %}selected{% endif %}>Unlisted</option><option value="public" {% if youtube_config.privacy_status == 'public' %}selected{% endif %}>Public</option></select></label>
@@ -62,7 +62,7 @@
 </dialog>
 
 <dialog id="patch-youtube-modal" class="book-modal">
-    <div class="card-header"><h3 style="margin:0">Publish patch <span id="pym-title"></span></h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
+    <div class="card-header ui-modal-header"><h3 style="margin:0">Publish patch <span id="pym-title"></span></h3><button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button></div>
     <div id="pym-body"><p>Audio, thumbnail, video and effective YouTube metadata are managed here.</p>
         <audio id="pym-audio" controls></audio><img id="pym-thumbnail" alt="Patch thumbnail"><video id="pym-video" controls></video>
         <div id="pym-stage"></div><div id="pym-error"></div>
@@ -101,7 +101,7 @@
 </dialog>
 
 <dialog id="normalization-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Chuẩn hóa TTS</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -139,7 +139,7 @@
 </dialog>
 
 <dialog id="light-tts-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Cài đặt LightTTS</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -173,17 +173,25 @@
 </dialog>
 
 <dialog id="video-config-modal" class="book-modal">
-    <div class="card-header">
+    <div class="ui-modal-header">
         <h3 style="margin:0">Cấu hình video chung</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
-    <p class="vc-help">
-        Áp dụng khi render MP4 cho các patch (ảnh nền đã có chữ + audio). Nhạc nền, ảnh nền chung
-        và chữ overlay được chỉnh trong <button type="button" class="btn-link" data-open-dialog="studio-modal">Studio</button>.
-    </p>
-    <form id="video-config-form" class="form-grid video-config-grid">
-        <fieldset class="vc-section vc-wide">
-            <legend>Nội dung</legend>
+    <div class="ui-modal-body">
+        <p class="vc-help">
+            Áp dụng khi render MP4 cho các patch (ảnh nền đã có chữ + audio). Nhạc nền, ảnh nền chung
+            và chữ overlay được chỉnh trong <button type="button" class="btn-link" data-open-dialog="studio-modal">Studio</button>.
+        </p>
+        <form id="video-config-form" class="video-config-grid">
+            <div class="ui-tabs" data-tabs>
+                <div class="ui-tab-list" role="tablist" aria-label="Nhóm cấu hình video">
+                    <button type="button" class="ui-tab" role="tab" id="vc-tab-content" data-tab-target="vc-panel-content" aria-controls="vc-panel-content" aria-selected="true">Nội dung</button>
+                    <button type="button" class="ui-tab" role="tab" id="vc-tab-background" data-tab-target="vc-panel-background" aria-controls="vc-panel-background" aria-selected="false">Background</button>
+                    <button type="button" class="ui-tab" role="tab" id="vc-tab-render" data-tab-target="vc-panel-render" aria-controls="vc-panel-render" aria-selected="false">Render</button>
+                </div>
+
+                <section class="ui-tab-panel" id="vc-panel-content" role="tabpanel" aria-labelledby="vc-tab-content">
+
             <div class="form-group">
                 <label for="vc-voice">Giọng nói tham chiếu</label>
                 <select name="voice_name" id="vc-voice">
@@ -206,10 +214,10 @@
                 <label for="vc-music-volume">Âm lượng nhạc: <span id="vc-music-volume-label">{{ (book.music_volume * 100)|round|int }}%</span></label>
                 <input type="range" name="music_volume" id="vc-music-volume" min="0" max="100" value="{{ (book.music_volume * 100)|round|int }}">
             </div>
-        </fieldset>
+                </section>
 
-        <fieldset class="vc-section vc-wide">
-            <legend>Background</legend>
+                <section class="ui-tab-panel" id="vc-panel-background" role="tabpanel" aria-labelledby="vc-tab-background" hidden>
+
             <div class="form-group vc-wide">
                 <span>Background chung từ Media Library</span>
                 <div id="vc-backgrounds" class="vc-background-grid">
@@ -248,10 +256,10 @@
                 <label for="vc-outro">Âm thanh kết thúc</label>
                 <select id="vc-outro"><option value="">— Không dùng —</option>{% for v in voices %}<option value="{{ v }}" {% if video_config.outro_voice == v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
             </div>
-        </fieldset>
+                </section>
 
-        <fieldset class="vc-section vc-wide">
-            <legend>Render</legend>
+                <section class="ui-tab-panel" id="vc-panel-render" role="tabpanel" aria-labelledby="vc-tab-render" hidden>
+
             <div class="form-group">
                 <label for="vc-resolution">Độ phân giải</label>
                 <select id="vc-resolution" name="video_resolution">
@@ -297,16 +305,20 @@
             <label><input type="checkbox" id="vc-crossfade" {% if video_config.crossfade_enabled %}checked{% endif %}> Crossfade</label>
             <label><input type="checkbox" id="vc-kenburns" {% if video_config.ken_burns_enabled %}checked{% endif %}> Ken Burns</label>
             <label><input type="checkbox" id="vc-progress" {% if video_config.progress_bar_enabled %}checked{% endif %}> Progress bar</label>
-        </fieldset>
-
-        <div class="btn-group vc-wide">
+                </section>
+            </div>
+        </form>
+    </div>
+    <div class="ui-modal-footer">
+        <div class="ui-modal-footer-actions">
+            <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
             <button type="button" id="vc-save" class="btn-primary btn-sm">Lưu cấu hình</button>
         </div>
-    </form>
+    </div>
 </dialog>
 
 <dialog id="patch-image-modal" class="book-modal" style="width:min(900px,calc(100% - 2rem))">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Overlay &amp; Background — <span id="pi-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -354,7 +366,7 @@
 </dialog>
 
 <dialog id="patch-video-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Video — <span id="pvm-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -366,7 +378,7 @@
 </dialog>
 
 <dialog id="patch-media-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Patch media — <span id="pm-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -383,7 +395,7 @@
 </dialog>
 
 <dialog id="chunks-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Preview chunks — <span id="chunks-modal-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
@@ -633,8 +645,7 @@
 .vc-help { margin:0 0 var(--space-md) 0; color:var(--text-muted); font-size:var(--font-size-sm); }
 .video-config-grid { margin-bottom:var(--space-md); }
 .vc-wide { grid-column:1/-1; }
-.vc-section { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:var(--space-sm); margin:0; padding:var(--space-md); border:1px solid var(--border-color); border-radius:var(--border-radius); }
-.vc-section legend { padding:0 var(--space-xs); color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+
 .vc-background-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:var(--space-sm); }
 .vc-background-option { display:flex; gap:var(--space-xs); align-items:center; padding:var(--space-xs); border:1px solid var(--border-color); border-radius:var(--border-radius); }
 .vc-background-preview { width:64px; height:40px; object-fit:cover; }
@@ -728,7 +739,7 @@
         .patch-pagination button.active { background:var(--color-primary); color:#fff; border-color:var(--color-primary); }
         .patch-pagination .page-info { font-size:var(--font-size-xs); color:var(--text-muted); }
     </style>
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Studio — Preview &amp; chỉnh kết quả</h3>
         <div style="display:flex;gap:var(--space-sm);align-items:center">
             <button type="button" id="studio-save" class="btn-primary btn-sm">Lưu tất cả</button>
@@ -858,7 +869,7 @@
 
                 <button type="button" class="btn-outline btn-sm" data-open-dialog="overlay-advanced-modal">Cấu hình nâng cao</button>
                 <dialog id="overlay-advanced-modal" class="book-modal">
-                    <div class="card-header">
+                    <div class="card-header ui-modal-header">
                         <h3 style="margin:0">Cấu hình overlay nâng cao</h3>
                         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
                     </div>
@@ -936,7 +947,7 @@
 </dialog>
 
 <dialog id="rules-modal" class="book-modal">
-    <div class="card-header">
+    <div class="card-header ui-modal-header">
         <h3 style="margin:0">Text Replace Rules</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>

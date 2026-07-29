@@ -73,6 +73,37 @@
         });
     }
 
+    function attachTabs(tabs) {
+        const buttons = Array.from(tabs.querySelectorAll('[data-tab-target]'));
+        const panels = buttons.map(btn => document.getElementById(btn.dataset.tabTarget)).filter(Boolean);
+        if (!buttons.length) return;
+
+        function activate(button) {
+            buttons.forEach(btn => {
+                const active = btn === button;
+                btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                btn.tabIndex = active ? 0 : -1;
+            });
+            panels.forEach(panel => {
+                panel.hidden = panel.id !== button.dataset.tabTarget;
+            });
+        }
+
+        buttons.forEach((button, index) => {
+            button.addEventListener('click', () => activate(button));
+            button.addEventListener('keydown', (event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const offset = event.key === 'ArrowRight' ? 1 : -1;
+                const next = buttons[(index + offset + buttons.length) % buttons.length];
+                next.focus();
+                activate(next);
+            });
+        });
+
+        activate(buttons.find(btn => btn.getAttribute('aria-selected') === 'true') || buttons[0]);
+    }
+
     // --- Generic form guard: give visible feedback whenever the server
     // rejects a plain form submit, instead of navigating to a raw JSON/HTML
     // error response. Opt-in via data-guard, since autosave.js loads on
@@ -115,6 +146,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('[data-tabs]').forEach(attachTabs);
         document.querySelectorAll('form[data-autosave]').forEach(attachAutosave);
         document.querySelectorAll('form[data-guard]').forEach(attachFormGuard);
     });

@@ -541,6 +541,93 @@ main {
   flex-wrap: wrap;
 }
 
+/* --- Shared Modal Layout --- */
+.ui-modal-header,
+.ui-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.ui-modal-header {
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ui-modal-header h3 {
+  margin: 0;
+}
+
+.ui-modal-body {
+  min-width: 0;
+}
+
+.ui-modal-footer {
+  position: sticky;
+  bottom: calc(-1 * var(--space-lg));
+  margin: var(--space-lg) calc(-1 * var(--space-lg)) calc(-1 * var(--space-lg));
+  padding: var(--space-md) var(--space-lg);
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-color);
+  border-radius: 0 0 var(--border-radius) var(--border-radius);
+}
+
+.ui-modal-footer-actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+/* --- Shared Tabs --- */
+.ui-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ui-tab-list {
+  display: flex;
+  gap: var(--space-xs);
+  border-bottom: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+
+.ui-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0;
+  background: transparent;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ui-tab:hover,
+.ui-tab:focus {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+}
+
+.ui-tab[aria-selected="true"] {
+  color: var(--text-primary);
+  border-bottom-color: var(--text-primary);
+}
+
+.ui-tab-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+
+.ui-tab-panel[hidden] {
+  display: none;
+}
+
 /* --- Tables --- */
 table {
   width: 100%;
