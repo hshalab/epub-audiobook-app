@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.jobqueue", "app.jobqueue.handlers"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
