@@ -179,7 +179,9 @@ async def save_patch_text(request: Request, book_id: int, patch_id: int):
     with locked_conn(request) as conn:
         _require_patch(conn, book_id, patch_id)
         repository.save_patch_clean_text(conn, patch_id, text)
-        chunk_count = len(repository.build_patch_chunk_plan(conn, repository.get_patch(conn, patch_id)))
+        plan_inputs = repository.fetch_patch_chunk_inputs(conn, repository.get_patch(conn, patch_id))
+    chunk_count = len(await asyncio.to_thread(repository.build_chunk_plan_from_inputs, plan_inputs))
+    with locked_conn(request) as conn:
         repository.update_patch_chunk_count(conn, patch_id, chunk_count)
     return JSONResponse({"ok": True, "chunk_count": chunk_count})
 
@@ -300,17 +302,19 @@ def patch_chunk_texts(request: Request, book_id: int, patch_id: int, max_chars: 
     with locked_conn(request) as conn:
         patch = _require_patch(conn, book_id, patch_id)
         effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
-        plan = repository.build_patch_chunk_plan(conn, patch, max_chars=effective_max_chars)
-        total = len(plan)
+        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch, max_chars=effective_max_chars)
+    plan = repository.build_chunk_plan_from_inputs(plan_inputs)
+    total = len(plan)
 
-        # patch.chunk_count is a fast char-count estimate; the real sentence-aware
-        # split differs. When listing with the patch's own config, reconcile the
-        # stored estimate so table, progress bar and this list agree. Skipped while
-        # processing so resume bookkeeping isn't disturbed.
-        reconciled = False
-        if max_chars == 0 and patch.status != "processing" and patch.chunk_count != total:
+    # patch.chunk_count is a fast char-count estimate; the real sentence-aware
+    # split differs. When listing with the patch's own config, reconcile the
+    # stored estimate so table, progress bar and this list agree. Skipped while
+    # processing so resume bookkeeping isn't disturbed.
+    reconciled = False
+    if max_chars == 0 and patch.status != "processing" and patch.chunk_count != total:
+        with locked_conn(request) as conn:
             repository.update_patch_chunk_count(conn, patch_id, total)
-            reconciled = True
+        reconciled = True
 
     return JSONResponse({
         "total": total,
@@ -328,14 +332,20 @@ def reconcile_chunk_counts(request: Request, book_id: int):
     with locked_conn(request) as conn:
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail="book not found")
-        updated = []
-        for patch_id in repository.list_stale_chunk_count_patch_ids(conn, book_id):
+        stale_ids = repository.list_stale_chunk_count_patch_ids(conn, book_id)
+    # This loops over every stale patch in the book, so keeping the lock for the whole
+    # walk would stall the app for as long as the slowest book takes to renormalize.
+    updated = []
+    for patch_id in stale_ids:
+        with locked_conn(request) as conn:
             patch = repository.get_patch(conn, patch_id)
             if patch is None or patch.status == "processing":
                 continue
-            chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
+            plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch)
+        chunk_count = len(repository.build_chunk_plan_from_inputs(plan_inputs))
+        with locked_conn(request) as conn:
             repository.update_patch_chunk_count(conn, patch_id, chunk_count)
-            updated.append({"id": patch_id, "chunk_count": chunk_count})
+        updated.append({"id": patch_id, "chunk_count": chunk_count})
     return {"updated": updated}
 
 
@@ -400,7 +410,9 @@ async def preview_stream(
     with locked_conn(request) as conn:
         patch = _require_patch(conn, book_id, patch_id)
         effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
-        plan = repository.build_patch_chunk_plan(conn, patch, max_chars=effective_max_chars)
+        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch, max_chars=effective_max_chars)
+    # Off the lock and off the event loop: normalizing a long patch is seconds of CPU.
+    plan = await asyncio.to_thread(repository.build_chunk_plan_from_inputs, plan_inputs)
 
     resolved_backend = backend or settings.light_tts_backend
     resolved_voice = voice or settings.light_tts_voice

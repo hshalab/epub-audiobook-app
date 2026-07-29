@@ -428,7 +428,22 @@
     </details>
     {% if patches %}
     <div class="patch-search">
-        <input type="text" id="patch-search-input" placeholder="Tìm patch theo tên..." oninput="filterAndPaginate()">
+        <input type="text" id="patch-search-input" placeholder="Tìm theo tên hoặc số tập..." oninput="filterAndPaginate(true)">
+        <select id="patch-status-filter" onchange="filterAndPaginate(true)" aria-label="Lọc theo trạng thái patch">
+            <option value="">Trạng thái: tất cả</option>
+            <option value="pending">Chờ</option>
+            <option value="processing">Đang xử lý</option>
+            <option value="done">Hoàn tất</option>
+            <option value="failed">Thất bại</option>
+        </select>
+        <select id="patch-pipeline-filter" onchange="filterAndPaginate(true)" aria-label="Lọc theo giai đoạn pipeline">
+            <option value="">Pipeline: tất cả</option>
+            <option value="published">Đã publish</option>
+            <option value="uploading">Đang upload</option>
+            <option value="error">Lỗi</option>
+            <option value="none">Chưa publish</option>
+        </select>
+        <button type="button" id="patch-filter-reset" class="btn-outline btn-sm" onclick="resetPatchFilters()">Xóa lọc</button>
         <span id="patch-filter-count" style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
         <select id="patch-per-page" onchange="filterAndPaginate()" aria-label="Số patch mỗi trang">
             <option value="25">25 / page</option>
@@ -437,25 +452,60 @@
             <option value="Infinity">Tất cả</option>
         </select>
     </div>
+    <div class="patch-search patch-search-flags">
+        <span class="patch-flag-label">Có:</span>
+        <select id="patch-has-video" onchange="filterAndPaginate(true)" aria-label="Lọc theo đã có video">
+            <option value="">Video: tất cả</option>
+            <option value="1">Có video</option>
+            <option value="0">Chưa có video</option>
+        </select>
+        <select id="patch-has-audio" onchange="filterAndPaginate(true)" aria-label="Lọc theo đã có âm thanh kết quả">
+            <option value="">Audio: tất cả</option>
+            <option value="1">Có âm thanh</option>
+            <option value="0">Chưa có âm thanh</option>
+        </select>
+        <select id="patch-has-yt" onchange="filterAndPaginate(true)" aria-label="Lọc theo đã upload lên YouTube">
+            <option value="">Upload YT: tất cả</option>
+            <option value="1">Đã upload YT</option>
+            <option value="0">Chưa upload YT</option>
+        </select>
+    </div>
      <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
     <div class="table-wrap">
     <table data-table-key="patch-table">
         <thead>
             <tr>
                 <th><input type="checkbox" id="batch-select-all" title="Select all patches"></th>
+                <th>Tập</th>
                 <th>Patch</th>
                 <th>Chapters</th>
                 <th>Audio</th><th>Thumbnail</th>
-                <th>Video/YouTube</th>
+                <th>Chunks</th>
                 <th>Status</th>
+                <th>Pipeline</th>
+                <th>Video/YouTube</th>
                 <th>Actions</th>
             </tr>
         </thead>
         <tbody>
         {% for patch in patches %}
-            <tr>
+            {# Same episode number the YouTube title template substitutes
+               (see youtube_metadata.py), so the table and the published
+               video never disagree after a patch is deleted and reindexed. #}
+            {% set episode = patch.patch_index + 1 %}
+            {% set pipeline = pipeline_rows.get(patch.id) %}
+            {% set pipeline_group = 'none' if not pipeline
+                 else 'published' if pipeline.stage == 'published'
+                 else 'error' if pipeline.stage == 'auth_required' or pipeline.last_error
+                 else 'uploading' %}
+            {# Presence of a real YouTube video id, not the pipeline stage —
+               some rows report stage='published' with no upload behind them. #}
+            {% set has_yt_upload = '1' if pipeline and pipeline.youtube_video_id else '0' %}
+            <tr data-patch-status="{{ patch.status }}" data-pipeline="{{ pipeline_group }}"
+                data-episode="{{ episode }}" data-has-yt-upload="{{ has_yt_upload }}">
                 <td class="patch-select-cell"><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
                            form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
+                <td class="patch-stt-cell">{{ episode }}</td>
                 <td class="patch-name-cell">
                     <strong>{{ patch.name or patch.patch_index }}</strong>
                 </td>
@@ -486,7 +536,6 @@
                     {% endif %}
                 </td>
                 <td id="patch-status-{{ patch.id }}">
-                    {% set pipeline = pipeline_rows.get(patch.id) %}
                     {% if pipeline and pipeline.stage == 'published' %}<span class="badge badge-done">Published</span>
                     {% elif patch.status == 'done' %}
                         <span class="badge badge-done">Hoàn tất</span>
@@ -667,8 +716,10 @@
         .patch-bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:100; display:none; align-items:center; gap:var(--space-sm); padding:var(--space-sm) var(--space-md); background:var(--bg-card); border-top:2px solid var(--border-color); box-shadow:0 -4px 12px rgba(0,0,0,.15); white-space:nowrap; overflow-x:auto; }
         .patch-bottom-nav.visible { display:flex; }
         body.has-bottom-nav { padding-bottom:64px; }
-         .patch-search { display:flex; gap:var(--space-sm); align-items:center; margin-bottom:var(--space-sm); }
-         .patch-search input { flex:1; max-width:320px; }
+         .patch-search { display:flex; gap:var(--space-sm); align-items:center; flex-wrap:wrap; margin-bottom:var(--space-sm); }
+         .patch-search input { flex:1; min-width:200px; max-width:320px; }
+         .patch-search-flags { margin-top:calc(-1 * var(--space-xs)); }
+         .patch-flag-label { color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
          .patch-search select { padding:0.35rem 0.5rem; border:1px solid var(--border-color); border-radius:var(--border-radius-sm); background:var(--bg-card); color:var(--text-primary); font:inherit; font-size:var(--font-size-sm); }
          .patch-pagination { display:flex; gap:var(--space-xs); align-items:center; justify-content:center; margin-top:var(--space-sm); flex-wrap:wrap; }
         .patch-pagination button { padding:var(--space-xs) var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font:inherit; font-size:var(--font-size-sm); }
@@ -1176,14 +1227,36 @@ function updatePatchRow(patchId, data) {
 const PATCHES_PER_PAGE = 20;
 let currentPage = 1;
 const PATCH_STORAGE_KEY = 'data-table-state:' + location.pathname + ':patch-table';
+// Stored state key -> control id. Save, restore and reset all read this one
+// map so a new filter cannot be wired into some of the three but not the rest.
+const PATCH_FILTER_IDS = {
+    search: 'patch-search-input',
+    status: 'patch-status-filter',
+    pipeline: 'patch-pipeline-filter',
+    hasVideo: 'patch-has-video',
+    hasAudio: 'patch-has-audio',
+    hasYt: 'patch-has-yt',
+};
 function getPatchState() {
     try {
         var raw = JSON.parse(localStorage.getItem(PATCH_STORAGE_KEY) || '{}');
-        return (raw && typeof raw.search === 'string') ? raw.search : '';
-    } catch (_) { return ''; }
+        if (!raw || typeof raw !== 'object') return null;
+        var state = {};
+        Object.keys(PATCH_FILTER_IDS).forEach(function (key) {
+            state[key] = typeof raw[key] === 'string' ? raw[key] : '';
+        });
+        return state;
+    } catch (_) { return null; }
 }
-function savePatchState(search) {
-    try { localStorage.setItem(PATCH_STORAGE_KEY, JSON.stringify({search: search})); } catch (_) {}
+function savePatchState(state) {
+    try { localStorage.setItem(PATCH_STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+}
+function resetPatchFilters() {
+    Object.keys(PATCH_FILTER_IDS).forEach(function (key) {
+        var el = document.getElementById(PATCH_FILTER_IDS[key]);
+        if (el) el.value = '';
+    });
+    filterAndPaginate(true);
 }
 
 // The patches table is NOT the first table in the patches section (the auto-build
@@ -1194,25 +1267,51 @@ function patchesTbody() {
     return sel ? sel.closest('table').querySelector('tbody') : null;
 }
 
-function filterAndPaginate() {
+// resetPage: true when a filter changed, so the user lands on page 1 instead of
+// a page that no longer exists in the narrowed result set.
+function filterAndPaginate(resetPage) {
     const searchInput = document.getElementById('patch-search-input');
     const filterCount = document.getElementById('patch-filter-count');
     const perPageSelect = document.getElementById('patch-per-page');
+    const statusSelect = document.getElementById('patch-status-filter');
+    const pipelineSelect = document.getElementById('patch-pipeline-filter');
+    const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
     const tbody = patchesTbody();
     if (!tbody) return;
+    if (resetPage) currentPage = 1;
     const rows = Array.from(tbody.querySelectorAll('tr'));
-    const query = (searchInput.value || '').toLowerCase().trim();
+    const rawQuery = searchInput ? (searchInput.value || '').trim() : '';
+    const query = rawQuery.toLowerCase();
+    const status = statusSelect ? statusSelect.value : '';
+    const pipelineStage = pipelineSelect ? pipelineSelect.value : '';
+    const hasVideo = val('patch-has-video');
+    const hasAudio = val('patch-has-audio');
+    const hasYt = val('patch-has-yt');
+    const anyFilter = !!(query || status || pipelineStage || hasVideo || hasAudio || hasYt);
+
+    // '' = no filter, '1' = must have, '0' = must not have.
+    const flagMatch = (want, actual) => !want || (want === '1') === actual;
 
     // filter
     let visible = 0;
     rows.forEach(row => {
         const nameCell = row.querySelector('.patch-name-cell');
         const text = (nameCell ? nameCell.textContent : '').toLowerCase();
-        const match = !query || text.includes(query);
+        // Video/audio state is re-written on the video cell as patches finish,
+        // so read it there — a copy on the <tr> would go stale without a reload.
+        const videoCell = row.querySelector('.patch-video-cell');
+        // Episode matches exactly: typing "1" should find tập 1, not 1/10/100.
+        const matchesQuery = !query || text.includes(query) || row.dataset.episode === query;
+        const match = matchesQuery
+            && (!status || row.dataset.patchStatus === status)
+            && (!pipelineStage || row.dataset.pipeline === pipelineStage)
+            && flagMatch(hasVideo, !!videoCell && videoCell.dataset.hasVideo === '1')
+            && flagMatch(hasAudio, !!videoCell && videoCell.dataset.audioReady === '1')
+            && flagMatch(hasYt, row.dataset.hasYtUpload === '1');
         row.style.display = match ? '' : 'none';
         if (match) visible++;
     });
-    filterCount.textContent = query ? `${visible}/${rows.length}` : '';
+    filterCount.textContent = anyFilter ? `${visible}/${rows.length}` : '';
 
     // paginate
     const totalVisible = rows.filter(r => r.style.display !== 'none').length;
@@ -1228,8 +1327,10 @@ function filterAndPaginate() {
         idx++;
     });
 
-    if (query) savePatchState(query);
-    else { try { localStorage.removeItem(PATCH_STORAGE_KEY); } catch (_) {} }
+    if (anyFilter) {
+        savePatchState({search: rawQuery, status: status, pipeline: pipelineStage,
+                        hasVideo: hasVideo, hasAudio: hasAudio, hasYt: hasYt});
+    } else { try { localStorage.removeItem(PATCH_STORAGE_KEY); } catch (_) {} }
 
     // render pagination controls
     const container = document.getElementById('patch-pagination');
@@ -1264,9 +1365,11 @@ function filterAndPaginate() {
 // init pagination on load
 (function() {
     var saved = getPatchState();
-    var input = document.getElementById('patch-search-input');
-    if (saved && input) {
-        input.value = saved;
+    if (saved) {
+        Object.keys(PATCH_FILTER_IDS).forEach(function (key) {
+            var el = document.getElementById(PATCH_FILTER_IDS[key]);
+            if (el && saved[key]) el.value = saved[key];
+        });
     }
     currentPage = 1;
     filterAndPaginate();

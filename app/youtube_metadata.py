@@ -9,9 +9,15 @@ import string
 
 import soundfile as sf
 
-DEFAULT_TITLE_TEMPLATE = "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}"
+DEFAULT_TITLE_TEMPLATE = "{book_title} - Tập {episode_number} - Chương {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}"
+# Older builds shipped (and saved into book configs) an unaccented default template.
+_LEGACY_TITLE_TEMPLATES = {
+    "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
+}
 ALLOWED_FIELDS = {"book_title", "episode_number", "chapter_start", "chapter_end", "patch_name", "genre_tags"}
 YOUTUBE_TITLE_LIMIT = 100
+YOUTUBE_DESCRIPTION_LIMIT = 5000
+CHAPTER_SECTION_HEADING = "📖 Nội dung:"
 OVERRIDE_FIELDS = {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"}
 DEFAULT_BOOK_YOUTUBE_CONFIG = {"auto_upload": False, "title_template": DEFAULT_TITLE_TEMPLATE, "description": "", "genre_tags": "", "privacy_status": "private", "playlist": {"mode": "none", "playlist_id": "", "title_template": "{book_title}", "description_template": ""}}
 
@@ -51,6 +57,52 @@ def load_timeline(audio_path) -> dict | None:
         return timeline
     except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
         return None
+
+
+_CHAPTER_HEADING_RE = re.compile(
+    r"^\s*(?:chương|chuong|chapter|hồi|hoi|quyển|quyen|phần|phan)\s*0*(\d+)\s*[:.\-–—]*\s*",
+    re.IGNORECASE,
+)
+
+
+def detect_chapter_number(title) -> int | None:
+    """Real chapter number parsed from a heading like "Chương 12: Tên"."""
+    match = _CHAPTER_HEADING_RE.match(title or "")
+    return int(match.group(1)) if match else None
+
+
+def strip_chapter_heading(title) -> str:
+    """Chapter name with the "Chương N" prefix removed ("Chương 1: Mưa" -> "Mưa")."""
+    title = (title or "").strip()
+    match = _CHAPTER_HEADING_RE.match(title)
+    return title[match.end():].strip() if match else title
+
+
+def resolve_patch_chapter_range(patch) -> tuple[int, int, str]:
+    """Detect the real chapter numbers a patch covers, plus its clean name.
+
+    ``patch.chapter_start``/``chapter_end`` are 0-based DB indexes that count
+    front matter (cover, "Mục lục", ...), so showing them verbatim mislabels
+    the video. The audio's timeline sidecar lists the chapter titles actually
+    spoken, so numbers parsed from those titles win; without a timeline the
+    number in the patch's first-chapter title anchors the range. Raw indexes
+    remain the last resort for books whose headings carry no numbers.
+    """
+    name = strip_chapter_heading(getattr(patch, "name", "") or "")
+    audio_path = getattr(patch, "audio_path", None)
+    timeline = load_timeline(audio_path) if audio_path else None
+    if timeline:
+        numbers = [n for n in (detect_chapter_number(ch["title"]) for ch in timeline["chapters"]) if n is not None]
+        if numbers:
+            return numbers[0], numbers[-1], name
+    start = detect_chapter_number(getattr(patch, "name", ""))
+    if start is not None:
+        return start, start + max(patch.chapter_end - patch.chapter_start, 0), name
+    return patch.chapter_start, patch.chapter_end, name
+
+
+def format_chapter_range(start: int, end: int) -> str:
+    return f"Chương {start}" if start == end else f"Chương {start}-{end}"
 
 
 def split_tags(value: str) -> list[str]:
@@ -96,6 +148,8 @@ def validate_book_youtube_config(config: dict) -> dict:
     if not isinstance(config, dict):
         raise ValueError("config must be an object")
     result = {**DEFAULT_BOOK_YOUTUBE_CONFIG, **config}
+    if result.get("title_template") in _LEGACY_TITLE_TEMPLATES:
+        result["title_template"] = DEFAULT_TITLE_TEMPLATE
     if not isinstance(result["auto_upload"], bool):
         raise ValueError("auto_upload must be a boolean")
     if not isinstance(result["title_template"], str):
@@ -171,6 +225,86 @@ def _validate_override(override: dict) -> dict:
     return override
 
 
+_HASHTAG_SPLIT_RE = re.compile(r"\W+")
+
+
+def _hashtag(text: str) -> str:
+    words = [word for word in _HASHTAG_SPLIT_RE.split(text or "") if word]
+    return "#" + "".join(word[0].upper() + word[1:] for word in words) if words else ""
+
+
+def _hashtags(book_title: str, genre_text: str) -> str:
+    """Hashtags from the book's series name and its genres.
+
+    Everything after the first " - " in a book title is edition noise
+    ("... - Tập 1 - Long Phi"), so only the series name becomes a tag.
+    """
+    sources = [(book_title or "").split(" - ")[0], *split_tags(genre_text), "audiobook"]
+    tags: list[str] = []
+    for source in sources:
+        tag = _hashtag(source)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return " ".join(tags[:8])
+
+
+def _chapter_lines(chapter_titles, timeline: str) -> list[str]:
+    """Chapter list for the description: timestamped when the audio has a timeline."""
+    if timeline:
+        return timeline.split("\n")
+    if not isinstance(chapter_titles, (list, tuple)):
+        return []
+    return [title.strip() for title in chapter_titles if isinstance(title, str) and title.strip()]
+
+
+def _music_lines(music) -> list[str]:
+    if not isinstance(music, dict) or not (music.get("name") or "").strip():
+        return []
+    lines = [f"🎵 Nhạc nền: {music['name'].strip()}"]
+    lines += [text.strip() for text in (music.get("description"), music.get("license")) if (text or "").strip()]
+    return lines
+
+
+def _fit_description(blocks: list[list[str]], limit: int = YOUTUBE_DESCRIPTION_LIMIT) -> str:
+    """Join the description blocks, shortening the chapter list until it fits.
+
+    The chapter list is the only unbounded section - a book split into few, long
+    patches can carry hundreds of chapters - so it is what gets cut, never the
+    music credits, which exist to satisfy the track's licence.
+    """
+    blocks = [list(block) for block in blocks if block]
+
+    def render() -> str:
+        return "\n\n".join("\n".join(block) for block in blocks)
+
+    if len(render()) <= limit:
+        return render()
+    chapters = next((block for block in blocks if block[0] == CHAPTER_SECTION_HEADING), None)
+    if chapters is not None:
+        chapters.append("…")
+        while len(render()) > limit and len(chapters) > 2:
+            del chapters[-2]
+    text = render()
+    return text if len(text) <= limit else text[:limit].rstrip()
+
+
+def _default_description(values: dict, chapter_titles, music, timeline: str) -> str:
+    """Fallback description so videos never upload with an empty one."""
+    line = f"Tập {values['episode_number']} - {format_chapter_range(values['chapter_start'], values['chapter_end'])}"
+    if values["patch_name"]:
+        line += f": {values['patch_name']}"
+    header = [values["book_title"], line]
+    if values["genre_tags"]:
+        header.append(f"Thể loại: {values['genre_tags']}")
+    chapters = _chapter_lines(chapter_titles, timeline)
+    return _fit_description([
+        header,
+        [CHAPTER_SECTION_HEADING, *chapters] if chapters else [],
+        _music_lines(music),
+        [_hashtags(values["book_title"], values["genre_tags"])],
+    ])
+
+
 def _timeline_description(patch) -> str:
     audio_path = getattr(patch, "audio_path", None)
     if not audio_path:
@@ -204,7 +338,7 @@ def _timeline_description(patch) -> str:
         return ""
 
 
-def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
+def resolve_patch_youtube_metadata(book, patch, override: dict | None, context: dict | None = None) -> dict:
     raw = _json_object(book.automation_config, {})
     config = validate_book_youtube_config(raw.get("youtube", {}))
     override = _validate_override({k: v for k, v in _json_object(override, {}).items() if k in OVERRIDE_FIELDS})
@@ -214,10 +348,11 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
     if not isinstance(genre_value, str):
         raise ValueError("genre_tags override must be a string")
     genre_text = ", ".join(split_tags(genre_value))
-    values = {"book_title": book.title, "episode_number": patch.patch_index + 1, "chapter_start": patch.chapter_start, "chapter_end": patch.chapter_end, "patch_name": patch.name or "", "genre_tags": genre_text}
+    chapter_start, chapter_end, patch_name = resolve_patch_chapter_range(patch)
+    values = {"book_title": book.title, "episode_number": patch.patch_index + 1, "chapter_start": chapter_start, "chapter_end": chapter_end, "patch_name": patch_name, "genre_tags": genre_text}
     try:
         if config["title_template"] == DEFAULT_TITLE_TEMPLATE:
-            title = f"{book.title} - Tap {values['episode_number']} - Chuong {patch.chapter_start}-{patch.chapter_end}"
+            title = f"{book.title} - Tập {values['episode_number']} - {format_chapter_range(chapter_start, chapter_end)}"
             if values["patch_name"]:
                 title += f": {values['patch_name']}"
             if genre_text:
@@ -244,12 +379,17 @@ def resolve_patch_youtube_metadata(book, patch, override: dict | None) -> dict:
     except (KeyError, ValueError, IndexError) as exc:
         raise ValueError("invalid description template") from exc
     timeline = _timeline_description(patch)
-    if timeline:
+    context = context if isinstance(context, dict) else {}
+    if not description.strip():
+        # The generated description already places the timeline inside its chapter
+        # list, so only an author-written description gets the block appended.
+        description = _default_description(values, context.get("chapter_titles"), context.get("music"), timeline)
+    elif timeline:
         if description.rstrip() == timeline or description.endswith(f"\n\n{timeline}"):
             candidate = description
         else:
             candidate = f"{description}\n\n{timeline}" if description else timeline
-        if len(candidate) <= 5000:
+        if len(candidate) <= YOUTUBE_DESCRIPTION_LIMIT:
             description = candidate
     if not explicit_title:
         title = _fit_title(title, genre_text)

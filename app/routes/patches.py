@@ -25,7 +25,7 @@ from app import db as app_db
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
-from app.patch_publishing import enqueue_patch_publish, on_patch_audio_ready, retry_patch_publish
+from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, retry_patch_publish, warm_patch_thumbnail
 from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override
 from app.video_config import get_book_video_config
 
@@ -38,6 +38,47 @@ ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4"}
 # A patch background may be a still image or a looping video clip.
 ALLOWED_BACKGROUND_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | video_gen.VIDEO_BACKGROUND_EXTENSIONS
+
+
+def _off_lock(request: Request, work):
+    """Run `work(conn)` on a connection of its own, leaving the shared one free.
+
+    Publish work renders images with PIL, renders video with ffmpeg, and calls the YouTube
+    API (thumbnail upload, paginated playlist lookups). Doing that on the shared connection
+    means holding db_lock for minutes, which blocks every other request in the process -
+    including the status poll these features depend on.
+    """
+    shared = request.app.state.conn
+    with request.app.state.db_lock:
+        database = shared.execute("PRAGMA database_list").fetchone()[2]
+    if not database or database == ":memory:":
+        # An in-memory database exists only on the shared connection, so there is nothing
+        # else to open; tests take this path.
+        with request.app.state.db_lock:
+            return work(shared)
+    own_conn = app_db.connect(database)
+    try:
+        return work(own_conn)
+    finally:
+        own_conn.close()
+
+
+def _run_publish_stage(request: Request, patch_id: int, *, force_new: bool = False) -> dict:
+    """Advance one patch's publish pipeline without holding the shared db_lock."""
+    return _off_lock(
+        request,
+        lambda conn: enqueue_patch_publish(conn, patch_id, force_new=True)
+        if force_new
+        else retry_patch_publish(conn, patch_id),
+    )
+
+
+def _warm_thumbnail(request: Request, patch_id: int) -> None:
+    """Pre-render the patch thumbnail before a locked block calls on_patch_audio_ready,
+    so the PIL render happens off the shared db_lock (see app.patch_publishing)."""
+    with locked_conn(request) as conn:
+        inputs = fetch_thumbnail_inputs(conn, patch_id)
+    warm_patch_thumbnail(inputs)
 
 
 def _build_or_400(build, *args, **kwargs):
@@ -83,17 +124,23 @@ async def upload_patch_image(
         if patch is None or patch.book_id != book_id:
             raise HTTPException(status_code=404, detail="patch not found")
 
-        img_dir = Path(settings.data_root) / "uploads" / str(book_id) / "patches" / str(patch_id)
-        img_dir.mkdir(parents=True, exist_ok=True)
+    img_dir = Path(settings.data_root) / "uploads" / str(book_id) / "patches" / str(patch_id)
+    img_dir.mkdir(parents=True, exist_ok=True)
 
-        if patch.image_path:
-            Path(patch.image_path).unlink(missing_ok=True)
+    if patch.image_path:
+        Path(patch.image_path).unlink(missing_ok=True)
 
-        filename = f"img_{uuid.uuid4().hex[:8]}{ext}"
-        dest = img_dir / filename
+    filename = f"img_{uuid.uuid4().hex[:8]}{ext}"
+    dest = img_dir / filename
+
+    # Writing the upload off the lock and off the event loop, same as the MP4 path below.
+    def _save() -> None:
         with open(dest, "wb") as f:
             shutil.copyfileobj(image.file, f)
 
+    await asyncio.to_thread(_save)
+
+    with locked_conn(request) as conn:
         repository.save_patch_image(conn, patch_id, str(dest))
 
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
@@ -467,7 +514,7 @@ async def generate_patch_video(
         with locked_conn(request) as conn:
             from app.patch_publishing import seed_patch_video
             seed_patch_video(conn, patch_id, video_db_id, str(video_path))
-            youtube_status = retry_patch_publish(conn, patch_id)
+        youtube_status = await asyncio.to_thread(_run_publish_stage, request, patch_id)
 
     if _wants_json(request, ajax):
         return JSONResponse({
@@ -544,7 +591,7 @@ def upload_patch_video_to_youtube(
     with locked_conn(request) as conn:
         from app.patch_publishing import seed_patch_video
         seed_patch_video(conn, patch_id, video_db_id, str(video_path))
-        status = retry_patch_publish(conn, patch_id)
+    status = _run_publish_stage(request, patch_id)
     return JSONResponse({"status": "queued", "pipeline": status})
 
 
@@ -837,91 +884,104 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
         if not package_folder.is_dir():
             raise HTTPException(status_code=400, detail="Export folder is unavailable; check Google Drive Desktop or export again")
 
-        expected_chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
+        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch)
 
-        chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-        # Imported chunks are not LightTTS output — invalidate its reuse marker.
-        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
+    expected_chunk_count = len(repository.build_chunk_plan_from_inputs(plan_inputs))
 
-        try:
-            batch_root = package_folder
-            while not (batch_root / "batch_manifest.json").is_file() and batch_root != batch_root.parent:
-                batch_root = batch_root.parent
-            manifest_path = batch_root / "batch_manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
-            entry = next((item for item in (manifest or {}).get("patches", []) if item.get("patch_id") == patch_id), None)
-            result = _resolve_batch_result(package_folder, patch_id)
-            audio_path = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.wav"
-            if result and result.is_file():
-                try:
-                    import soundfile as sf
-                    sf.info(str(result))
-                    _install_imported_wav(result, audio_path)
+    chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    # Imported chunks are not LightTTS output — invalidate its reuse marker.
+    (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
+
+    # Copying and merging the chunk WAVs is hundreds of MB of disk I/O. It runs outside
+    # locked_conn so the shared connection - and therefore every other request - stays
+    # free; only the short status writes below take the lock.
+    try:
+        batch_root = package_folder
+        while not (batch_root / "batch_manifest.json").is_file() and batch_root != batch_root.parent:
+            batch_root = batch_root.parent
+        manifest_path = batch_root / "batch_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+        entry = next((item for item in (manifest or {}).get("patches", []) if item.get("patch_id") == patch_id), None)
+        result = _resolve_batch_result(package_folder, patch_id)
+        audio_path = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.wav"
+        if result and result.is_file():
+            installed = False
+            try:
+                sf.info(str(result))
+                _install_imported_wav(result, audio_path)
+                installed = True
+            except Exception:
+                logger.warning("batch result WAV invalid for patch %s; falling back to chunks", patch_id, exc_info=True)
+            if installed:
+                _warm_thumbnail(request, patch_id)
+                with locked_conn(request) as conn:
                     repository.mark_patch_done(conn, patch_id, str(audio_path))
                     on_patch_audio_ready(conn, patch_id)
                     repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=expected_chunk_count)
-                    return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
-                except Exception:
-                    logger.warning("batch result WAV invalid for patch %s; falling back to chunks", patch_id, exc_info=True)
-            patch_folder = _safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
-            chunk_source_dir = patch_folder / "output" if patch_folder else package_folder / "output"
-            if not chunk_source_dir.is_dir():
-                chunk_source_dir = package_folder / "output"
-            if not chunk_source_dir.is_dir():
-                chunk_source_dir = package_folder
+                return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
+        patch_folder = _safe_batch_path(batch_root, entry.get("folder", "")) if entry else package_folder
+        chunk_source_dir = patch_folder / "output" if patch_folder else package_folder / "output"
+        if not chunk_source_dir.is_dir():
+            chunk_source_dir = package_folder / "output"
+        if not chunk_source_dir.is_dir():
+            chunk_source_dir = package_folder
 
-            imported = 0
-            expected_info = None
-            for i in range(expected_chunk_count):
-                name = f"chunk_{i:03d}.wav"
-                local_path = chunk_dir / name
-                if local_path.exists():
-                    info = sf.info(str(local_path))
-                    if expected_info is None:
-                        expected_info = (info.samplerate, info.channels)
-                    elif (info.samplerate, info.channels) != expected_info:
-                        raise ValueError("chunk samplerate/channels mismatch")
-                    imported += 1
-                    continue
-                source_path = _safe_batch_path(batch_root, str(chunk_source_dir.relative_to(batch_root) / name)) if chunk_source_dir.is_relative_to(batch_root) else None
-                if source_path is None or not source_path.is_file():
-                    break  # first missing chunk: stop here, contiguous prefix ends
-                info = sf.info(str(source_path))
+        imported = 0
+        expected_info = None
+        for i in range(expected_chunk_count):
+            name = f"chunk_{i:03d}.wav"
+            local_path = chunk_dir / name
+            if local_path.exists():
+                info = sf.info(str(local_path))
                 if expected_info is None:
                     expected_info = (info.samplerate, info.channels)
                 elif (info.samplerate, info.channels) != expected_info:
                     raise ValueError("chunk samplerate/channels mismatch")
-                shutil.copy2(source_path, local_path)
                 imported += 1
+                continue
+            source_path = _safe_batch_path(batch_root, str(chunk_source_dir.relative_to(batch_root) / name)) if chunk_source_dir.is_relative_to(batch_root) else None
+            if source_path is None or not source_path.is_file():
+                break  # first missing chunk: stop here, contiguous prefix ends
+            info = sf.info(str(source_path))
+            if expected_info is None:
+                expected_info = (info.samplerate, info.channels)
+            elif (info.samplerate, info.channels) != expected_info:
+                raise ValueError("chunk samplerate/channels mismatch")
+            shutil.copy2(source_path, local_path)
+            imported += 1
 
-            if imported >= expected_chunk_count:
-                book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-                audio_path = Path(book_dir / f"{patch_id}.wav")
-                chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-                temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.tmp.wav")
-                try:
-                    audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
-                    metadata = None
-                    patch_manifest = (patch_folder or package_folder) / "manifest.json"
-                    if patch_manifest.is_file():
-                        metadata = json.loads(patch_manifest.read_text(encoding="utf-8")).get("chunk_metadata")
-                    timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata or [], 300)
-                    _install_imported_wav(temp_audio, audio_path, timeline)
-                finally:
-                    temp_audio.unlink(missing_ok=True)
-                # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
-                # the local synthesis path in worker.py - not auto-deleted after merge.
+        if imported >= expected_chunk_count:
+            book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+            audio_path = Path(book_dir / f"{patch_id}.wav")
+            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
+            temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.tmp.wav")
+            try:
+                audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
+                metadata = None
+                patch_manifest = (patch_folder or package_folder) / "manifest.json"
+                if patch_manifest.is_file():
+                    metadata = json.loads(patch_manifest.read_text(encoding="utf-8")).get("chunk_metadata")
+                timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata or [], 300)
+                _install_imported_wav(temp_audio, audio_path, timeline)
+            finally:
+                temp_audio.unlink(missing_ok=True)
+            # Chunk files (downloaded from Drive) are intentionally kept on disk, same as
+            # the local synthesis path in worker.py - not auto-deleted after merge.
+            _warm_thumbnail(request, patch_id)
+            with locked_conn(request) as conn:
                 repository.mark_patch_done(conn, patch_id, str(audio_path))
                 on_patch_audio_ready(conn, patch_id)
                 repository.update_patch_export(conn, export.id, status="imported", imported_chunk_count=imported)
-            else:
+        else:
+            with locked_conn(request) as conn:
                 repository.update_patch_chunk_progress(conn, patch_id, imported)
                 repository.update_patch_export(conn, export.id, status="partially_imported", imported_chunk_count=imported)
-        except Exception as exc:
-            logger.exception("import from Google Drive Desktop failed for patch %s", patch_id)
+    except Exception as exc:
+        logger.exception("import from Google Drive Desktop failed for patch %s", patch_id)
+        with locked_conn(request) as conn:
             repository.update_patch_export(conn, export.id, status="failed", error_message=str(exc))
-            raise HTTPException(status_code=500, detail=f"Drive Desktop import failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Drive Desktop import failed: {exc}")
 
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
 
@@ -971,6 +1031,7 @@ async def upload_patch_audio(
     with open(audio_path, "wb") as dest:
         shutil.copyfileobj(audio.file, dest)
 
+    _warm_thumbnail(request, patch_id)
     with locked_conn(request) as conn:
         repository.mark_patch_done(conn, patch_id, str(audio_path))
         on_patch_audio_ready(conn, patch_id)
@@ -993,7 +1054,9 @@ def youtube_metadata_preview(request: Request, book_id: int, patch_id: int | Non
         patch = repository.get_patch(conn, patch_id) if patch_id else next(iter(repository.list_patches(conn, book_id)), None)
         if not book or not patch or patch.book_id != book_id:
             raise HTTPException(404, "patch not found")
-        return resolve_patch_youtube_metadata(book, patch, get_patch_youtube_override(conn, patch.id))
+        return resolve_patch_youtube_metadata(
+            book, patch, get_patch_youtube_override(conn, patch.id),
+            repository.build_patch_metadata_context(conn, book, patch))
 
 
 @router.get("/books/{book_id}/patches/{patch_id}/youtube-metadata")
@@ -1002,7 +1065,8 @@ def get_youtube_metadata(request: Request, book_id: int, patch_id: int):
         book, patch = _youtube_patch(conn, book_id, patch_id)
         override = get_patch_youtube_override(conn, patch_id)
         pipeline = conn.execute("SELECT stage,last_error,thumbnail_path,video_path,thumbnail_status,video_status,upload_status,playlist_status FROM patch_pipeline WHERE patch_id = ?", (patch_id,)).fetchone()
-        return {"metadata": resolve_patch_youtube_metadata(book, patch, override), "override": override, "pipeline": dict(pipeline) if pipeline else {}}
+        context = repository.build_patch_metadata_context(conn, book, patch)
+        return {"metadata": resolve_patch_youtube_metadata(book, patch, override, context), "override": override, "pipeline": dict(pipeline) if pipeline else {}}
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/youtube-metadata")
@@ -1012,7 +1076,8 @@ async def save_youtube_metadata(request: Request, book_id: int, patch_id: int):
         book, patch = _youtube_patch(conn, book_id, patch_id)
         try:
             save_patch_youtube_override(conn, patch_id, data)
-            return resolve_patch_youtube_metadata(book, patch, data)
+            return resolve_patch_youtube_metadata(
+                book, patch, data, repository.build_patch_metadata_context(conn, book, patch))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -1032,25 +1097,22 @@ async def publish_patch(request: Request, book_id: int, patch_id: int):
         if any(k in {"title", "description", "genre_tags", "tags", "privacy_status", "playlist"} for k in override):
             save_patch_youtube_override(conn, patch_id, override)
         effective_override = get_patch_youtube_override(conn, patch_id)
-        metadata = resolve_patch_youtube_metadata(book, patch, effective_override)
-        pipeline = enqueue_patch_publish(conn, patch_id, force_new=bool(data.get("force_new")))
+        metadata = resolve_patch_youtube_metadata(
+            book, patch, effective_override, repository.build_patch_metadata_context(conn, book, patch))
+    force_new = bool(data.get("force_new"))
+    # enqueue_patch_publish renders the patch thumbnail with PIL, so it goes off the
+    # shared lock and off the event loop like every other slow publish step.
+    pipeline = await asyncio.to_thread(
+        _off_lock, request, lambda conn: enqueue_patch_publish(conn, patch_id, force_new=force_new),
+    )
     return {"metadata": metadata, "pipeline": pipeline}
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/publish/retry")
 def retry_publish_patch(request: Request, book_id: int, patch_id: int, force_new: bool = False):
-    conn = request.app.state.conn
-    with request.app.state.db_lock:
+    with locked_conn(request) as conn:
         _youtube_patch(conn, book_id, patch_id)
-        database = conn.execute("PRAGMA database_list").fetchone()[2]
-    if not database or database == ":memory:":
-        with request.app.state.db_lock:
-            return enqueue_patch_publish(conn, patch_id, force_new=True) if force_new else retry_patch_publish(conn, patch_id)
-    retry_conn = app_db.connect(database)
-    try:
-        return enqueue_patch_publish(retry_conn, patch_id, force_new=True) if force_new else retry_patch_publish(retry_conn, patch_id)
-    finally:
-        retry_conn.close()
+    return _run_publish_stage(request, patch_id, force_new=force_new)
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/import-local")
@@ -1074,13 +1136,21 @@ async def import_patch_from_upload(
         if patch.status == "processing":
             raise HTTPException(status_code=400, detail="cannot import while the patch is processing")
 
-        expected_chunk_count = len(repository.build_patch_chunk_plan(conn, patch))
+        plan_inputs = repository.fetch_patch_chunk_inputs(conn, patch)
 
-        chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-        # Uploaded chunks are not LightTTS output — invalidate its reuse marker.
-        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
+    expected_chunk_count = len(
+        await asyncio.to_thread(repository.build_chunk_plan_from_inputs, plan_inputs)
+    )
 
+    chunk_dir = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    # Uploaded chunks are not LightTTS output — invalidate its reuse marker.
+    (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
+
+    # Unzipping and merging the uploads is heavy disk I/O, so it stays outside
+    # locked_conn: holding the shared connection through it would block every other
+    # request for the whole import.
+    def _import_chunks() -> tuple[int, Path | None]:
         # Pull every chunk_NNN.wav out of the uploads (loose .wav files and/or .zip archives)
         # and drop them into the chunk dir, keeping only names we actually expect.
         wanted = {f"chunk_{i:03d}.wav" for i in range(expected_chunk_count)}
@@ -1122,16 +1192,27 @@ async def import_patch_from_upload(
             else:
                 break
 
-        if imported >= expected_chunk_count:
-            book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
-            audio_path = Path(book_dir / f"{patch_id}.wav")
-            chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
-            temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.wav")
-            try:
-                audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
-                _install_imported_wav(temp_audio, audio_path, None)
-            finally:
-                temp_audio.unlink(missing_ok=True)
+        if imported < expected_chunk_count:
+            return imported, None
+
+        book_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+        audio_path = Path(book_dir / f"{patch_id}.wav")
+        chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(expected_chunk_count)]
+        temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.wav")
+        try:
+            audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
+            _install_imported_wav(temp_audio, audio_path, None)
+        finally:
+            temp_audio.unlink(missing_ok=True)
+        return imported, audio_path
+
+    imported, audio_path = await asyncio.to_thread(_import_chunks)
+
+    if audio_path is not None:
+        await asyncio.to_thread(_warm_thumbnail, request, patch_id)
+
+    with locked_conn(request) as conn:
+        if audio_path is not None:
             repository.mark_patch_done(conn, patch_id, str(audio_path))
             on_patch_audio_ready(conn, patch_id)
         else:

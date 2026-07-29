@@ -13,6 +13,7 @@ from app.chunker import group_into_patches, split_into_tts_chunks
 from app.epub_parser import ParsedChapter
 from app.models import Book, BookJob, Chapter, Music, Patch, PatchExport, TextReplaceRule
 from app.normalization import NormalizationOptions, normalize_chapter_titles, normalize_text
+from app.youtube_metadata import format_chapter_range, resolve_patch_chapter_range
 
 logger = logging.getLogger(__name__)
 
@@ -915,34 +916,43 @@ def build_patch_text(conn: sqlite3.Connection, patch: Patch) -> str:
     return apply_replace_rules(raw, rules)
 
 
-def build_patch_chunk_plan(
+def fetch_patch_chunk_inputs(
     conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None
-) -> list[dict]:
-    """Build independently split TTS chunks for each included chapter.
+) -> dict:
+    """Read everything build_chunk_plan_from_inputs needs, and nothing else.
 
-    A patch edited in Text Studio (``clean_text`` set) is the exception: the edited
-    text wins over the derived chapter texts, so every TTS path — worker, LightTTS,
-    Drive/Kaggle export — speaks exactly what the user saved. Free-form editing
-    destroys the chapter boundaries, so that plan carries no chapter markers and
-    therefore produces no chapter timeline.
+    Split out from build_patch_chunk_plan so callers that hold the shared db_lock can
+    release it before the expensive part: normalization + chunking is pure CPU over the
+    whole patch text, and running it under the lock stalls every other request.
     """
     limit = max_chars or patch.max_chars or _TTS_MAX_CHARS
     if patch.clean_text:
+        return {"limit": limit, "clean_text": patch.clean_text}
+    book = get_book(conn, patch.book_id)
+    return {
+        "limit": limit,
+        "clean_text": None,
+        "chapters": get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end),
+        "rules": list_replace_rules(conn, patch.book_id),
+        "opts": NormalizationOptions(
+            numbers=bool(book.normalize_numbers_enabled) if book else False,
+            junk=bool(book.normalize_junk_enabled) if book else False,
+            spellcheck=bool(book.normalize_spellcheck_enabled) if book else False,
+            dictionary=bool(book.normalize_dictionary_enabled) if book else False,
+            transliteration=bool(book.normalize_transliteration_enabled) if book else False,
+        ),
+    }
+
+
+def build_chunk_plan_from_inputs(inputs: dict) -> list[dict]:
+    """Pure-CPU half of build_patch_chunk_plan: touches no database."""
+    limit = inputs["limit"]
+    if inputs["clean_text"]:
         return [
             {"text": chunk, "chapter_index": None, "chapter_title": None, "is_chapter_start": False}
-            for chunk in split_into_tts_chunks(patch.clean_text, max_chars=limit)
+            for chunk in split_into_tts_chunks(inputs["clean_text"], max_chars=limit)
         ]
-
-    chapters = get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)
-    book = get_book(conn, patch.book_id)
-    rules = list_replace_rules(conn, patch.book_id)
-    opts = NormalizationOptions(
-        numbers=bool(book.normalize_numbers_enabled) if book else False,
-        junk=bool(book.normalize_junk_enabled) if book else False,
-        spellcheck=bool(book.normalize_spellcheck_enabled) if book else False,
-        dictionary=bool(book.normalize_dictionary_enabled) if book else False,
-        transliteration=bool(book.normalize_transliteration_enabled) if book else False,
-    )
+    chapters, rules, opts = inputs["chapters"], inputs["rules"], inputs["opts"]
     plan = []
     for chapter in chapters:
         if chapter.is_excluded:
@@ -966,6 +976,23 @@ def build_patch_chunk_plan(
                 "is_chapter_start": i == 0,
             })
     return plan
+
+
+def build_patch_chunk_plan(
+    conn: sqlite3.Connection, patch: Patch, max_chars: int | None = None
+) -> list[dict]:
+    """Build independently split TTS chunks for each included chapter.
+
+    A patch edited in Text Studio (``clean_text`` set) is the exception: the edited
+    text wins over the derived chapter texts, so every TTS path — worker, LightTTS,
+    Drive/Kaggle export — speaks exactly what the user saved. Free-form editing
+    destroys the chapter boundaries, so that plan carries no chapter markers and
+    therefore produces no chapter timeline.
+
+    Callers holding db_lock should prefer fetch_patch_chunk_inputs +
+    build_chunk_plan_from_inputs so the normalization pass runs off the lock.
+    """
+    return build_chunk_plan_from_inputs(fetch_patch_chunk_inputs(conn, patch, max_chars))
 
 
 # ---------------------------------------------------------------------------
@@ -1822,6 +1849,17 @@ def delete_sound_effect(conn: sqlite3.Connection, effect_id: int) -> None:
     conn.commit()
 
 
+def build_patch_metadata_context(conn: sqlite3.Connection, book: Book, patch: Patch) -> dict:
+    """Database facts the generated YouTube description needs: the chapters this
+    patch actually speaks, and the background track whose licence must be credited."""
+    chapters = get_chapters_in_range(conn, patch.book_id, patch.chapter_start, patch.chapter_end)
+    music = get_music(conn, book.music_id) if book.music_id else None
+    return {
+        "chapter_titles": [ch.title for ch in chapters if not ch.is_excluded and ch.title],
+        "music": {"name": music.name, "description": music.description, "license": music.license} if music else None,
+    }
+
+
 def build_youtube_description(
     conn: sqlite3.Connection, book_id: int
 ) -> dict:
@@ -1847,8 +1885,9 @@ def build_youtube_description(
         parts.append("")
         parts.append("📚 Chapters:")
         for p in patches:
-            label = p.name or f"Patch {p.patch_index}"
-            parts.append(f"Chương {p.chapter_start}-{p.chapter_end}: {label}")
+            start, end, clean_name = resolve_patch_chapter_range(p)
+            label = clean_name or p.name or f"Patch {p.patch_index}"
+            parts.append(f"{format_chapter_range(start, end)}: {label}")
 
     desc = "\n".join(parts)
 

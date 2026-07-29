@@ -134,7 +134,10 @@ class UploadWorker:
                 youtube.mark_upload_failed(self.conn, upload_id, str(e))
 
     def _execution_connection(self) -> sqlite3.Connection | None:
-        database = self.conn.execute("PRAGMA database_list").fetchone()[2]
+        # Even this one-row PRAGMA has to take db_lock: a sqlite3 connection is not safe
+        # for concurrent use, and the routes touch this same object from other threads.
+        with self.db_lock:
+            database = self.conn.execute("PRAGMA database_list").fetchone()[2]
         if not database or database == ":memory:":
             return None
         return db.connect(database)

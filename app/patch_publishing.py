@@ -10,7 +10,7 @@ from pathlib import Path
 from app import image_overlay, video_gen, youtube
 from app.config import settings
 from app.image_overlay import ensure_patch_overlay
-from app.repository import get_book, get_patch
+from app.repository import build_patch_metadata_context, get_book, get_patch
 from app.video_repository import upsert_patch_video
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_chapter_range, resolve_patch_youtube_metadata)
@@ -67,15 +67,9 @@ def on_patch_audio_ready(conn: sqlite3.Connection, patch_id: int) -> dict | None
     return None
 
 
-def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new: bool = False) -> dict:
-    patch = get_patch(conn, patch_id)
-    book = get_book(conn, patch.book_id) if patch else None
-    if not patch or not book:
-        raise ValueError(f"patch {patch_id} not found")
-    existing = _row(conn, patch_id)
-    if existing and not force_new:
-        return existing
-    metadata = resolve_patch_youtube_metadata(book, patch, get_patch_youtube_override(conn, patch_id))
+def _build_metadata_snapshot(conn: sqlite3.Connection, book, patch) -> dict:
+    metadata = resolve_patch_youtube_metadata(
+        book, patch, get_patch_youtube_override(conn, patch.id), build_patch_metadata_context(conn, book, patch))
     metadata["automation"] = {"youtube": metadata.pop("youtube")}
     chapter_start, chapter_end, patch_name = resolve_patch_chapter_range(patch)
     metadata["playlist_template_values"] = {
@@ -86,6 +80,18 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
         "patch_name": patch_name,
         "genre_tags": ",".join(metadata.get("tags", [])),
     }
+    return metadata
+
+
+def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new: bool = False) -> dict:
+    patch = get_patch(conn, patch_id)
+    book = get_book(conn, patch.book_id) if patch else None
+    if not patch or not book:
+        raise ValueError(f"patch {patch_id} not found")
+    existing = _row(conn, patch_id)
+    if existing and not force_new:
+        return existing
+    metadata = _build_metadata_snapshot(conn, book, patch)
     media = {"patch_id": patch_id, "audio_path": patch.audio_path, "source_image": patch.image_path, "thumbnail_path": existing["thumbnail_path"] if existing else None}
     thumbnail = ensure_patch_overlay(book, patch, settings.default_font_path or None) or media["thumbnail_path"]
     thumbnail_ready = bool(thumbnail and Path(thumbnail).is_file())
@@ -133,17 +139,33 @@ def sync_pipeline_from_upload(conn: sqlite3.Connection, upload_id: int) -> dict 
 
 
 def _create_upload_atomically(conn: sqlite3.Connection, row: dict) -> int:
-    metadata = json.loads(row["config_snapshot"])
+    # Re-resolve instead of trusting the enqueue-time snapshot: config/override edits
+    # (and metadata fixes) made between enqueue and upload must reach YouTube. The
+    # stored snapshot stays as the fallback when the current config no longer resolves.
+    snapshot = row["config_snapshot"]
+    try:
+        patch = get_patch(conn, row["patch_id"])
+        book = get_book(conn, patch.book_id) if patch else None
+        if not patch or not book:
+            raise ValueError(f"patch {row['patch_id']} not found")
+        metadata = _build_metadata_snapshot(conn, book, patch)
+        snapshot = json.dumps(metadata)
+    except Exception:  # noqa: BLE001 - a stale snapshot still beats a stuck pipeline
+        logging.getLogger(__name__).warning(
+            "metadata re-resolve failed for patch %s; uploading with the enqueue-time snapshot",
+            row["patch_id"], exc_info=True,
+        )
+        metadata = json.loads(row["config_snapshot"])
     conn.execute("BEGIN IMMEDIATE")
     try:
         current = conn.execute("SELECT youtube_upload_id FROM patch_pipeline WHERE patch_id=?", (row["patch_id"],)).fetchone()
         if current[0]:
             conn.commit()
             return current[0]
-        conn.execute("UPDATE patch_pipeline SET stage='upload', upload_status='claiming', updated_at=? WHERE patch_id=?", (_now(), row["patch_id"]))
+        conn.execute("UPDATE patch_pipeline SET stage='upload', upload_status='claiming', config_snapshot=?, updated_at=? WHERE patch_id=?", (snapshot, _now(), row["patch_id"]))
         cur = conn.execute("""INSERT INTO youtube_uploads
             (video_id, video_path, title, description, tags, privacy_status, status, metadata_snapshot, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""", (row["video_id"], row["video_path"], metadata["title"], metadata["description"], json.dumps(metadata["tags"]), metadata["privacy_status"], row["config_snapshot"], _now()))
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""", (row["video_id"], row["video_path"], metadata["title"], metadata["description"], json.dumps(metadata["tags"]), metadata["privacy_status"], snapshot, _now()))
         conn.execute("UPDATE patch_pipeline SET upload_status='queued', youtube_upload_id=?, updated_at=? WHERE patch_id=?", (cur.lastrowid, _now(), row["patch_id"]))
         conn.commit()
         return cur.lastrowid

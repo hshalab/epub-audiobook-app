@@ -1,6 +1,7 @@
 """Global sound effect library routes: CRUD, bulk add/edit."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -98,15 +99,25 @@ def serve_effect_audio(request: Request, effect_id: int):
 async def bulk_add_effects(request: Request, files: list[UploadFile] = File(...)):
     """Upload multiple audio files. Marker = filename without extension."""
     _EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
-    added = []
-    with locked_conn(request) as conn:
+
+    # Write every upload to disk first, off the lock and off the event loop; the shared
+    # connection is only taken for the short inserts afterwards.
+    def _save_all() -> list[tuple[str, Path]]:
+        saved = []
         for f in files:
             stem = Path(f.filename or "unknown").stem
-            marker = f"[{stem}]"
             ext = Path(f.filename or "").suffix or ".wav"
             dest = _EFFECTS_DIR / f"{stem}{ext}"
             with open(dest, "wb") as out:
                 shutil.copyfileobj(f.file, out)
+            saved.append((f"[{stem}]", dest))
+        return saved
+
+    saved = await asyncio.to_thread(_save_all)
+
+    added = []
+    with locked_conn(request) as conn:
+        for marker, dest in saved:
             eid = repository.create_sound_effect(conn, None, marker, str(dest), "")
             added.append({"id": eid, "marker": marker})
     return JSONResponse({"ok": True, "added": len(added), "effects": added})

@@ -227,12 +227,133 @@ def test_timeline_ten_second_boundaries(tmp_path, chapters, frames, valid):
 
 def test_default_patch_title_and_tags():
     result = resolve_patch_youtube_metadata(_book(), _patch(), None)
-    assert result["title"] == "Nha Tro - Tap 4 - Chuong 1-8: Mua | kinh di, huyen huyen"
+    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8: Mua | kinh di, huyen huyen"
     assert result["tags"] == ["kinh di", "huyen huyen"]
 
 
 def test_episode_number_comes_from_patch_index():
-    assert "Tap 4" in resolve_patch_youtube_metadata(_book(), _patch(), None)["title"]
+    assert "Tập 4" in resolve_patch_youtube_metadata(_book(), _patch(), None)["title"]
+
+
+def test_legacy_ascii_default_template_is_upgraded():
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {
+        "title_template": "{book_title} - Tap {episode_number} - Chuong {chapter_start}-{chapter_end}: {patch_name} | {genre_tags}",
+        "genre_tags": "kinh di",
+    }})
+    result = resolve_patch_youtube_metadata(book, _patch(), None)
+    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8: Mua | kinh di"
+
+
+def test_chapter_range_detected_from_patch_name():
+    patch = SimpleNamespace(name="Chương 11: Thất thủ", chapter_start=12, chapter_end=21,
+                            patch_index=1, audio_path=None)
+    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    assert result["title"] == "Nha Tro - Tập 2 - Chương 11-20: Thất thủ | kinh di, huyen huyen"
+
+
+def test_chapter_range_detected_from_timeline(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"chapter_index": 2, "start_frame": 0, "start_seconds": 0, "title": "Chương 5: Mở màn"},
+        {"chapter_index": 3, "start_frame": 100, "start_seconds": 10, "title": "Chương 6. Giữa"},
+        {"chapter_index": 4, "start_frame": 200, "start_seconds": 20, "title": "Chương 7 - Kết"},
+    ])
+    patch = SimpleNamespace(name="Chương 5: Mở màn", chapter_start=6, chapter_end=8,
+                            patch_index=0, audio_path=str(audio))
+    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    assert "Chương 5-7: Mở màn" in result["title"]
+
+
+def test_single_chapter_patch_shows_one_number():
+    patch = SimpleNamespace(name="Chương 9: Riêng", chapter_start=10, chapter_end=10,
+                            patch_index=0, audio_path=None)
+    result = resolve_patch_youtube_metadata(_book(), patch, None)
+    assert "Chương 9: Riêng" in result["title"]
+    assert "9-9" not in result["title"]
+
+
+def test_default_description_is_generated_when_config_empty():
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {"genre_tags": "kinh di"}})
+    result = resolve_patch_youtube_metadata(book, _patch(), None)
+    assert "Nha Tro" in result["description"]
+    assert "Tập 4 - Chương 1-8: Mua" in result["description"]
+
+
+def _empty_config_book():
+    return SimpleNamespace(title="Dị Độ Lữ Xá", automation_config=json.dumps(
+        {"youtube": {"genre_tags": "Linh dị, Đô Thị"}}))
+
+
+def test_default_description_lists_every_chapter_by_name():
+    context = {"chapter_titles": ["Chương 1: Mưa", "Chương 2: Nắng", "Chương 3: Gió"]}
+    description = resolve_patch_youtube_metadata(
+        _empty_config_book(), _patch(), None, context=context)["description"]
+    assert "Chương 1: Mưa" in description
+    assert "Chương 2: Nắng" in description
+    assert "Chương 3: Gió" in description
+
+
+def test_chapter_list_uses_timeline_timestamps_when_available(tmp_path):
+    audio = _timeline_audio(tmp_path, chapters=[
+        {"chapter_index": 1, "start_frame": 0, "start_seconds": 0, "title": "Chương 1: Mưa"},
+        {"chapter_index": 2, "start_frame": 100, "start_seconds": 10, "title": "Chương 2: Nắng"},
+        {"chapter_index": 3, "start_frame": 200, "start_seconds": 20, "title": "Chương 3: Gió"},
+    ])
+    context = {"chapter_titles": ["Chương 1: Mưa", "Chương 2: Nắng", "Chương 3: Gió"]}
+    description = resolve_patch_youtube_metadata(
+        _empty_config_book(), _patch(str(audio)), None, context=context)["description"]
+    assert "00:00 Chương 1: Mưa" in description
+    assert "00:10 Chương 2: Nắng" in description
+    assert description.count("Chương 2: Nắng") == 1
+
+
+def test_default_description_includes_music_name_and_license():
+    context = {"music": {"name": "Incredulity", "description": "Ambient",
+                         "license": "CC BY 4.0 — Scott Buckley"}}
+    description = resolve_patch_youtube_metadata(
+        _empty_config_book(), _patch(), None, context=context)["description"]
+    assert "Incredulity" in description
+    assert "CC BY 4.0 — Scott Buckley" in description
+
+
+def test_default_description_ends_with_hashtags_from_title_and_genres():
+    description = resolve_patch_youtube_metadata(
+        _empty_config_book(), _patch(), None)["description"]
+    tags = description.strip().split("\n")[-1]
+    assert tags.startswith("#")
+    assert "#DịĐộLữXá" in tags
+    assert "#LinhDị" in tags and "#ĐôThị" in tags
+
+
+def test_hashtags_use_book_title_before_its_first_dash():
+    book = SimpleNamespace(title="Hoàng Hà Phục Yêu Truyện - Tập 1 - Long Phi",
+                           automation_config=json.dumps({"youtube": {}}))
+    description = resolve_patch_youtube_metadata(book, _patch(), None)["description"]
+    assert "#HoàngHàPhụcYêuTruyện" in description
+    assert "#Tập1" not in description
+
+
+def test_configured_description_is_not_replaced_by_generated_sections():
+    context = {"chapter_titles": ["Chương 1: Mưa"], "music": {"name": "Incredulity", "license": "CC"}}
+    description = resolve_patch_youtube_metadata(_book(), _patch(), None, context=context)["description"]
+    assert description == "book description"
+
+
+def test_generated_description_is_capped_at_youtube_limit():
+    context = {"chapter_titles": [f"Chương {i}: " + "x" * 90 for i in range(200)]}
+    description = resolve_patch_youtube_metadata(
+        _empty_config_book(), _patch(), None, context=context)["description"]
+    assert len(description) <= 5000
+
+
+def test_default_description_still_appends_timeline(tmp_path):
+    audio = _timeline_audio(tmp_path)
+    book = _book()
+    book.automation_config = json.dumps({"youtube": {}})
+    result = resolve_patch_youtube_metadata(book, _patch(str(audio)), None)
+    assert "Tập 4 - Chương 1-2: Mua" in result["description"]
+    assert "00:00 Intro" in result["description"]
 
 
 def test_optional_title_segments_are_omitted():
@@ -240,14 +361,14 @@ def test_optional_title_segments_are_omitted():
     patch.name = ""
     book = _book()
     book.automation_config = json.dumps({"youtube": {"genre_tags": ""}})
-    assert resolve_patch_youtube_metadata(book, patch, None)["title"] == "Nha Tro - Tap 4 - Chuong 1-8"
+    assert resolve_patch_youtube_metadata(book, patch, None)["title"] == "Nha Tro - Tập 4 - Chương 1-8"
 
 
 def test_empty_patch_name_keeps_non_empty_genre_suffix():
     patch = _patch()
     patch.name = ""
     result = resolve_patch_youtube_metadata(_book(), patch, None)
-    assert result["title"] == "Nha Tro - Tap 4 - Chuong 1-8 | kinh di, huyen huyen"
+    assert result["title"] == "Nha Tro - Tập 4 - Chương 1-8 | kinh di, huyen huyen"
 
 
 def test_patch_override_wins_and_empty_field_inherits():

@@ -56,19 +56,7 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
 .ts-warning-item.sound_desc{border-left-color:#14b8a6}
 .ts-warning-item code{background:var(--bg-code,#2a2a2a);padding:1px 4px;border-radius:3px;word-break:break-all}
 .ts-warning-item .actions{display:flex;gap:4px;flex-shrink:0}
-.ts-fx-search{width:100%;padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm);margin-bottom:var(--space-xs)}
-.ts-fx-item{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;font-size:var(--font-size-xs);border-bottom:1px solid var(--border-color)}
-.ts-fx-item.hidden{display:none}
-.ts-fx-btns{display:flex;gap:4px;flex-shrink:0}
 .ts-warnings-header-btns{display:flex;align-items:center;gap:4px}
-.ts-para-preview{position:absolute;left:0;top:2px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:3px;opacity:.4;transition:opacity .15s,color .15s;line-height:1}
-.ts-para-preview:hover{color:var(--color-primary,#3b82f6);background:var(--border-color)}
-.ts-para-preview.loading{opacity:1;animation:ts-pulse .8s infinite}
-@keyframes ts-pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.ts-inline-audio{margin:var(--space-xs) 0 var(--space-xs) 24px;display:block}
-.ts-tts-select{padding:var(--space-xs) var(--space-sm);border:1px solid var(--border-color);border-radius:var(--border-radius);background:var(--bg-input,#1e1e1e);color:var(--text-primary);font-size:var(--font-size-sm)}
-.ts-editor-area .ts-para{position:relative;padding-left:26px}
-.ts-editor-area .ts-para:hover .ts-para-preview{opacity:1}
 .mobile-nav{display:none}
 @media(max-width:960px){
 .ts-layout{flex-direction:column;height:auto;min-height:auto}
@@ -91,27 +79,9 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
 
 <dialog id="settingsModal" style="width:min(600px,calc(100% - 2rem));max-height:calc(100vh - 2rem);padding:var(--space-lg);color:var(--text-primary);background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--border-radius);box-shadow:0 20px 60px rgba(0,0,0,.3)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)">
-        <h3 style="margin:0">Cài đặt TTS</h3>
+        <h3 style="margin:0">Cài đặt chuẩn hóa</h3>
         <button type="button" class="btn-outline btn-sm" onclick="this.closest('dialog').close()">Đóng</button>
     </div>
-    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
-        Model, giọng đọc và max chars dùng chung với trang chi tiết sách (lưu trên trình duyệt).
-    </p>
-    <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
-        <label for="ttsBackendSelect" style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">Model / Backend:</label>
-        <select id="ttsBackendSelect" class="ts-tts-select" style="flex:1"><option value="">Đang tải…</option></select>
-    </div>
-    <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
-        <label for="ttsVoiceSelect" style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">Giọng đọc:</label>
-        <select id="ttsVoiceSelect" class="ts-tts-select" style="flex:1"><option value="">Đang tải…</option></select>
-    </div>
-    <div style="display:flex;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-md)">
-        <label for="ttsMaxChars" style="font-weight:500;font-size:var(--font-size-sm);white-space:nowrap">Max chars / chunk:</label>
-        <input type="number" id="ttsMaxChars" class="ts-tts-select" style="flex:1" min="1" max="5000" step="1"
-               placeholder="Mặc định {{ default_max_chars }}">
-    </div>
-
-    <h4 style="margin:var(--space-md) 0 var(--space-sm) 0;font-size:var(--font-size-sm);text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">Chuẩn hóa</h4>
     <form id="normForm" style="display:flex;flex-direction:column;gap:var(--space-sm);margin-bottom:var(--space-md)">
         <label style="display:flex;align-items:center;gap:var(--space-xs);font-weight:500">
             <input type="checkbox" name="numbers" {% if book.normalize_numbers_enabled %}checked{% endif %}>
@@ -172,9 +142,6 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
             <button type="button" class="btn-primary btn-sm" onclick="saveText()">Lưu</button>
             <button type="button" class="btn-outline btn-sm" onclick="analyzeText()">Phân tích</button>
             <button type="button" class="btn-outline btn-sm" onclick="resetText()">&#8617; Bản gốc</button>
-            <button type="button" class="btn-outline btn-sm" id="btnPreviewPatch" onclick="runLightTTS(true)">&#128266; Nghe &amp; tạo audio</button>
-            <button type="button" class="btn-outline btn-sm" id="btnGenerateLightTTS" onclick="runLightTTS(false)">&#128190; Tạo audio (LightTTS)</button>
-            <label style="font-size:var(--font-size-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="fxToggle"> FX</label>
             <div class="ts-status" id="statusLine">
                 {% if patch and patch.clean_text %}<span class="edited">Đã chỉnh sửa</span>{% else %}Bản gốc{% endif %}
                 &middot; {{ clean_text|length if clean_text else 0 }} ký tự
@@ -236,32 +203,6 @@ main{max-width:none!important;padding:0 var(--space-md)!important;margin-top:12p
                 </div>
                 <div class="ts-warning-group-body" id="bodySound"></div>
             </div>
-
-            <div class="ts-warning-group" id="groupLibrary">
-                <div class="ts-warning-group-header" onclick="toggleGroup('groupLibrary')">
-                    <span class="ts-warning-group-title">Thư viện hiệu ứng</span>
-                    <span class="ts-warning-group-count" id="countLibrary">…</span>
-                    <span class="ts-warning-group-toggle">&#9660;</span>
-                </div>
-                <div class="ts-warning-group-body" id="bodyLibrary">
-                    <input type="text" class="ts-fx-search" id="fxSearch" placeholder="Tìm hiệu ứng..." oninput="filterFx()">
-                    <div id="fxList"></div>
-                    <a href="/effects" target="_blank" style="font-size:var(--font-size-xs);color:var(--text-muted);display:block;margin-top:var(--space-xs)">Quản lý thư viện →</a>
-                </div>
-            </div>
-
-            <div class="ts-warning-group" id="mediaPreview" style="display:none">
-                <div class="ts-warning-group-header" onclick="toggleGroup('mediaPreview')">
-                    <span class="ts-warning-group-title">Preview âm thanh</span>
-                    <span class="ts-warning-group-toggle">&#9660;</span>
-                </div>
-                <div class="ts-warning-group-body">
-                    <audio id="patchAudio" controls preload="none" style="width:100%;height:36px"></audio>
-                    <div id="patchVideoWrap" style="margin-top:var(--space-xs);display:none">
-                        <video id="patchVideo" controls preload="none" style="width:100%;max-height:200px;border-radius:var(--border-radius)"></video>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 </div>
@@ -281,11 +222,10 @@ let lastFindQuery = '';
 
 function esc(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
 function pushUndo(text) { undoStack.push(text); if (undoStack.length > 50) undoStack.shift(); }
-// Serialize one paragraph back to plain text: drop the preview button, turn <br>
-// and contenteditable's nested blocks back into newlines.
+// Serialize one paragraph back to plain text: turn <br> and contenteditable's
+// nested blocks back into newlines.
 function paraText(el) {
     const clone = el.cloneNode(true);
-    clone.querySelectorAll('.ts-para-preview').forEach(btn => btn.remove());
     clone.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
     clone.querySelectorAll('div,p').forEach(block => block.before(document.createTextNode('\n')));
     return clone.textContent.replace(/\u00A0/g, ' ').replace(/^\n+|\n+$/g, '');
@@ -340,7 +280,6 @@ async function loadPatch(id) {
     if (label && item) label.textContent = item.textContent.trim();
     updateStatus(data.is_edited, data.text.length);
     renderWarnings(currentWarnings);
-    loadMedia(id);
     const url = new URL(location.href);
     url.searchParams.set('patch_id', id);
     history.replaceState(null, '', url);
@@ -355,7 +294,7 @@ function navPatch(dir) {
 
 // --- Editor rendering --------------------------------------------------
 function wrapPara(paraHtml, index) {
-    return `<div class="ts-para" data-para="${index}"><button type="button" class="ts-para-preview" onclick="event.stopPropagation();previewParagraph(this.parentElement)" title="Preview đoạn này">&#9654;</button>${paraHtml || '<br>'}</div>`;
+    return `<div class="ts-para" data-para="${index}">${paraHtml || '<br>'}</div>`;
 }
 
 function renderEditor(text, warnings) {
@@ -460,7 +399,7 @@ async function resetText() {
 // --- Find & replace ----------------------------------------------------
 // Highlights are spliced into the existing text nodes rather than rebuilt from a
 // flat innerHTML: that keeps the paragraph wrappers (and therefore the blank-line
-// round-trip and the per-paragraph preview buttons) intact while searching.
+// round-trip) intact while searching.
 function clearHighlights() {
     editor.querySelectorAll('mark.ts-highlight').forEach(mark => {
         const parent = mark.parentNode;
@@ -482,9 +421,7 @@ function findInEditor() {
 
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     const textNodes = [];
-    while (walker.nextNode()) {
-        if (!walker.currentNode.parentElement.closest('.ts-para-preview')) textNodes.push(walker.currentNode);
-    }
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
     for (const node of textNodes) {
         const text = node.nodeValue;
         const ranges = [];
@@ -615,41 +552,6 @@ function scrollToWarn(id) {
     setTimeout(() => span.style.outline = '', 1500);
 }
 
-// --- Effect library ----------------------------------------------------
-async function loadEffectLibrary() {
-    const res = await fetch('/effects/list');
-    if (!res.ok) return;
-    const effects = (await res.json()).effects || [];
-    document.getElementById('countLibrary').textContent = effects.length;
-    document.getElementById('fxList').innerHTML = effects.map(fx => `
-        <div class="ts-fx-item" style="flex-direction:column;align-items:stretch;gap:4px" data-marker="${esc(fx.marker.toLowerCase())}" data-desc="${esc((fx.description || '').toLowerCase())}">
-            <div style="display:flex;justify-content:space-between;align-items:center">
-                <span><strong>${esc(fx.marker)}</strong>${fx.description ? ' <span style="color:var(--text-muted)">— ' + esc(fx.description) + '</span>' : ''}</span>
-                <span class="ts-fx-btns">
-                    <button type="button" class="btn-outline btn-sm" data-insert-marker="${esc(fx.marker)}" title="Chèn vào editor">&#128203;</button>
-                </span>
-            </div>
-            <audio controls preload="none" style="width:100%;height:32px"><source src="/effects/${fx.id}/audio"></audio>
-        </div>`).join('');
-    document.querySelectorAll('#fxList [data-insert-marker]').forEach(btn => {
-        btn.addEventListener('click', () => insertFx(btn.dataset.insertMarker));
-    });
-}
-
-function filterFx() {
-    const q = document.getElementById('fxSearch').value.toLowerCase();
-    document.querySelectorAll('#fxList .ts-fx-item').forEach(el => {
-        el.classList.toggle('hidden', q && !(el.dataset.marker || '').includes(q) && !(el.dataset.desc || '').includes(q));
-    });
-}
-
-function insertFx(marker) {
-    editor.focus();
-    pushUndo(getPlainText());
-    document.execCommand('insertText', false, marker);
-    dirty = true;
-}
-
 // --- Normalization settings -------------------------------------------
 async function saveNorm() {
     const res = await fetch(`/books/${bookId}/normalization`, {method: 'POST', body: new FormData(document.getElementById('normForm'))});
@@ -672,172 +574,6 @@ async function applyNormToEditor() {
     dirty = true;
     updateStatus(true, data.text.length);
     document.getElementById('settingsModal').close();
-}
-
-// --- TTS settings (shared with Book Detail via the same localStorage keys) ---
-function currentTTSSettings() {
-    const maxChars = parseInt(document.getElementById('ttsMaxChars').value, 10);
-    return {
-        backend: document.getElementById('ttsBackendSelect').value || '',
-        voice: document.getElementById('ttsVoiceSelect').value || '',
-        withFx: document.getElementById('fxToggle').checked,
-        maxChars: maxChars >= 1 ? maxChars : 0,
-    };
-}
-
-async function loadVoicesForBackend(backend) {
-    const sel = document.getElementById('ttsVoiceSelect');
-    if (!backend) { sel.innerHTML = ''; return; }
-    sel.innerHTML = '<option value="">Đang tải…</option>';
-    try {
-        const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(backend)}`);
-        if (!res.ok) { sel.innerHTML = ''; return; }
-        const saved = localStorage.getItem('tts-voice:' + backend);
-        sel.innerHTML = ((await res.json()).voices || []).map(v =>
-            `<option value="${esc(v.id)}" ${v.id === saved ? 'selected' : ''}>${esc(v.label)}</option>`
-        ).join('');
-        if (!sel.value && sel.options.length) sel.selectedIndex = 0;
-    } catch (e) { sel.innerHTML = ''; }
-    sel.onchange = () => localStorage.setItem('tts-voice:' + backend, sel.value);
-}
-
-async function loadLightTTSBackends() {
-    const select = document.getElementById('ttsBackendSelect');
-    try {
-        const res = await fetch('/text-studio/light-tts/backends');
-        if (res.ok) {
-            const saved = localStorage.getItem('tts-backend');
-            select.innerHTML = ((await res.json()).backends || []).map(b =>
-                `<option value="${esc(b.id)}" ${!b.available ? 'disabled' : ''} ${b.id === saved ? 'selected' : ''}>${esc(b.label)}${!b.available ? ' (chưa cài)' : ''}</option>`
-            ).join('');
-            if (!select.value && select.options.length) select.selectedIndex = 0;
-            select.onchange = () => {
-                localStorage.setItem('tts-backend', select.value);
-                loadVoicesForBackend(select.value);
-            };
-            await loadVoicesForBackend(select.value);
-        }
-    } catch (e) {}
-    const fx = document.getElementById('fxToggle');
-    fx.checked = localStorage.getItem('tts-fx') === '1';
-    fx.onchange = () => localStorage.setItem('tts-fx', fx.checked ? '1' : '0');
-    const mc = document.getElementById('ttsMaxChars');
-    mc.value = localStorage.getItem('tts-max-chars:' + bookId) || '';
-    mc.onchange = () => {
-        const v = parseInt(mc.value, 10);
-        if (v >= 1) localStorage.setItem('tts-max-chars:' + bookId, String(v));
-        else { mc.value = ''; localStorage.removeItem('tts-max-chars:' + bookId); }
-    };
-}
-
-// --- LightTTS synthesis ------------------------------------------------
-function removeInlineAudio() { document.querySelectorAll('.ts-inline-audio').forEach(el => el.remove()); }
-
-async function previewParagraph(paraEl) {
-    if (!currentPatchId) return;
-    const btn = paraEl.querySelector('.ts-para-preview');
-    const text = paraEl.innerText.trim();
-    if (!text) return;
-    btn.classList.add('loading');
-    removeInlineAudio();
-    try {
-        const {backend, voice, withFx} = currentTTSSettings();
-        const res = await fetch(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-paragraph`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text, with_effects: withFx, backend: backend || undefined, voice: voice || undefined})
-        });
-        if (!res.ok) { showToast((await res.json().catch(() => ({}))).detail || 'Lỗi preview', 'error'); return; }
-        const audio = document.createElement('audio');
-        audio.className = 'ts-inline-audio';
-        audio.controls = true;
-        audio.src = URL.createObjectURL(await res.blob());
-        audio.style.cssText = 'width:100%;max-width:400px;height:32px';
-        paraEl.after(audio);
-        audio.play().catch(() => {});
-    } finally {
-        btn.classList.remove('loading');
-    }
-}
-
-// Synthesize the whole patch over SSE. The server persists each chunk as it lands
-// and only merges/saves once every chunk exists, so a re-run resumes the gaps.
-// `play` streams the chunks through WebAudio as they arrive.
-async function runLightTTS(play) {
-    if (!currentPatchId) { showToast('Chưa chọn patch', 'error'); return; }
-    if (dirty) await autoSave();   // TTS reads the saved text, not the DOM
-
-    const btn = document.getElementById(play ? 'btnPreviewPatch' : 'btnGenerateLightTTS');
-    const label = btn.innerHTML;
-    btn.disabled = true;
-
-    const {backend, voice, withFx, maxChars} = currentTTSSettings();
-    const params = new URLSearchParams({backend, voice, with_effects: withFx ? 1 : 0});
-    if (maxChars) params.set('max_chars', maxChars);
-
-    const ctx = play ? new (window.AudioContext || window.webkitAudioContext)() : null;
-    let nextStartTime = ctx ? ctx.currentTime + 0.05 : 0;
-    const es = new EventSource(`/books/${bookId}/text-studio/patches/${currentPatchId}/preview-stream?${params}`);
-    const patchId = currentPatchId;
-
-    const finish = (message, level) => {
-        es.close();
-        if (ctx) ctx.close().catch(() => {});
-        btn.disabled = false;
-        btn.innerHTML = label;
-        if (message) showToast(message, level);
-    };
-
-    es.onmessage = async (e) => {
-        let msg;
-        try { msg = JSON.parse(e.data); } catch { return; }
-        if (msg.type === 'chunk') {
-            btn.textContent = `Chunk ${msg.index + 1}/${msg.total}…`;
-            if (!ctx) return;
-            try {
-                const buf = await (await fetch(msg.url)).arrayBuffer();
-                const audio = await ctx.decodeAudioData(buf);
-                const src = ctx.createBufferSource();
-                src.buffer = audio;
-                src.connect(ctx.destination);
-                const startAt = Math.max(nextStartTime, ctx.currentTime);
-                src.start(startAt);
-                nextStartTime = startAt + audio.duration;
-            } catch (_) {}
-        } else if (msg.type === 'chunk_error') {
-            btn.textContent = `Chunk ${msg.index + 1}/${msg.total} (lỗi, bỏ qua)`;
-        } else if (msg.type === 'done') {
-            if (msg.complete) {
-                setPatchDot(patchId, 'done');
-                loadMedia(patchId);
-                finish('Đã tạo audio cho patch này', 'success');
-            } else {
-                finish(`Còn ${msg.failed} chunk lỗi — chạy lại để tổng hợp phần còn thiếu`, 'warning');
-            }
-        } else if (msg.type === 'error') {
-            finish('Lỗi: ' + msg.message, 'error');
-        }
-    };
-    es.onerror = () => finish('Kết nối bị gián đoạn', 'error');
-}
-
-function setPatchDot(patchId, status) {
-    const dot = document.querySelector(`.ts-patch-item[data-patch-id="${patchId}"] .dot`);
-    if (dot) dot.className = 'dot ' + status;
-}
-
-function loadMedia(patchId) {
-    const panel = document.getElementById('mediaPreview');
-    const audio = document.getElementById('patchAudio');
-    const video = document.getElementById('patchVideo');
-    const videoWrap = document.getElementById('patchVideoWrap');
-    const ts = Date.now();
-    audio.src = `/books/${bookId}/patches/${patchId}/audio?t=${ts}`;
-    video.src = `/books/${bookId}/patches/${patchId}/video?t=${ts}`;
-    video.load();
-    video.onloadeddata = () => { videoWrap.style.display = ''; };
-    video.onerror = () => { videoWrap.style.display = 'none'; };
-    audio.onloadeddata = () => { panel.style.display = ''; };
-    audio.onerror = () => { panel.style.display = 'none'; };
 }
 
 // --- Warnings panel resize --------------------------------------------
@@ -879,7 +615,5 @@ _resizer.addEventListener('mousedown', e => {
 });
 
 {% if patch %}loadPatch({{ patch.id }});{% endif %}
-loadEffectLibrary();
-loadLightTTSBackends();
 </script>
 {% endblock %}

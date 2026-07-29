@@ -308,11 +308,25 @@ CREATE TABLE IF NOT EXISTS youtube_playlist_map (
 """
 
 
+# Several components deliberately open their own connection to the same file so slow work
+# never runs on the shared one (upload worker, playlist heartbeat, publish retry). With the
+# default rollback journal any writer locks the whole file against every reader, so those
+# short background writes would stall unrelated page loads. WAL lets readers run during a
+# write, and busy_timeout makes the remaining writer-vs-writer overlap wait instead of
+# failing with "database is locked".
+_BUSY_TIMEOUT_MS = 15_000
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    # A :memory: database has no journal file to write ahead to; the pragma is a harmless
+    # no-op there (it answers "memory"), so no branch is needed.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 

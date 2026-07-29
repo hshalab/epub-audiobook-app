@@ -194,9 +194,14 @@ class PatchWorker:
         )
         try:
             audio_path = await asyncio.to_thread(self._synthesize, patch)
+            from app.patch_publishing import fetch_thumbnail_inputs, on_patch_audio_ready, warm_patch_thumbnail
+            # Render the thumbnail before taking the lock; the call inside then hits the
+            # cache instead of stalling every request with a PIL render per finished patch.
+            with self.db_lock:
+                thumbnail_inputs = fetch_thumbnail_inputs(self.conn, patch.id)
+            await asyncio.to_thread(warm_patch_thumbnail, thumbnail_inputs)
             with self.db_lock:
                 repository.mark_patch_done(self.conn, patch.id, audio_path)
-                from app.patch_publishing import on_patch_audio_ready
                 on_patch_audio_ready(self.conn, patch.id)
             self._log_event(
                 "patch.done",
@@ -221,9 +226,12 @@ class PatchWorker:
     def _synthesize(self, patch: Patch) -> str:
         """Blocking: runs in a thread via asyncio.to_thread so the event loop (and thus the
         web UI) isn't frozen during synthesis."""
+        # Only the reads go under the lock; normalizing and chunking the whole patch is
+        # pure CPU and would otherwise stall every HTTP request for its duration.
         with self.db_lock:
-            plan = repository.build_patch_chunk_plan(self.conn, patch)
+            plan_inputs = repository.fetch_patch_chunk_inputs(self.conn, patch)
             book = repository.get_book(self.conn, patch.book_id)
+        plan = repository.build_chunk_plan_from_inputs(plan_inputs)
         if not plan:
             raise ValueError("patch has no speakable text")
 
@@ -364,36 +372,28 @@ class PatchWorker:
                 output_path=output_path,
             )
 
-            # Auto-upload to YouTube if configured
+            # Auto-upload to YouTube if configured. Only the queue row is written here:
+            # the transfer itself belongs to UploadWorker, which runs it on its own
+            # connection. Uploading inline would hold db_lock - shared with every route
+            # handler - for the whole multi-minute transfer and freeze the entire app.
             if settings.youtube_auto_upload and youtube.is_configured():
                 try:
                     with self.db_lock:
                         book = repository.get_book(self.conn, job.book_id)
-                    if book:
-                        with self.db_lock:
+                        if book:
                             yt_info = repository.build_youtube_description(self.conn, job.book_id)
-                        tags = yt_info["tags"]
-                        with self.db_lock:
                             upload_id = youtube.enqueue_upload(
                                 self.conn,
                                 video_path=output_path,
                                 title=book.title,
                                 description=yt_info["description"],
-                                tags=tags,
+                                tags=yt_info["tags"],
                                 privacy_status=settings.youtube_default_privacy,
                             )
-                            result = youtube.upload_video(
-                                self.conn,
-                                video_path=output_path,
-                                title=book.title,
-                                description=yt_info["description"],
-                                tags=tags,
-                                privacy_status=settings.youtube_default_privacy,
-                            )
+                    if book:
                         self._log_event(
-                            "youtube.upload_done",
+                            "youtube.upload_queued",
                             upload_id=upload_id,
-                            youtube_video_id=result.get("youtube_video_id", ""),
                             book_id=job.book_id,
                         )
                 except Exception as yt_exc:

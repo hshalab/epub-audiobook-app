@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Be+Vietnam+Pro:wght@400;500;600&family=Noto+Serif:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=20260728">
+    <link rel="stylesheet" href="/static/style.css?v={{ range(1000000000) | random }}">
 </head>
 <body>
     <a href="#main-content" class="skip-link">Skip to content</a>
@@ -102,8 +102,8 @@
         if (saved) document.documentElement.setAttribute('data-theme', saved);
     })();
     </script>
-    <script src="/static/autosave.js"></script>
-    <script src="/static/data_tables.js?v=20260727"></script>
+    <script src="/static/autosave.js?v={{ range(1000000000) | random }}"></script>
+    <script src="/static/data_tables.js?v={{ range(1000000000) | random }}"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

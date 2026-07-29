@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import uuid
@@ -165,10 +166,16 @@ def book_detail(request: Request, book_id: int):
         youtube_config = get_book_youtube_config(conn, book_id)
         video_config = get_book_video_config(conn, book)
         youtube_creds = youtube.get_creds_from_db(conn)
+        # youtube_video_id comes from the linked upload row, not the stage:
+        # rows exist with stage='published' but no upload at all, so the stage
+        # alone cannot tell "actually on YouTube" from "claims it finished".
         pipeline_rows = {
             row["patch_id"]: dict(row)
             for row in conn.execute(
-                "SELECT * FROM patch_pipeline WHERE patch_id IN ({})".format(
+                """SELECT pp.*, yu.youtube_video_id
+                   FROM patch_pipeline pp
+                   LEFT JOIN youtube_uploads yu ON yu.id = pp.youtube_upload_id
+                   WHERE pp.patch_id IN ({})""".format(
                     ",".join("?" for _ in patch_list)
                 ), [p.id for p in patch_list]
             )
@@ -647,17 +654,24 @@ async def upload_background_image(
         if book is None:
             raise HTTPException(status_code=404, detail="book not found")
 
-        uploads_dir = Path(settings.data_root) / "uploads"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
+    uploads_dir = Path(settings.data_root) / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        if book.background_image_path:
-            Path(book.background_image_path).unlink(missing_ok=True)
+    if book.background_image_path:
+        Path(book.background_image_path).unlink(missing_ok=True)
 
-        filename = f"{book_id}_bg_{uuid.uuid4().hex[:8]}{ext}"
-        dest = uploads_dir / filename
+    filename = f"{book_id}_bg_{uuid.uuid4().hex[:8]}{ext}"
+    dest = uploads_dir / filename
+
+    # Off the lock and off the event loop: a large background would otherwise stall
+    # every concurrent request while it is written to disk.
+    def _save() -> None:
         with open(dest, "wb") as f:
             shutil.copyfileobj(image.file, f)
 
+    await asyncio.to_thread(_save)
+
+    with locked_conn(request) as conn:
         conn.execute(
             "UPDATE book SET background_image_path = ?, updated_at = ? WHERE id = ?",
             (str(dest), datetime.now(timezone.utc).isoformat(), book_id),
