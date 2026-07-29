@@ -713,7 +713,7 @@ def export_patch_to_drive(request: Request, book_id: int, patch_id: int, sync_ta
         package_dir = _build_or_400(drive_export.build_export_package, conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
         try:
             folder = drive_export.publish_package(package_dir, target["folder_path"], folder_name)
-            chunk_count = sum(1 for f in package_dir.iterdir() if f.name.startswith("chunk_") and f.suffix == ".txt")
+            chunk_count = drive_export.package_chunk_count(package_dir)
             repository.create_patch_export(
                 conn, patch_id, str(folder), str(folder), chunk_count,
                 sync_target_id=target["id"], local_folder_path=str(folder),
