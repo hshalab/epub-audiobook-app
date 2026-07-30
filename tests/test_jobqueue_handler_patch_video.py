@@ -1,0 +1,33 @@
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app import db, youtube
+from app.jobqueue import store
+from app.jobqueue.context import JobContext
+from app.jobqueue.handlers import patch_video
+from app.jobqueue.joblog import JobLogger
+from app.video_integrity import ValidationFacts, ValidationResult
+
+
+def test_patch_recovery_renders_atomically_and_resumes_upload(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
+    now = datetime.now(timezone.utc).isoformat(); audio = tmp_path / "a.wav"; audio.write_bytes(b"a")
+    thumb = tmp_path / "thumb.png"; thumb.write_bytes(b"i"); output = tmp_path / "patch.mp4"
+    conn.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,video_resolution,video_fps,created_at,updated_at) VALUES (1,'B','b','b',1,'done','1280x720',24,?,?)", (now, now))
+    conn.execute("INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,audio_path,created_at,updated_at) VALUES (2,1,0,0,0,'done',?,?,?)", (str(audio), now, now))
+    conn.execute("INSERT INTO patch_pipeline (patch_id,stage,thumbnail_status,video_status,upload_status,playlist_status,thumbnail_path,video_path,config_snapshot,media_snapshot,created_at,updated_at) VALUES (2,'video','done','rerendering','waiting_for_rerender','pending',?,?,?, '{}',?,?)", (str(thumb), str(output), json.dumps({}), now, now)); conn.commit()
+    upload_id = youtube.enqueue_upload(conn, str(output), "T", render_source_type="patch", render_source_id=2)
+    conn.execute("UPDATE youtube_uploads SET status='waiting_for_rerender',validation_status='waiting_for_rerender',integrity_retry_count=1 WHERE id=?", (upload_id,)); conn.commit()
+    seen = {}
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda image, audio, out, **kw: (seen.update(out=out, kwargs=kw), Path(out).write_bytes(b"new")))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True, None, "", (), ValidationFacts(), 0))
+    job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2, "recovery_upload_id": upload_id})
+    job = store.claim(conn, "patch_video", "w")
+    result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
+    assert result["output_path"] == str(output)
+    assert seen["out"] != str(output)
+    assert output.read_bytes() == b"new"
+    assert seen["kwargs"]["resolution"] == (1280, 720)
+    assert seen["kwargs"]["fps"] == 24
+    assert conn.execute("SELECT status FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()[0] == "pending"
