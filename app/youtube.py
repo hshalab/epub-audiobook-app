@@ -367,8 +367,28 @@ def upload_video(
     Returns {upload_id, youtube_video_id, status}.
     """
     upload_id = enqueue_upload(conn, video_path, title, description, tags, privacy_status)
+    validation = validate_upload_file(conn, upload_id)
+    if not validation.valid:
+        return {"upload_id": upload_id, "youtube_video_id": None, "status": "failed",
+                "error": f"{validation.error_code}: {validation.message}"}
     result = process_upload(conn, upload_id)
     result["upload_id"] = upload_id
+    return result
+
+
+def validate_upload_file(conn: sqlite3.Connection, upload_id: int):
+    from app.video_integrity import validate_video
+
+    row = conn.execute("SELECT video_path FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"upload {upload_id} not found")
+    mark_validation_started(conn, upload_id)
+    result = validate_video(row["video_path"])
+    if result.valid:
+        mark_validation_valid(conn, upload_id)
+    else:
+        mark_validation_failed(conn, upload_id, result.error_code or "validation_failed", result.message)
+        mark_upload_failed(conn, upload_id, f"{result.error_code}: {result.message}")
     return result
 
 

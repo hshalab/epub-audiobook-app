@@ -1,9 +1,17 @@
 import asyncio
 import sqlite3
 import threading
+import pytest
 
 from app import db, youtube
 from app.upload_worker import UploadWorker
+from app.video_integrity import ValidationFacts, ValidationResult
+
+
+@pytest.fixture(autouse=True)
+def _valid_preflight(monkeypatch):
+    monkeypatch.setattr(youtube, "validate_upload_file", lambda *a: ValidationResult(
+        True, None, "", (), ValidationFacts(), 0))
 
 
 class TrackingLock:

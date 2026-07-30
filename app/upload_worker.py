@@ -87,6 +87,13 @@ class UploadWorker:
         upload_id = upload["id"]
         video_id = upload.get("video_id")
         try:
+            validation = await asyncio.to_thread(youtube.validate_upload_file, self.conn, upload_id)
+            if not validation.valid:
+                with self.db_lock:
+                    if video_id:
+                        update_video(self.conn, video_id, upload_status="failed",
+                                     error_message=f"{validation.error_code}: {validation.message}")
+                return
             with self.db_lock:
                 if video_id:
                     update_video(self.conn, video_id, upload_status="uploading")
