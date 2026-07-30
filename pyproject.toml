@@ -45,4 +45,5 @@ packages = ["app", "app.jobqueue", "app.jobqueue.handlers"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 asyncio_mode = "auto"
