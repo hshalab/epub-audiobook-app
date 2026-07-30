@@ -113,6 +113,17 @@ def test_queue_page_exposes_resume_control(client):
     assert 'fetch("/queue/requeue-stuck"' in response.text
 
 
+def test_queue_page_shows_job_log_in_closable_modal(client):
+    response = client[0].get("/queue")
+
+    assert response.status_code == 200
+    assert '<dialog id="log-modal"' in response.text
+    assert 'modal.showModal()' in response.text
+    assert 'target.closest("[data-close-dialog]")' in response.text
+    assert 'event.target === modal' in response.text
+    assert 'Không thể tải log.' in response.text
+
+
 def test_requeue_stuck_reports_how_many_tts_jobs_it_queued(client):
     c, conn, _ = client
     now = datetime.now(timezone.utc).isoformat()

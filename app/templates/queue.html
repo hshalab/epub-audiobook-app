@@ -40,7 +40,21 @@
     <thead><tr><th>ID</th><th>Loại</th><th>Sách</th><th>Trạng thái</th><th>Tiến độ</th><th>Lần thử</th><th>Lỗi</th><th></th></tr></thead>
     <tbody></tbody>
 </table>
-<pre id="log-view" hidden></pre>
+
+<dialog id="log-modal" class="book-modal" style="width:min(900px,calc(100% - 2rem));max-height:calc(100vh - 2rem);padding:var(--space-lg)">
+    <style>
+        .book-modal { width:min(720px,calc(100% - 2rem)); max-height:calc(100vh - 2rem); padding:var(--space-lg); color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 20px 60px rgba(0,0,0,.3); }
+        .book-modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+        @media (max-width: 760px) { .book-modal { padding:var(--space-md); } }
+    </style>
+    <div class="card-header ui-modal-header">
+        <h3 style="margin:0">Log Job</h3>
+        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+    </div>
+    <div class="ui-modal-body" style="max-height:60vh;overflow:auto">
+        <pre id="log-content" style="margin:0;font-family:var(--font-mono);font-size:var(--font-size-sm);white-space:pre-wrap;word-wrap:break-word"></pre>
+    </div>
+</dialog>
 {% endblock %}
 
 {% block scripts %}
@@ -134,11 +148,22 @@ document.getElementById("clear-queue").addEventListener("click", async () => {
 
 document.addEventListener("click", async (event) => {
     const target = event.target;
+    const modal = document.getElementById("log-modal");
+    if (target.closest("[data-close-dialog]") || event.target === modal) {
+        modal.close();
+        return;
+    }
     if (target.dataset.log) {
-        const view = document.getElementById("log-view");
-        view.hidden = false;
-        const response = await fetch(`/queue/jobs/${target.dataset.log}/log`);
-        view.textContent = await response.text();
+        const logContent = document.getElementById("log-content");
+        logContent.textContent = "Đang tải...";
+        modal.showModal();
+        try {
+            const response = await fetch(`/queue/jobs/${target.dataset.log}/log`);
+            if (!response.ok) throw new Error(response.status);
+            logContent.textContent = await response.text();
+        } catch (_) {
+            logContent.textContent = "Không thể tải log.";
+        }
     } else if (target.dataset.cancel || target.dataset.retry) {
         const action = target.dataset.cancel ? "cancel" : "retry";
         await fetch(`/queue/jobs/${target.dataset[action]}/${action}`, {method: "POST"});
