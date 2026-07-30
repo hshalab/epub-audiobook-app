@@ -123,5 +123,6 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert queue.capacity("youtube_upload") == 1
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
-        "voxcpm_tts", "video", "patch_video", "youtube_upload", "light_tts"
+        "voxcpm_tts", "video", "patch_video", "standalone_video",
+        "youtube_upload", "light_tts"
     }

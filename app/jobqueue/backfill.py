@@ -7,7 +7,7 @@ from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import light_tts, patch_video, video, voxcpm_tts, youtube_upload
+from app.jobqueue.handlers import light_tts, patch_video, standalone_video, video, voxcpm_tts, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("voxcpm_tts", voxcpm_tts.handle)
     queue.register("video", video.handle)
     queue.register("patch_video", patch_video.handle)
+    queue.register("standalone_video", standalone_video.handle)
     queue.register("youtube_upload", youtube_upload.handle, cancellable=False)
     queue.register("light_tts", light_tts.handle)
     return queue
