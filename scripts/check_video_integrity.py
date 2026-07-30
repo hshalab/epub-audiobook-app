@@ -10,18 +10,14 @@ Usage:
     python scripts/check_video_integrity.py --uploaded # only files already on YouTube
 """
 import argparse
-import io
-import json
 import sqlite3
-import subprocess
 import sys
-from fractions import Fraction
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings  # noqa: E402
+from app.video_integrity import validate_video  # noqa: E402
 
 # A video track this far from the audio track means the timeline is wrong, not
 # just the usual sub-frame rounding at a segment boundary.
@@ -31,70 +27,20 @@ DRIFT_WARN_SECONDS = 1.0
 VFR_TOLERANCE = 0.005
 
 
-def _probe(path: Path) -> dict | None:
-    result = subprocess.run(
-        [settings.get_ffprobe_path(), "-v", "error", "-print_format", "json",
-         "-show_streams", "-show_format", str(path)],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return json.loads(result.stdout)
-
-
-def _rate(value: str | None) -> float:
-    try:
-        f = Fraction(value or "0/0")
-        return float(f) if f.denominator else 0.0
-    except (ValueError, ZeroDivisionError):
-        return 0.0
-
-
 def inspect(path: Path) -> dict:
     """Return {path, verdict, reasons, ...} for one video file."""
     row: dict = {"path": path, "verdict": "ok", "reasons": []}
-    info = _probe(path)
-    if info is None:
+    result = validate_video(path)
+    if not result.valid:
         row["verdict"] = "broken"
-        row["reasons"].append("ffprobe cannot read the file (truncated or no moov atom)")
+        row["reasons"].append(f"{result.error_code}: {result.message}")
         return row
-
-    video = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
-    audio = next((s for s in info["streams"] if s["codec_type"] == "audio"), None)
-    if video is None:
-        row["verdict"] = "broken"
-        row["reasons"].append("no video stream")
-        return row
-
-    r_fps = _rate(video.get("r_frame_rate"))
-    avg_fps = _rate(video.get("avg_frame_rate"))
-    vdur = float(video.get("duration") or 0)
-    adur = float(audio.get("duration") or 0) if audio else 0.0
-    row.update(r_fps=r_fps, avg_fps=avg_fps, vdur=vdur, adur=adur,
-               res=f"{video.get('width')}x{video.get('height')}")
-
-    if audio is None:
-        row["verdict"] = "broken"
-        row["reasons"].append("no audio stream")
-        return row
-
-    drift = vdur - adur
-    if abs(drift) >= DRIFT_FATAL_SECONDS:
-        row["verdict"] = "broken"
-        ratio = vdur / adur if adur else 0
-        row["reasons"].append(
-            f"video is {drift:+.1f}s off the audio ({ratio:.3f}x) -- segments were "
-            "concatenated at mismatched framerates"
-        )
-    elif abs(drift) >= DRIFT_WARN_SECONDS:
-        row["verdict"] = max(row["verdict"], "suspect", key=["ok", "suspect", "broken"].index)
-        row["reasons"].append(f"video is {drift:+.1f}s off the audio")
-
-    if r_fps and avg_fps and abs(r_fps - avg_fps) / r_fps > VFR_TOLERANCE:
-        row["verdict"] = max(row["verdict"], "suspect", key=["ok", "suspect", "broken"].index)
-        row["reasons"].append(
-            f"variable framerate (declared {r_fps:.3f}, actual {avg_fps:.3f})"
-        )
+    facts = result.facts
+    row.update(vdur=facts.video_duration, adur=facts.audio_duration,
+               res=f"{facts.width}x{facts.height}")
+    if result.warnings:
+        row["verdict"] = "suspect"
+        row["reasons"].extend(result.warnings)
     return row
 
 
