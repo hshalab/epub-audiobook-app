@@ -15,6 +15,13 @@ def _invalid(code="decode_failed"):
     return ValidationResult(False, code, "broken", (), ValidationFacts(), 0)
 
 
+def _book_source(conn, tmp_path, job_id=7):
+    audio = tmp_path / f"book-{job_id}.wav"; audio.write_bytes(b"audio")
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,final_audio_path,created_at,updated_at) VALUES (?,?, 'b','b',1,'done',?,?,?)", (job_id, f"B{job_id}", str(audio), now, now))
+    conn.execute("INSERT INTO book_job (id,book_id,job_type,status,created_at,updated_at) VALUES (?,?, 'video','done',?,?)", (job_id, job_id, now, now)); conn.commit()
+
+
 def test_explicit_source_wins_and_unlinked_stays_external(tmp_path):
     conn = _conn(tmp_path)
     explicit = youtube.enqueue_upload(conn, "v", "T", render_source_type="book", render_source_id=7)
@@ -34,6 +41,7 @@ def test_linked_reproducible_video_infers_standalone(tmp_path):
 
 def test_recoverable_failure_persists_count_and_enqueues_generation(tmp_path):
     conn = _conn(tmp_path)
+    _book_source(conn, tmp_path)
     upload_id = youtube.enqueue_upload(conn, "v", "T", render_source_type="book", render_source_id=7)
     decision = schedule_rerender(conn, upload_id, _invalid())
     row = conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
@@ -46,6 +54,7 @@ def test_recoverable_failure_persists_count_and_enqueues_generation(tmp_path):
 
 def test_second_retry_is_allowed_then_next_failure_is_terminal(tmp_path):
     conn = _conn(tmp_path)
+    _book_source(conn, tmp_path)
     upload_id = youtube.enqueue_upload(conn, "v", "T", render_source_type="book", render_source_id=7)
     conn.execute("UPDATE youtube_uploads SET integrity_retry_count=1 WHERE id=?", (upload_id,)); conn.commit()
     assert schedule_rerender(conn, upload_id, _invalid()).retry_count == 2
@@ -65,6 +74,15 @@ def test_external_and_infrastructure_failures_do_not_consume_retry(tmp_path):
     row = conn.execute("SELECT integrity_retry_count FROM youtube_uploads WHERE id=?", (infra,)).fetchone()
     assert decision.action == "retry_validation"
     assert row[0] == 0
+
+
+def test_missing_application_source_fails_before_retry_count_increments(tmp_path):
+    conn = _conn(tmp_path)
+    upload_id = youtube.enqueue_upload(conn, "v", "T", render_source_type="book", render_source_id=999)
+    decision = schedule_rerender(conn, upload_id, _invalid())
+    row = conn.execute("SELECT status,validation_error_code,integrity_retry_count FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    assert decision.action == "failed"
+    assert tuple(row) == ("failed", "source_unavailable", 0)
 
 
 def test_resume_reuses_same_upload_and_enqueues_once(tmp_path):

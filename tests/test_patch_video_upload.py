@@ -1,4 +1,5 @@
 import json
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,13 @@ from app import db
 from app.config import settings
 from app.main import app
 from app.routes import patches
+from app.video_integrity import ValidationFacts, ValidationResult
+
+
+@pytest.fixture(autouse=True)
+def _valid_generated_video(monkeypatch):
+    monkeypatch.setattr(patches, "validate_video", lambda p: ValidationResult(
+        True, None, "", (), ValidationFacts(), 0))
 
 
 def _seed_book_and_patch(conn, book_id=7, patch_id=11, audio_path="audio.wav"):
@@ -236,8 +244,10 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
     assert len(concat_calls) == 1
     segments, out_path = concat_calls[0]
     assert len(segments) == 3
-    assert out_path == str(tmp_path / "books" / "1" / "patch_videos" / "1.mp4")
-    assert Path(out_path).read_bytes() == b"final"
+    final = tmp_path / "books" / "1" / "patch_videos" / "1.mp4"
+    assert Path(out_path) != final
+    assert final.is_file()
+    assert final.read_bytes() == b"final"
 
 
 def _seed_book_with_patch_video(conn, tmp_path) -> Path:

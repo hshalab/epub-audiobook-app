@@ -7,13 +7,16 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app import image_overlay, video_gen, youtube
+from app import image_overlay, repository, video_gen, youtube
 from app.config import settings
 from app.image_overlay import ensure_patch_overlay
 from app.repository import build_patch_metadata_context, get_book, get_patch
 from app.video_repository import upsert_patch_video
+from app.video_integrity import validate_video
+from app.video_publish import publish_validated_video
 from app.youtube_metadata import (get_book_youtube_config, get_patch_youtube_override,
                                   resolve_patch_chapter_range, resolve_patch_youtube_metadata)
+from app.video_config import get_book_video_config
 
 STAGES = ("thumbnail", "video", "upload", "thumbnail_setting", "playlist", "published")
 
@@ -92,7 +95,31 @@ def enqueue_patch_publish(conn: sqlite3.Connection, patch_id: int, *, force_new:
     if existing and not force_new:
         return existing
     metadata = _build_metadata_snapshot(conn, book, patch)
-    media = {"patch_id": patch_id, "audio_path": patch.audio_path, "source_image": patch.image_path, "thumbnail_path": existing["thumbnail_path"] if existing else None}
+    video_config = get_book_video_config(conn, book)
+    voices_dir = Path(settings.data_root) / "voices"
+    intro = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
+    outro = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
+    music_path = None
+    if book.music_id is not None:
+        music = repository.get_music(conn, book.music_id)
+        if music and Path(music.file_path).is_file():
+            music_path = music.file_path
+    render_config = {
+        "resolution": video_config["resolution"],
+        "fps": video_config["fps"],
+        "image_type": video_config["image_animation"],
+        "codec": video_config["codec"],
+        "crf": video_config["quality"],
+        "audio_bitrate": video_config["audio_bitrate"],
+        "music_path": music_path,
+        "music_volume": book.music_volume,
+        "intro_audio": str(intro) if intro and intro.is_file() else None,
+        "outro_audio": str(outro) if outro and outro.is_file() else None,
+    }
+    media = {"patch_id": patch_id, "audio_path": patch.audio_path,
+             "source_image": patch.image_path,
+             "thumbnail_path": existing["thumbnail_path"] if existing else None,
+             "render_config": render_config}
     thumbnail = ensure_patch_overlay(book, patch, settings.default_font_path or None) or media["thumbnail_path"]
     thumbnail_ready = bool(thumbnail and Path(thumbnail).is_file())
     media["thumbnail_path"] = thumbnail
@@ -198,10 +225,15 @@ def run_patch_publish_stage(conn: sqlite3.Connection, patch_id: int) -> dict:
             current_stage = "video"
             patch = get_patch(conn, patch_id); book = get_book(conn, patch.book_id)
             output = row["video_path"] or str(Path(patch.audio_path or "").with_suffix(".mp4"))
-            if not Path(output).is_file() or Path(output).stat().st_size == 0:
-                video_gen.generate_segment(row["thumbnail_path"], patch.audio_path, output, resolution=tuple(map(int, book.video_resolution.split("x"))))
-            if not Path(output).is_file() or Path(output).stat().st_size == 0:
-                raise ValueError("generated video is missing or empty")
+            publish_validated_video(
+                output,
+                lambda temp: video_gen.generate_segment(
+                    row["thumbnail_path"], patch.audio_path, temp,
+                    resolution=tuple(map(int, book.video_resolution.split("x"))),
+                    fps=book.video_fps or 30,
+                ),
+                validator=validate_video,
+            )
             video = upsert_patch_video(conn, book_id=book.id, patch_id=patch_id, file_path=output, resolution=book.video_resolution)
             conn.execute("UPDATE patch_pipeline SET stage='upload', video_status='done', video_path=?, video_id=? WHERE patch_id=?", (output, video["id"], patch_id)); conn.commit()
         row = _row(conn, patch_id)

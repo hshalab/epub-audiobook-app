@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+import json
+from pathlib import Path
 from dataclasses import dataclass
 
 from app.jobqueue import store
@@ -48,6 +50,47 @@ def _terminal(conn: sqlite3.Connection, upload_id: int, count: int,
     return RecoveryDecision("failed", count, None, message)
 
 
+def _source_error(conn: sqlite3.Connection, source_type: str, source_id: int) -> str | None:
+    if source_type == "book":
+        row = conn.execute(
+            """SELECT b.final_audio_path FROM book_job bj JOIN book b ON b.id=bj.book_id
+               WHERE bj.id=? AND bj.job_type='video'""", (source_id,),
+        ).fetchone()
+        if not row:
+            return f"book render job {source_id} missing"
+        if not row["final_audio_path"] or not Path(row["final_audio_path"]).is_file():
+            return f"book audio missing: {row['final_audio_path']}"
+    elif source_type == "patch":
+        row = conn.execute(
+            """SELECT p.audio_path, pp.thumbnail_path, pp.media_snapshot
+               FROM patch p JOIN patch_pipeline pp ON pp.patch_id=p.id WHERE p.id=?""",
+            (source_id,),
+        ).fetchone()
+        if not row:
+            return f"patch {source_id} or pipeline missing"
+        for label in ("audio_path", "thumbnail_path"):
+            if not row[label] or not Path(row[label]).is_file():
+                return f"patch {label} missing: {row[label]}"
+        try:
+            render_config = json.loads(row["media_snapshot"] or "{}").get("render_config", {})
+        except (json.JSONDecodeError, AttributeError):
+            return "patch render config snapshot invalid"
+        for key in ("music_path", "intro_audio", "outro_audio"):
+            value = render_config.get(key)
+            if value and not Path(value).is_file():
+                return f"patch {key} missing: {value}"
+    elif source_type == "standalone":
+        row = conn.execute("SELECT source_audio,background_path,render_config_json FROM videos WHERE id=?", (source_id,)).fetchone()
+        if not row:
+            return f"standalone video {source_id} missing"
+        for label in ("source_audio", "background_path"):
+            if not row[label] or not Path(row[label]).is_file():
+                return f"standalone {label} missing: {row[label]}"
+        if not row["render_config_json"]:
+            return "standalone render config missing"
+    return None
+
+
 def schedule_rerender(conn: sqlite3.Connection, upload_id: int,
                       result: ValidationResult) -> RecoveryDecision:
     upload_row = conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
@@ -68,6 +111,9 @@ def schedule_rerender(conn: sqlite3.Connection, upload_id: int,
     if source_type == "external" or source_id is None:
         return _terminal(conn, upload_id, count, code,
                          f"{result.message}; automatic re-render unavailable for external file")
+    source_error = _source_error(conn, source_type, source_id)
+    if source_error:
+        return _terminal(conn, upload_id, count, "source_unavailable", source_error)
     if count >= 2:
         return _terminal(conn, upload_id, count, code,
                          f"{result.message}; re-render limit 2/2 exhausted")

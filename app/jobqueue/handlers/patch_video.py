@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from app import repository, video_gen
 from app.jobqueue.models import JobFatalError
@@ -28,14 +29,26 @@ def handle(ctx) -> dict:
     if not image or not Path(image).is_file():
         raise JobFatalError(f"source_unavailable: thumbnail missing: {image}")
     output = pipeline["video_path"] or str(Path(patch.audio_path).with_suffix(".mp4"))
-    resolution = tuple(map(int, (book.video_resolution or "1920x1080").split("x")))
-    fps = book.video_fps or 30
+    media = json.loads(pipeline["media_snapshot"] or "{}")
+    render_config = media.get("render_config")
+    if render_config:
+        if not isinstance(render_config, dict):
+            raise JobFatalError("source_unavailable: invalid render config snapshot")
+        for key in ("music_path", "intro_audio", "outro_audio"):
+            value = render_config.get(key)
+            if value and not Path(value).is_file():
+                raise JobFatalError(f"source_unavailable: {key} missing: {value}")
+    else:
+        render_config = {
+            "resolution": book.video_resolution or "1920x1080",
+            "fps": book.video_fps or 30,
+        }
 
     ctx.progress(0, 1, phase="encoding")
     publish_validated_video(
         output,
-        lambda temp: video_gen.generate_segment(image, patch.audio_path, temp,
-                                                  resolution=resolution, fps=fps),
+        lambda temp: video_gen.generate_standalone_video(
+            patch.audio_path, image, temp, **render_config),
         validator=validate_video,
     )
     video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,

@@ -29,6 +29,8 @@ from app.jobqueue import store
 from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, run_patch_publish_stage, warm_patch_thumbnail
 from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override
 from app.video_config import get_book_video_config
+from app.video_integrity import validate_video
+from app.video_publish import publish_validated_video
 
 logger = logging.getLogger(__name__)
 
@@ -476,9 +478,9 @@ async def generate_patch_video(
                 audio_bitrate=video_config["audio_bitrate"],
             )
 
-    def _render() -> None:
+    def _render(target: str) -> None:
         if not intro_audio and not outro_audio:
-            _render_main(out_path)
+            _render_main(target)
             return
         with tempfile.TemporaryDirectory(prefix="patch_video_") as tmp:
             segments: list[str] = []
@@ -501,10 +503,12 @@ async def generate_patch_video(
                     quality=video_config["quality"], audio_bitrate=video_config["audio_bitrate"],
                 )
                 segments.append(outro_path)
-            video_gen.concat_segments(segments, out_path)
+            video_gen.concat_segments(segments, target)
 
     try:
-        await asyncio.to_thread(_render)
+        await asyncio.to_thread(
+            publish_validated_video, out_path, _render, validator=validate_video,
+        )
     except Exception as exc:
         if _wants_json(request, ajax):
             return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)

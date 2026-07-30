@@ -27,6 +27,8 @@ from app import audio_merge, repository, video_gen
 from app.config import settings
 from app.models import BookJob, Patch
 from app.video_config import get_book_video_config
+from app.video_integrity import validate_video
+from app.video_publish import publish_validated_video
 from app.tts_engine import VoxCPMEngine
 
 logger = logging.getLogger(__name__)
@@ -457,20 +459,24 @@ class PatchWorker:
                 **fields,
             )
 
-        video_gen.generate_full_video(
-            done_patches, book, out_path,
-            default_image=settings.default_background_image,
-            use_nvenc=settings.use_nvenc,
-            music_path=music_path,
-            music_volume=book.music_volume,
-            codec=video_config["codec"],
-            quality=video_config["quality"],
-            audio_bitrate=video_config["audio_bitrate"],
-            video_config=video_config,
-            intro_audio=intro_audio,
-            outro_audio=outro_audio,
-            font_path=settings.default_font_path or None,
-            on_progress=_on_progress,
+        publish_validated_video(
+            out_path,
+            lambda temp: video_gen.generate_full_video(
+                done_patches, book, temp,
+                default_image=settings.default_background_image,
+                use_nvenc=settings.use_nvenc,
+                music_path=music_path,
+                music_volume=book.music_volume,
+                codec=video_config["codec"],
+                quality=video_config["quality"],
+                audio_bitrate=video_config["audio_bitrate"],
+                video_config=video_config,
+                intro_audio=intro_audio,
+                outro_audio=outro_audio,
+                font_path=settings.default_font_path or None,
+                on_progress=_on_progress,
+            ),
+            validator=validate_video,
         )
         return out_path
 

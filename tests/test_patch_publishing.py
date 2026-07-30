@@ -39,6 +39,20 @@ def test_enqueue_snapshots_metadata_and_is_idempotent(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM patch_pipeline").fetchone()[0] == 1
 
 
+def test_enqueue_freezes_complete_patch_render_configuration(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "snapshot.db")); db.init_schema(conn); patch_id = _seed(conn)
+    thumb = tmp_path / "thumb.png"; thumb.write_bytes(b"x")
+    monkeypatch.setattr("app.patch_publishing.ensure_patch_overlay", lambda *a, **k: str(thumb))
+    row = enqueue_patch_publish(conn, patch_id)
+    config = json.loads(row["media_snapshot"])["render_config"]
+    assert config["resolution"] == "1920x1080"
+    assert config["fps"] == 30
+    assert config["codec"] == "libx264"
+    assert config["crf"] == 23
+    assert config["audio_bitrate"] == "320k"
+    assert {"music_path", "music_volume", "intro_audio", "outro_audio"} <= config.keys()
+
+
 def test_enqueue_snapshot_contains_timeline_once(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "test.db")); db.init_schema(conn)
     audio = tmp_path / "audio.wav"
