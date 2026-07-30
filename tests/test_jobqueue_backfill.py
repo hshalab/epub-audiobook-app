@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 
 from app import db, repository
 from app.jobqueue import store
-from app.jobqueue.backfill import backfill_pending_jobs, build_queue
+from app.jobqueue.backfill import (
+    backfill_pending_jobs,
+    build_queue,
+    enqueue_pending_patch_jobs,
+)
 
 
 def _conn(tmp_path):
@@ -34,12 +38,39 @@ def test_pending_patches_become_voxcpm_jobs(tmp_path):
     conn = _conn(tmp_path)
     patch_id = _patch(conn)
     _patch(conn, status="done", index=1)
-    counts = backfill_pending_jobs(conn)
-    assert counts["voxcpm_tts"] == 1
+    assert enqueue_pending_patch_jobs(conn) == 1
     job = store.list_jobs(conn, job_type="voxcpm_tts")[0]
     assert job.payload["patch_id"] == patch_id
     assert job.dedupe_key == f"voxcpm_tts:patch={patch_id}"
     assert job.book_id == 1
+
+
+def test_backfill_never_queues_tts_on_its_own(tmp_path):
+    """Startup calls backfill; queueing TTS must stay an explicit operator action, or a
+    restart would refill a queue that was just cleared."""
+    conn = _conn(tmp_path)
+    _patch(conn)
+    counts = backfill_pending_jobs(conn)
+    assert "voxcpm_tts" not in counts
+    assert store.list_jobs(conn, job_type="voxcpm_tts") == []
+
+
+def test_pending_patch_jobs_can_be_scoped_to_one_book(tmp_path):
+    conn = _conn(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO book (id, title, original_filename, epub_path, patch_size,
+                              status, created_at, updated_at)
+           VALUES (2, 'Other', 'b.epub', '/tmp/b.epub', 10, 'ready', ?, ?)""", (now, now))
+    mine = _patch(conn)
+    conn.execute(
+        """INSERT INTO patch (book_id, patch_index, chapter_start, chapter_end, status,
+                               attempt_count, created_at, updated_at)
+           VALUES (2, 0, 0, 0, 'pending', 0, ?, ?)""", (now, now))
+    conn.commit()
+    assert enqueue_pending_patch_jobs(conn, book_id=1) == 1
+    jobs = store.list_jobs(conn, job_type="voxcpm_tts")
+    assert [j.payload["patch_id"] for j in jobs] == [mine]
 
 
 def test_pending_book_jobs_become_video_jobs(tmp_path):
@@ -69,17 +100,19 @@ def test_running_it_twice_creates_nothing_new(tmp_path):
     repository.enqueue_book_job(conn, 1, "video")
     first = backfill_pending_jobs(conn)
     second = backfill_pending_jobs(conn)
-    assert second == {"voxcpm_tts": 0, "video": 0, "youtube_upload": 0}
+    assert second == {"video": 0, "youtube_upload": 0}
     assert len(store.list_jobs(conn)) == sum(first.values())
+    assert enqueue_pending_patch_jobs(conn) == 1
+    assert enqueue_pending_patch_jobs(conn) == 0
 
 
 def test_finished_job_does_not_block_new_backfill(tmp_path):
     conn = _conn(tmp_path)
     _patch(conn)
-    backfill_pending_jobs(conn)
+    enqueue_pending_patch_jobs(conn)
     job = store.list_jobs(conn, job_type="voxcpm_tts")[0]
     store.finish(conn, job.id, None)
-    assert backfill_pending_jobs(conn)["voxcpm_tts"] == 1
+    assert enqueue_pending_patch_jobs(conn) == 1
 
 
 def test_build_queue_registers_all_four_handlers(tmp_path):

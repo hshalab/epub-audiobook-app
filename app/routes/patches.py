@@ -25,7 +25,8 @@ from app import db as app_db
 from app.chunker import split_into_tts_chunks
 from app.config import settings
 from app.deps import locked_conn
-from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, retry_patch_publish, warm_patch_thumbnail
+from app.jobqueue import store
+from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, run_patch_publish_stage, warm_patch_thumbnail
 from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override
 from app.video_config import get_book_video_config
 
@@ -63,13 +64,32 @@ def _off_lock(request: Request, work):
         own_conn.close()
 
 
-def _run_publish_stage(request: Request, patch_id: int, *, force_new: bool = False) -> dict:
+def _advance_and_enqueue(conn, patch_id: int, *, book_id: int | None = None, force_new: bool = False) -> dict:
+    """Advance one patch's publish pipeline and queue the upload it created.
+
+    enqueue_patch_publish only seeds/resets the patch_pipeline row - it clears
+    youtube_upload_id - so there is nothing to enqueue until run_patch_publish_stage has
+    advanced the row far enough to insert the youtube_uploads row. Skipping that step
+    parks the patch at stage='upload' forever: the polling UploadWorker that used to
+    drive these rows is gone, so the queue job is now the only thing that uploads.
+    """
+    if force_new:
+        enqueue_patch_publish(conn, patch_id, force_new=True)
+    pipeline = run_patch_publish_stage(conn, patch_id)
+    upload_id = pipeline.get("youtube_upload_id")
+    if upload_id:
+        store.enqueue(
+            conn, "youtube_upload", payload={"upload_id": upload_id}, book_id=book_id,
+            dedupe_key=f"youtube_upload:upload={upload_id}",
+        )
+    return pipeline
+
+
+def _run_publish_stage(request: Request, patch_id: int, *, book_id: int | None = None, force_new: bool = False) -> dict:
     """Advance one patch's publish pipeline without holding the shared db_lock."""
     return _off_lock(
         request,
-        lambda conn: enqueue_patch_publish(conn, patch_id, force_new=True)
-        if force_new
-        else retry_patch_publish(conn, patch_id),
+        lambda conn: _advance_and_enqueue(conn, patch_id, book_id=book_id, force_new=force_new),
     )
 
 
@@ -167,21 +187,16 @@ async def upload_patch_video(
         shutil.copyfileobj(video.file, dest)
 
     with locked_conn(request) as conn:
-        existing = conn.execute("SELECT id FROM videos WHERE file_path = ?", (str(video_path),)).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE videos SET file_size_bytes = ?, updated_at = datetime('now') WHERE id = ?",
-                (video_path.stat().st_size, existing["id"]),
-            )
-            conn.commit()
-        else:
-            video_repository.insert_video(
-                conn, filename=f"patch_{book_id}_{patch_id}.mp4",
-                original_name=video.filename or f"patch_{patch_id}.mp4",
-                file_path=str(video_path), file_size_bytes=video_path.stat().st_size,
-                batch_id=f"patch:{book_id}", source_audio=patch.audio_path,
-                background_path=patch.image_path, title=f"Patch {patch.patch_index + 1}",
-            )
+        book = repository.get_book(conn, book_id)
+        video_repository.upsert_patch_video(
+            conn, book_id=book_id, patch_id=patch_id,
+            file_path=str(video_path), resolution=(book.video_resolution if book else None) or "1920x1080",
+            filename=f"patch_{book_id}_{patch_id}.mp4",
+            original_name=video.filename or f"patch_{patch_id}.mp4",
+            title=f"Patch {patch.patch_index + 1}",
+            batch_id=f"patch:{book_id}",
+            background_path=patch.image_path,
+        )
 
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
@@ -243,29 +258,19 @@ def _patch_video_title(book, patch) -> str:
 def _register_patch_video(conn, book, patch, video_path: Path) -> int:
     """Insert (or refresh) a `videos` row for a patch's MP4 so it shows in the
     Video Library and can be handed to the YouTube upload worker. Returns id."""
-    existing = conn.execute(
-        "SELECT id FROM videos WHERE file_path = ?", (str(video_path),)
-    ).fetchone()
-    if existing:
-        conn.execute(
-            "UPDATE videos SET file_size_bytes = ?, updated_at = datetime('now') WHERE id = ?",
-            (video_path.stat().st_size, existing["id"]),
-        )
-        conn.commit()
-        return existing["id"]
-    rec = video_repository.insert_video(
+    record = video_repository.upsert_patch_video(
         conn,
+        book_id=book.id,
+        patch_id=patch.id,
+        file_path=str(video_path),
+        resolution=book.video_resolution or "1920x1080",
         filename=f"patch_{book.id}_{patch.id}.mp4",
         original_name=f"{_patch_video_title(book, patch)}.mp4",
-        file_path=str(video_path),
-        file_size_bytes=video_path.stat().st_size,
-        resolution=book.video_resolution or "1920x1080",
-        batch_id=f"patch:{book.id}",
-        source_audio=patch.audio_path,
-        background_path=patch.image_path,
         title=_patch_video_title(book, patch),
+        batch_id=f"patch:{book.id}",
+        background_path=patch.image_path,
     )
-    return rec["id"]
+    return record["id"]
 
 
 def _wants_json(request: Request, ajax: int) -> bool:
@@ -591,7 +596,7 @@ def upload_patch_video_to_youtube(
     with locked_conn(request) as conn:
         from app.patch_publishing import seed_patch_video
         seed_patch_video(conn, patch_id, video_db_id, str(video_path))
-    status = _run_publish_stage(request, patch_id)
+    status = _run_publish_stage(request, patch_id, book_id=book_id)
     return JSONResponse({"status": "queued", "pipeline": status})
 
 
@@ -1098,10 +1103,12 @@ async def publish_patch(request: Request, book_id: int, patch_id: int):
         metadata = resolve_patch_youtube_metadata(
             book, patch, effective_override, repository.build_patch_metadata_context(conn, book, patch))
     force_new = bool(data.get("force_new"))
-    # enqueue_patch_publish renders the patch thumbnail with PIL, so it goes off the
-    # shared lock and off the event loop like every other slow publish step.
+    # The publish stage renders the thumbnail with PIL (and the video if it is still
+    # missing), so it goes off the shared lock and off the event loop like every other
+    # slow publish step.
     pipeline = await asyncio.to_thread(
-        _off_lock, request, lambda conn: enqueue_patch_publish(conn, patch_id, force_new=force_new),
+        _off_lock, request,
+        lambda conn: _advance_and_enqueue(conn, patch_id, book_id=book_id, force_new=force_new),
     )
     return {"metadata": metadata, "pipeline": pipeline}
 
@@ -1110,7 +1117,7 @@ async def publish_patch(request: Request, book_id: int, patch_id: int):
 def retry_publish_patch(request: Request, book_id: int, patch_id: int, force_new: bool = False):
     with locked_conn(request) as conn:
         _youtube_patch(conn, book_id, patch_id)
-    return _run_publish_stage(request, patch_id, force_new=force_new)
+    return _run_publish_stage(request, patch_id, book_id=book_id, force_new=force_new)
 
 
 @router.post("/books/{book_id}/patches/{patch_id}/import-local")

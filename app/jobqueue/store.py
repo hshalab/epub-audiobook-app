@@ -314,6 +314,12 @@ def counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     return out
 
 
+def clear_inactive(conn: sqlite3.Connection) -> int:
+    cur = conn.execute("DELETE FROM job WHERE status NOT IN ('running', 'cancelling')")
+    conn.commit()
+    return cur.rowcount
+
+
 def pending_count(conn: sqlite3.Connection, job_type: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) AS c FROM job WHERE job_type=? AND status='pending'", (job_type,)

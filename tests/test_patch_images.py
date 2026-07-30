@@ -179,7 +179,14 @@ def test_concat_segments(mock_run, tmp_path):
     seg2.write_bytes(b"fake2")
     out = tmp_path / "out.mp4"
     video_gen.concat_segments([str(seg1), str(seg2)], str(out))
-    mock_run.assert_called_once()
+    # Each segment is probed for its framerate first, then one concat is run.
+    concats = [
+        call.args[0] for call in mock_run.call_args_list
+        if "concat" in call.args[0]
+    ]
+    assert len(concats) == 1
+    assert concats[0][-1] == str(out)
+    assert "-c" in concats[0] and "copy" in concats[0]
 
 
 # ---- backfill with patch images ----

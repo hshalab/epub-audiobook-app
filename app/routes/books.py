@@ -1023,6 +1023,11 @@ async def auto_build_patches(
             repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # This route is the "Start queue" button: building the patches is what puts them
+        # on the TTS queue. Nothing else does - startup no longer backfills them.
+        from app.jobqueue.backfill import enqueue_pending_patch_jobs
+        queued = enqueue_pending_patch_jobs(conn, book_id)
+    logger.info("event=queue.start book_id=%s voxcpm_tts=%s", book_id, queued)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 

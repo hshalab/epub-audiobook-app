@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Hàng đợi job</h1>
+<div class="queue-actions" style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+    <button type="button" id="resume-pending" class="btn-outline btn-sm">Chạy tiếp patch đang chờ</button>
+    <button type="button" id="clear-queue" class="btn-danger btn-sm">Xóa hàng đợi</button>
+    <span id="queue-action-msg" style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
+</div>
 
 <div class="pools">
 {% for pool in pools %}
@@ -97,6 +102,35 @@ async function refresh() {
     const response = await fetch("/queue/jobs?" + params);
     if (response.ok) render((await response.json()).jobs);
 }
+
+document.getElementById("resume-pending").addEventListener("click", async (event) => {
+    const button = event.target;
+    const message = document.getElementById("queue-action-msg");
+    button.disabled = true;
+    message.textContent = "Đang xếp hàng…";
+    try {
+        const response = await fetch("/queue/requeue-stuck", {method: "POST"});
+        if (!response.ok) throw new Error(response.status);
+        const body = await response.json();
+        message.textContent = body.queued
+            ? `Đã xếp ${body.queued} patch vào hàng đợi.`
+            : "Không có patch nào đang chờ.";
+    } catch (_) {
+        message.textContent = "Không xếp hàng được, thử lại sau.";
+    }
+    button.disabled = false;
+    await refresh();
+});
+
+document.getElementById("clear-queue").addEventListener("click", async () => {
+    if (!confirm("Xóa toàn bộ job đang chờ và lịch sử? Job đang chạy sẽ được giữ lại.")) return;
+    const response = await fetch("/queue/clear", {method: "POST"});
+    if (!response.ok) {
+        alert("Không thể xóa hàng đợi.");
+        return;
+    }
+    await refresh();
+});
 
 document.addEventListener("click", async (event) => {
     const target = event.target;

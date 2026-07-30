@@ -33,12 +33,25 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     return queue
 
 
-def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
-    counts = {"voxcpm_tts": 0, "video": 0, "youtube_upload": 0}
+def enqueue_pending_patch_jobs(conn: sqlite3.Connection, book_id: int | None = None) -> int:
+    """Queue a voxcpm_tts job for every 'pending' patch, optionally of a single book.
 
-    for row in conn.execute(
-        "SELECT id, book_id FROM patch WHERE status='pending' ORDER BY book_id, patch_index"
-    ).fetchall():
+    Deliberately NOT part of backfill_pending_jobs: synthesis is expensive and holds the
+    GPU, so it only starts when an operator asks for it (Start queue / Retry failed /
+    Requeue stuck / Reset all). Running it at startup would refill a queue that was just
+    cleared from /queue."""
+    if book_id is None:
+        rows = conn.execute(
+            "SELECT id, book_id FROM patch WHERE status='pending' ORDER BY book_id, patch_index"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, book_id FROM patch WHERE status='pending' AND book_id=? ORDER BY patch_index",
+            (book_id,),
+        ).fetchall()
+
+    queued = 0
+    for row in rows:
         if store.enqueue(
             conn,
             "voxcpm_tts",
@@ -46,7 +59,15 @@ def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
             book_id=row["book_id"],
             dedupe_key=f"voxcpm_tts:patch={row['id']}",
         ) is not None:
-            counts["voxcpm_tts"] += 1
+            queued += 1
+    return queued
+
+
+def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
+    """Re-attach queue rows to legacy tables that already hold pending work. Runs at
+    startup, so it covers only the cheap resumable job types - see
+    enqueue_pending_patch_jobs for why voxcpm_tts is excluded."""
+    counts = {"video": 0, "youtube_upload": 0}
 
     for row in conn.execute(
         "SELECT id, book_id FROM book_job WHERE status='pending' AND job_type='video' ORDER BY id"

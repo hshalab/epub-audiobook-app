@@ -50,6 +50,27 @@ def test_admin_actions_enqueue_jobs(client):
     assert store.list_jobs(conn, job_type="video")
 
 
+def test_start_queue_enqueues_the_patches_it_builds(client):
+    """Auto-build is the 'Start queue' button, so it - not app startup - is what puts
+    patches on the TTS queue."""
+    c, conn = client
+    for i in range(4):
+        conn.execute(
+            "INSERT INTO chapter (book_id,chapter_index,title,text,char_count) VALUES (1,?,?,?,?)",
+            (i, f"Ch{i}", "nội dung " * 20, 160),
+        )
+    conn.commit()
+    res = c.post(
+        "/books/1/patches/auto-build",
+        data={"start_chapter": "0", "patch_size": "2"},
+        follow_redirects=False,
+    )
+    assert res.status_code == 303
+    jobs = store.list_jobs(conn, job_type="voxcpm_tts")
+    assert len(jobs) == 2
+    assert {j.book_id for j in jobs} == {1}
+
+
 def test_regenerate_replaces_stale_queue_job(client):
     c, conn = client
     c.post("/books/1/video/regenerate", follow_redirects=False)

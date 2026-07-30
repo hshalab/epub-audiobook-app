@@ -80,8 +80,8 @@ async def lifespan(app: FastAPI):
     backfilled = backfill_pending_jobs(conn)
     if any(backfilled.values()):
         logging.info(
-            "event=queue.backfill voxcpm_tts=%s video=%s youtube_upload=%s",
-            backfilled["voxcpm_tts"], backfilled["video"], backfilled["youtube_upload"],
+            "event=queue.backfill video=%s youtube_upload=%s",
+            backfilled["video"], backfilled["youtube_upload"],
         )
 
     removed = joblog.purge_old_logs(conn)

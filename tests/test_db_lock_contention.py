@@ -174,7 +174,7 @@ def test_patch_publish_stage_runs_off_the_shared_connection(tmp_path, monkeypatc
         seen["conn"] = publish_conn
         return {"stage": "upload"}
 
-    monkeypatch.setattr(patches_routes, "retry_patch_publish", _fake_stage)
+    monkeypatch.setattr(patches_routes, "run_patch_publish_stage", _fake_stage)
 
     result = patches_routes._run_publish_stage(_Request, 7)
 

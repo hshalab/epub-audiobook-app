@@ -83,3 +83,51 @@ def test_queue_page_and_stats_keep_shapes(client):
     assert c.get("/queue").status_code == 200
     body = c.get("/queue/stats").json()
     assert "patch" in body and "book_job" in body and "jobs" in body
+
+
+def test_clear_queue_deletes_inactive_and_preserves_active(client):
+    c, conn, _ = client
+    for status in ("pending", "done", "failed", "cancelled", "running", "cancelling"):
+        job_id = store.enqueue(conn, "video")
+        conn.execute("UPDATE job SET status=? WHERE id=?", (status, job_id))
+    conn.commit()
+
+    response = c.post("/queue/clear")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 4}
+    assert {job.status for job in store.list_jobs(conn)} == {"running", "cancelling"}
+
+
+def test_queue_page_exposes_clear_control(client):
+    response = client[0].get("/queue")
+    assert response.status_code == 200
+    assert 'id="clear-queue"' in response.text
+    assert 'fetch("/queue/clear"' in response.text
+
+
+def test_queue_page_exposes_resume_control(client):
+    response = client[0].get("/queue")
+    assert response.status_code == 200
+    assert 'id="resume-pending"' in response.text
+    assert 'fetch("/queue/requeue-stuck"' in response.text
+
+
+def test_requeue_stuck_reports_how_many_tts_jobs_it_queued(client):
+    c, conn, _ = client
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,created_at,updated_at)
+           VALUES (1,'Sách','a.epub','/tmp/a.epub',10,'ready',?,?)""", (now, now))
+    for index, status in enumerate(("processing", "pending", "done")):
+        conn.execute(
+            """INSERT INTO patch (book_id,patch_index,chapter_start,chapter_end,status,
+                                   attempt_count,created_at,updated_at)
+               VALUES (1,?,0,0,?,0,?,?)""", (index, status, now, now))
+    conn.commit()
+
+    body = c.post("/queue/requeue-stuck").json()
+
+    assert body["requeued"] == 1  # only the stuck 'processing' patch was flipped
+    assert body["queued"] == 2  # ... but both it and the already-pending one got queued
+    assert len(store.list_jobs(conn, job_type="voxcpm_tts")) == 2

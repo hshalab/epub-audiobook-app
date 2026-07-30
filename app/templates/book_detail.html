@@ -568,7 +568,10 @@
                     data-updated="{{ patch.updated_at }}"
                     data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}">
                     <span class="pv-pipeline-state"></span>
-                    {% if patch.status == 'done' and patch.audio_path %}
+                    {# An already-rendered MP4 stays playable/deletable even when the audio
+                       is gone (failed or reset patch), so the wrap is not gated on audio
+                       alone - only on there being nothing at all to show. #}
+                    {% if (patch.status == 'done' and patch.audio_path) or patch.id in patch_video_ids %}
                         <div class="pv-wrap"></div>
                     {% else %}
                         <span class="pv-muted" title="Cần chạy TTS xong mới tạo được video">&mdash;</span>
@@ -2181,23 +2184,28 @@ function buildVideoCell(cell) {
     if (!wrap) return;   // audio not ready → server rendered a muted dash
     const pid = cell.dataset.patchId;
     const hasVideo = cell.dataset.hasVideo === '1';
+    const audioReady = cell.dataset.audioReady === '1';
     const v = cell.dataset.updated || Date.now();
     let html = '';
     if (hasVideo) {
         html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-preview" title="Xem video">&#9654;</button>`;
         html += `<a class="btn-outline btn-sm pv-icon-btn" href="/books/${BOOK_ID}/patches/${pid}/video?v=${v}" download title="Tải .mp4">&#8681;</a>`;
-        html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-gen" title="Tạo lại video">&#8635;</button>`;
+        // Re-rendering needs the audio back; playing/downloading/deleting/uploading the
+        // MP4 that is already on disk does not.
+        if (audioReady) html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-gen" title="Tạo lại video">&#8635;</button>`;
         html += `<button type="button" class="btn-outline btn-sm pv-icon-btn pv-del" title="Xóa video">&#128465;</button>`;
         if (YOUTUBE_CONFIGURED) html += `<button type="button" class="btn-outline btn-sm pv-yt" title="Upload lên YouTube">YT</button>`;
-    } else {
+    } else if (audioReady) {
         html += `<button type="button" class="btn-primary btn-sm pv-gen">&#127916; Tạo</button>`;
+    } else {
+        html += `<span class="pv-muted" title="Cần chạy TTS xong mới tạo được video">&mdash;</span>`;
     }
     wrap.innerHTML = html;
 }
 
 function initVideoCells() {
     document.querySelectorAll('.patch-video-cell').forEach(cell => {
-        if (cell.dataset.audioReady === '1') buildVideoCell(cell);
+        if (cell.dataset.audioReady === '1' || cell.dataset.hasVideo === '1') buildVideoCell(cell);
     });
 }
 

@@ -16,7 +16,7 @@ from app import repository
 from app.deps import locked_conn
 from app.config import settings
 from app.jobqueue import joblog, store
-from app.jobqueue.backfill import backfill_pending_jobs
+from app.jobqueue.backfill import backfill_pending_jobs, enqueue_pending_patch_jobs
 from app.jobqueue.models import TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -215,21 +215,30 @@ def retry_job(request: Request, job_id: int):
     return {"job_id": job_id, "retried": True}
 
 
+@router.post("/queue/clear")
+def clear_queue(request: Request):
+    with locked_conn(request) as conn:
+        cleared = store.clear_inactive(conn)
+    return {"cleared": cleared}
+
+
 @router.post("/queue/requeue-stuck")
 def requeue_stuck(request: Request):
     """Operator escape hatch: flip every 'processing' patch back to 'pending' without
-    discarding next_chunk_index. The worker will pick each one up and resume from the
-    last persisted chunk instead of redoing the whole patch. Mirrors the recovery that
-    runs at startup in main.lifespan."""
+    discarding next_chunk_index, then queue every pending patch. The worker resumes each
+    one from the last persisted chunk instead of redoing the whole patch. Startup flips
+    crashed patches the same way but deliberately does not queue them, so this is the
+    button that actually restarts synthesis after a crash."""
     with locked_conn(request) as conn:
         resumed = repository.requeue_stuck_processing_returning(conn)
         repository.requeue_stuck_book_jobs(conn)
         backfill_pending_jobs(conn)
+        queued = enqueue_pending_patch_jobs(conn)
     logger.info(
-        "event=queue.requeue_stuck count=%s",
-        len(resumed),
+        "event=queue.requeue_stuck count=%s queued=%s",
+        len(resumed), queued,
     )
-    return {"requeued": len(resumed), "patches": resumed}
+    return {"requeued": len(resumed), "queued": queued, "patches": resumed}
 
 
 @router.post("/queue/pause")
@@ -252,7 +261,7 @@ def retry_failed_patches(request: Request, book_id: int):
         if repository.get_book(conn, book_id) is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         n = repository.retry_all_failed_patches_for_book(conn, book_id)
-        backfill_pending_jobs(conn)
+        enqueue_pending_patch_jobs(conn, book_id)
     logger.info("retry_all_failed book_id=%s reset=%s", book_id, n)
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)
 
@@ -292,7 +301,9 @@ def reset_all_jobs(request: Request):
         cleared = conn.execute("DELETE FROM job").rowcount
         conn.commit()
         summary["jobs_cleared"] = cleared
-        summary["jobs_enqueued"] = sum(backfill_pending_jobs(conn).values())
+        summary["jobs_enqueued"] = (
+            sum(backfill_pending_jobs(conn).values()) + enqueue_pending_patch_jobs(conn)
+        )
     logger.info(
         "event=queue.reset_all patches_reset=%s book_jobs_reset=%s books_reset=%s files_deleted=%s",
         summary["patches_reset"],

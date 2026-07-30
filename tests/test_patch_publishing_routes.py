@@ -121,10 +121,40 @@ def test_publish_saves_override_before_enqueue(tmp_path, monkeypatch):
     monkeypatch.setattr(patches.youtube, "get_creds_from_db", lambda conn: {"id": 1})
     upload_worker.upload_worker = type("Worker", (), {"get_status": lambda self: {"running": True}})()
     seen = []
-    monkeypatch.setattr(patches, "enqueue_patch_publish", lambda c, p, **kw: seen.append(c.execute("SELECT youtube_override FROM patch WHERE id=?", (p,)).fetchone()[0]) or {"patch_id": p})
+    # The pipeline resolves metadata from the patch row, so the override has to be
+    # persisted before the stage runs - spy on the stage, not on the reset helper.
+    monkeypatch.setattr(patches, "run_patch_publish_stage", lambda c, p, **kw: seen.append(c.execute("SELECT youtube_override FROM patch WHERE id=?", (p,)).fetchone()[0]) or {"patch_id": p})
     response = client.post(f"/books/{book_id}/patches/{patch_id}/publish", json={"title": "Saved first"})
     assert response.status_code == 200
     assert json.loads(seen[0])["title"] == "Saved first"
+
+
+def test_publish_creates_the_upload_it_enqueues(tmp_path, monkeypatch):
+    """enqueue_patch_publish never returns a youtube_upload_id - it nulls the column.
+
+    So the publish route has to advance the pipeline before it can enqueue anything,
+    otherwise 'Save & Upload' leaves a stage='upload' row that nothing ever picks up.
+    """
+    conn, client = _client(tmp_path)
+    book_id, patch_id = _seed(conn)
+    video_path = tmp_path / "v.mp4"; video_path.write_bytes(b"video")
+    thumb_path = tmp_path / "thumb.png"; thumb_path.write_bytes(b"thumb")
+    video_id = conn.execute("INSERT INTO videos (filename, original_name, file_path, file_size_bytes, created_at, updated_at) VALUES ('v.mp4', 'v.mp4', '/tmp/v.mp4', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)").lastrowid
+    conn.commit()
+    monkeypatch.setattr(patch_publishing, "ensure_patch_overlay", lambda *args: str(thumb_path))
+    seed_patch_video(conn, patch_id, video_id, str(video_path))
+    monkeypatch.setattr(patches.youtube, "is_configured", lambda: True)
+    monkeypatch.setattr(patches.youtube, "get_creds_from_db", lambda conn: {"id": 1})
+
+    response = client.post(f"/books/{book_id}/patches/{patch_id}/publish", json={})
+
+    assert response.status_code == 200
+    upload_id = conn.execute(
+        "SELECT youtube_upload_id FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()[0]
+    assert upload_id is not None, "publish did not create a youtube_uploads row"
+    job = conn.execute("SELECT payload_json FROM job WHERE job_type='youtube_upload'").fetchone()
+    assert job is not None, "publish created an upload but never queued the job for it"
+    assert json.loads(job["payload_json"])["upload_id"] == upload_id
 
 
 def test_publish_force_new_alone_preserves_saved_override(tmp_path, monkeypatch):
@@ -134,7 +164,7 @@ def test_publish_force_new_alone_preserves_saved_override(tmp_path, monkeypatch)
     monkeypatch.setattr(patches.youtube, "get_creds_from_db", lambda conn: {"id": 1})
     upload_worker.upload_worker = type("Worker", (), {"get_status": lambda self: {"running": True}})()
     conn.execute("UPDATE patch SET youtube_override=? WHERE id=?", (json.dumps({"title": "Keep me"}), patch_id)); conn.commit()
-    monkeypatch.setattr(patches, "enqueue_patch_publish", lambda c, p, **kw: {"patch_id": p})
+    monkeypatch.setattr(patches, "run_patch_publish_stage", lambda c, p, **kw: {"patch_id": p})
     response = client.post(f"/books/{book_id}/patches/{patch_id}/publish", json={"force_new": True})
     assert response.status_code == 200
     assert json.loads(conn.execute("SELECT youtube_override FROM patch WHERE id=?", (patch_id,)).fetchone()[0]) == {"title": "Keep me"}
@@ -157,4 +187,8 @@ def test_seed_video_retry_creates_one_upload_and_force_new_preserves_video(tmp_p
     response = _client(tmp_path)[1].post(f"/books/{book_id}/patches/{patch_id}/publish/retry?force_new=true")
     assert response.status_code == 200
     row = conn.execute("SELECT video_id, video_path, stage, youtube_upload_id FROM patch_pipeline WHERE patch_id=?", (patch_id,)).fetchone()
-    assert tuple(row) == (video_id, str(video_path), "upload", None)
+    # force_new keeps the rendered video but must re-upload it as a *new* YouTube video,
+    # so the row points at a second upload rather than being left with none at all.
+    assert tuple(row)[:3] == (video_id, str(video_path), "upload")
+    assert row["youtube_upload_id"] not in (None, upload_id)
+    assert conn.execute("SELECT COUNT(*) FROM youtube_uploads").fetchone()[0] == 2

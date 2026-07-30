@@ -51,7 +51,7 @@ def test_missing_shared_background_falls_back_to_default(tmp_path):
     assert video_gen.resolve_configured_patch_image(_patch(), config, str(fallback)) == str(fallback)
 
 
-def test_full_video_uses_rotated_shared_background_for_each_patch(tmp_path):
+def test_full_video_uses_rotated_shared_background_for_each_patch(tmp_path, monkeypatch):
     first = tmp_path / "first.jpg"
     second = tmp_path / "second.jpg"
     first.write_bytes(b"1")
@@ -64,14 +64,18 @@ def test_full_video_uses_rotated_shared_background_for_each_patch(tmp_path):
     book = SimpleNamespace(video_resolution="1280x720", video_fps=30, default_image_animation="none", background_image_path=None)
     seen = []
 
-    original = video_gen.generate_background_sequence
-    video_gen.generate_background_sequence = lambda backgrounds, *args, **kwargs: seen.append(kwargs["start_index"])
-    try:
-        video_gen.concat_segments = lambda *args, **kwargs: None
-        image_overlay.ensure_patch_overlay = lambda book, patch, font_path=None, **kwargs: kwargs.get("background_path")
-        video_gen.generate_full_video(patches, book, str(tmp_path / "out.mp4"), default_image=str(first), video_config={"backgrounds": [str(first), str(second)], "background_mode": "sequential"})
-    finally:
-        video_gen.generate_background_sequence = original
+    # All three stubs go through monkeypatch: concat_segments and
+    # ensure_patch_overlay used to be assigned bare and leaked into later tests.
+    monkeypatch.setattr(
+        video_gen, "generate_background_sequence",
+        lambda backgrounds, *args, **kwargs: seen.append(kwargs["start_index"]),
+    )
+    monkeypatch.setattr(video_gen, "concat_segments", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        image_overlay, "ensure_patch_overlay",
+        lambda book, patch, font_path=None, **kwargs: kwargs.get("background_path"),
+    )
+    video_gen.generate_full_video(patches, book, str(tmp_path / "out.mp4"), default_image=str(first), video_config={"backgrounds": [str(first), str(second)], "background_mode": "sequential"})
 
     assert seen == [0, 1]
 
@@ -157,7 +161,9 @@ def test_background_sequence_crossfade_uses_xfade(tmp_path, monkeypatch):
         return Result()
 
     monkeypatch.setattr(video_gen.subprocess, "run", run)
-    video_gen.concat_segments = lambda *args, **kwargs: None
+    # Must go through monkeypatch: a bare assignment here leaked the stub into
+    # every later test in the session.
+    monkeypatch.setattr(video_gen, "concat_segments", lambda *args, **kwargs: None)
     video_gen.generate_background_sequence(
         images, str(audio), str(tmp_path / "out.mp4"),
         resolution=(1280, 720), fps=30, image_duration=15,

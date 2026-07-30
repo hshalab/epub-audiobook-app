@@ -361,6 +361,17 @@ def test_counts_group_by_type_and_status():
     assert counts["light_tts"] == {"pending": 1}
 
 
+def test_clear_inactive_preserves_active_jobs():
+    conn = _conn()
+    for status in (PENDING, DONE, FAILED, CANCELLED, RUNNING, CANCELLING):
+        job_id = store.enqueue(conn, "video")
+        conn.execute("UPDATE job SET status=? WHERE id=?", (status, job_id))
+    conn.commit()
+
+    assert store.clear_inactive(conn) == 4
+    assert {job.status for job in store.list_jobs(conn)} == {RUNNING, CANCELLING}
+
+
 def test_pending_count_is_per_type():
     conn = _conn()
     store.enqueue(conn, "video")

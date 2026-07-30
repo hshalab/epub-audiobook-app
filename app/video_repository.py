@@ -46,24 +46,48 @@ def insert_video(
 def upsert_patch_video(
     conn: sqlite3.Connection, *, book_id: int, patch_id: int,
     file_path: str, resolution: str, file_size_bytes: int | None = None,
+    filename: str | None = None, original_name: str | None = None,
+    title: str | None = None, batch_id: str | None = None,
+    background_path: str | None = None,
 ) -> dict[str, Any]:
+    """Insert or refresh the single `videos` row that belongs to a patch.
+
+    Every writer of a patch MP4 goes through here so `patch_id` is always set: it is the
+    row's real identity (and the only UNIQUE key), so a row left with patch_id NULL can
+    never be deduped against and the same file shows up in the library twice.
+
+    The optional metadata is only applied when supplied - callers that know nothing about
+    titles or batches must not blank out what a richer caller already stored.
+    """
     path = Path(file_path)
     size = path.stat().st_size if file_size_bytes is None else file_size_bytes
     now = _now_iso()
+    # Claim any pre-existing row for this same file that was written before patch_id was
+    # set, so the INSERT below updates it instead of adding a second row for one MP4.
+    conn.execute(
+        """UPDATE videos SET patch_id=?, book_id=?, updated_at=?
+           WHERE file_path=? AND patch_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM videos other WHERE other.patch_id=?)""",
+        (patch_id, book_id, now, str(path), patch_id),
+    )
     row = conn.execute(
         """INSERT INTO videos
-           (filename,original_name,file_path,file_size_bytes,resolution,source_audio,
-            background_path,upload_status,book_id,patch_id,created_at,updated_at)
-           SELECT ?,?,?,?, ?,p.audio_path,NULL,'local_only',?,?,?,?
+           (filename,original_name,title,file_path,file_size_bytes,resolution,source_audio,
+            background_path,batch_id,upload_status,book_id,patch_id,created_at,updated_at)
+           SELECT ?,?,?,?,?,?,p.audio_path,?,?,'local_only',?,?,?,?
            FROM patch p WHERE p.id=?
            ON CONFLICT(patch_id) WHERE patch_id IS NOT NULL DO UPDATE SET
              filename=excluded.filename,original_name=excluded.original_name,
+             title=COALESCE(NULLIF(excluded.title,''),videos.title),
              file_path=excluded.file_path,file_size_bytes=excluded.file_size_bytes,
              resolution=excluded.resolution,book_id=excluded.book_id,
-             source_audio=excluded.source_audio,updated_at=excluded.updated_at
+             source_audio=excluded.source_audio,
+             background_path=COALESCE(excluded.background_path,videos.background_path),
+             batch_id=COALESCE(excluded.batch_id,videos.batch_id),
+             updated_at=excluded.updated_at
            RETURNING *""",
-        (path.name, path.name, str(path), size, resolution,
-         book_id, patch_id, now, now, patch_id),
+        (filename or path.name, original_name or path.name, title or "", str(path), size,
+         resolution, background_path, batch_id, book_id, patch_id, now, now, patch_id),
     ).fetchone()
     conn.commit()
     if row is None:

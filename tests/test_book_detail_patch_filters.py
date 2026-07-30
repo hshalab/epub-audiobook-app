@@ -2,6 +2,7 @@
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,13 +36,13 @@ def seeded_book(tmp_path):
 
 
 def _add_patch(patch_id, patch_index, status="done", stage=None, last_error=None,
-               youtube_video_id=None, has_upload_row=False):
+               youtube_video_id=None, has_upload_row=False, audio_path="/tmp/a.wav"):
     conn = db.connect(settings.db_path)
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,
-           audio_path,created_at,updated_at) VALUES (?,1,?,0,1,?,'/tmp/a.wav',?,?)""",
-        (patch_id, patch_index, status, now, now),
+           audio_path,created_at,updated_at) VALUES (?,1,?,0,1,?,?,?,?)""",
+        (patch_id, patch_index, status, audio_path, now, now),
     )
     upload_id = None
     if has_upload_row or youtube_video_id:
@@ -189,3 +190,39 @@ def test_upload_row_without_video_id_is_not_uploaded(client, seeded_book):
     _add_patch(1, 0, stage="upload", has_upload_row=True)
     html = client.get("/books/1").text
     assert 'data-has-yt-upload="0"' in html
+
+
+def _write_patch_video(patch_id):
+    directory = Path(settings.data_root) / "books" / "1" / "patch_videos"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{patch_id}.mp4").write_bytes(b"mp4")
+
+
+def test_existing_video_keeps_its_buttons_when_audio_is_not_ready(client, seeded_book):
+    """A rendered MP4 must stay playable/deletable even after its audio is gone.
+
+    The audio gate exists to stop you *creating* a video without TTS output. Applying it
+    to the whole cell also hid preview/download/delete/YT for videos already on disk -
+    reset or failed patches keep their MP4, so the row lost every button.
+    """
+    _add_patch(1, 0, status="failed", audio_path=None)
+    _write_patch_video(1)
+
+    html = client.get("/books/1").text
+    cell = re.search(r'<td class="patch-video-cell".*?</td>', html, re.S).group(0)
+
+    assert 'data-has-video="1"' in cell
+    assert 'data-audio-ready="0"' in cell
+    assert "pv-wrap" in cell, "no pv-wrap, so buildVideoCell bails and renders no buttons"
+
+
+def test_cell_without_audio_or_video_still_shows_the_dash(client, seeded_book):
+    """Nothing to play and nothing to render from - the muted dash is correct here."""
+    _add_patch(1, 0, status="failed", audio_path=None)
+
+    html = client.get("/books/1").text
+    cell = re.search(r'<td class="patch-video-cell".*?</td>', html, re.S).group(0)
+
+    assert 'data-has-video="0"' in cell
+    assert "pv-muted" in cell
+    assert "pv-wrap" not in cell

@@ -145,9 +145,12 @@ def generate_segment(
         next_idx += 1
 
     if image_type == "none" or is_video_bg:
+        # 'fps' must be pinned explicitly: '-loop 1' on a still image defaults to
+        # 25fps and a video background inherits its own rate. Segments that
+        # disagree get time-stretched by concat_segments' stream copy.
         base_vf = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
         )
     else:
         _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
@@ -182,6 +185,7 @@ def generate_segment(
             *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
             "-pix_fmt", "yuv420p",
+            "-r", str(fps),
             *quality_args,
             "-shortest",
             out_path,
@@ -200,6 +204,7 @@ def generate_segment(
             *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
             "-pix_fmt", "yuv420p",
+            "-r", str(fps),
             *quality_args,
             "-shortest",
             out_path,
@@ -222,6 +227,48 @@ def generate_segment(
     _emit(on_progress, "segment.done", path=out_path)
 
 
+def _probe_frame_rate(path: str) -> float:
+    """Container-declared framerate (r_frame_rate) of a file's video stream."""
+    result = subprocess.run(
+        [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=r_frame_rate",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True, check=True,
+    )
+    # An unreadable rate means "unknown", never a hard failure: the guard below
+    # must not be able to break a concat that ffmpeg itself would accept.
+    try:
+        raw = result.stdout.strip()
+        num, _, den = raw.partition("/")
+        rate = float(num) / float(den or 1)
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+    return rate if rate > 0 else 0.0
+
+
+def _assert_uniform_frame_rate(segment_paths: list[str]) -> None:
+    """Reject a stream-copy concat whose inputs disagree on framerate.
+
+    The MP4 muxer applies the first input's frame duration to every packet, so a
+    mismatch silently stretches part of the video track. The result uploads fine
+    but YouTube cannot process it, which is far worse than failing here.
+    """
+    rates = [(p, _probe_frame_rate(p)) for p in segment_paths]
+    known = [r for _, r in rates if r > 0]
+    if not known:
+        return
+    baseline = known[0]
+    offenders = [
+        (p, r) for p, r in rates if r > 0 and abs(r - baseline) / baseline > 0.005
+    ]
+    if offenders:
+        detail = ", ".join(f"{Path(p).name}={r:.3f}fps" for p, r in offenders)
+        raise ValueError(
+            f"refusing to concat segments with mixed framerate "
+            f"(baseline {baseline:.3f}fps): {detail}"
+        )
+
+
 def concat_segments(
     segment_paths: list[str],
     out_path: str,
@@ -238,6 +285,8 @@ def concat_segments(
         Path(out_path).write_bytes(Path(segment_paths[0]).read_bytes())
         _emit(on_progress, "concat.done", count=1, path=out_path, mode="copy_single")
         return
+
+    _assert_uniform_frame_rate(segment_paths)
 
     list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
     try:
@@ -337,7 +386,7 @@ def generate_background_sequence(
             cmd = [settings.get_ffmpeg_path(), "-y"]
             for piece in pieces:
                 cmd += ["-i", piece]
-            cmd += ["-filter_complex", ";".join(graph), "-map", current, "-an", "-c:v", video_codec, "-pix_fmt", "yuv420p", visual]
+            cmd += ["-filter_complex", ";".join(graph), "-map", current, "-an", "-c:v", video_codec, "-pix_fmt", "yuv420p", "-r", str(fps), visual]
             subprocess.run(cmd, check=True, capture_output=True, text=True)
         else:
             concat_segments(pieces, visual)

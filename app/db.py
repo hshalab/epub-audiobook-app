@@ -393,6 +393,42 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_patch_video_links(conn: sqlite3.Connection) -> int:
+    """Link legacy `videos` rows to the patch whose MP4 they hold.
+
+    Patch videos are written to books/{book_id}/patch_videos/{patch_id}.mp4, so rows
+    inserted before patch_id was populated can be recovered from their path. Without the
+    link nothing can find a patch's video through the database, and the UNIQUE index on
+    patch_id cannot dedupe the row, so the next writer adds a second one for the same file.
+    """
+    linked = 0
+    rows = conn.execute(
+        "SELECT id, file_path FROM videos WHERE patch_id IS NULL AND file_path IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        path = Path(row["file_path"])
+        if path.parent.name != "patch_videos":
+            continue
+        book_dir = path.parent.parent
+        if not (path.stem.isdigit() and book_dir.name.isdigit()):
+            continue
+        patch_id, book_id = int(path.stem), int(book_dir.name)
+        # The path only claims a patch id; the patch may have been deleted since, and
+        # another row may already hold this patch_id (the index is UNIQUE).
+        patch = conn.execute(
+            "SELECT id FROM patch WHERE id=? AND book_id=?", (patch_id, book_id)
+        ).fetchone()
+        if patch is None:
+            continue
+        taken = conn.execute("SELECT 1 FROM videos WHERE patch_id=?", (patch_id,)).fetchone()
+        if taken is not None:
+            continue
+        conn.execute(
+            "UPDATE videos SET book_id=?, patch_id=? WHERE id=?", (book_id, patch_id, row["id"]))
+        linked += 1
+    return linked
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a book table already existed on disk."""
     conn.execute("DROP INDEX IF EXISTS idx_patch_pipeline_claim")
@@ -511,6 +547,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "patch_id" not in videos_existing:
         conn.execute("ALTER TABLE videos ADD COLUMN patch_id INTEGER REFERENCES patch(id) ON DELETE SET NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_patch_id ON videos(patch_id) WHERE patch_id IS NOT NULL")
+    _backfill_patch_video_links(conn)
     sync_target_existing = {row["name"] for row in conn.execute("PRAGMA table_info(drive_sync_target)")}
     if "rclone_remote" not in sync_target_existing:
         conn.execute("ALTER TABLE drive_sync_target ADD COLUMN rclone_remote TEXT")
