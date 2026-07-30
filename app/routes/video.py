@@ -593,7 +593,18 @@ async def _run_single_video(
             outro_audio=outro_audio,
             **cfg,
         )
-        shutil.move(str(tmp_out), str(final_path))
+        from app.video_integrity import validate_video
+        from app.video_publish import VideoValidationError
+        validation = await asyncio.to_thread(validate_video, tmp_out)
+        if not validation.valid:
+            raise VideoValidationError(validation)
+        tmp_out.replace(final_path)
+        source_dir = Path(settings.data_root) / "video_sources" / f"{batch_id}_{idx}"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        durable_audio = source_dir / Path(audio_path).name
+        durable_background = source_dir / Path(image_path).name
+        shutil.copy2(audio_path, durable_audio)
+        shutil.copy2(image_path, durable_background)
         # Register video in database
         from app.video_repository import insert_video
         try:
@@ -606,8 +617,15 @@ async def _run_single_video(
                     file_size_bytes=final_path.stat().st_size,
                     resolution=cfg.get("resolution", "1920x1080"),
                     batch_id=batch_id,
-                    source_audio=finfo["original_name"],
-                    background_path=str(image_path),
+                    source_audio=str(durable_audio),
+                    background_path=str(durable_background),
+                    render_config={
+                        **cfg,
+                        "music_path": music_path,
+                        "music_volume": music_volume,
+                        "intro_audio": intro_audio,
+                        "outro_audio": outro_audio,
+                    },
                     title=finfo["original_name"], description=music_attribution,
                 )
                 video_db_id = video_record["id"]
@@ -635,6 +653,8 @@ async def _run_single_video(
                     conn, str(final_path), finfo["original_name"], music_attribution,
                     [t.strip() for t in settings.youtube_default_tags.split(",") if t.strip()],
                     settings.youtube_default_privacy, video_id=video_db_id or None,
+                    render_source_type="standalone" if video_db_id else "external",
+                    render_source_id=video_db_id or None,
                 )
                 store.enqueue(conn, "youtube_upload", payload={"upload_id": upload_id, "video_id": video_db_id or None},
                               dedupe_key=f"youtube_upload:upload={upload_id}")
