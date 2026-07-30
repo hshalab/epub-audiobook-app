@@ -31,7 +31,7 @@ def handle(ctx) -> dict:
     upload = ctx.conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     if upload is None:
         raise JobFatalError(f"upload {upload_id} không tồn tại")
-    video_id = upload["video_id"] or ctx.job.payload.get("video_id")
+    video_id = upload["video_id"]
 
     ctx.progress(0, 1, phase="validating")
     youtube.mark_validation_started(ctx.conn, upload_id)

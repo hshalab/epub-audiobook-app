@@ -26,9 +26,10 @@ def _isolated(tmp_path, monkeypatch):
 def _upload_row(conn, *, video_id=None):
     now = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
-        """INSERT INTO youtube_uploads (video_path, title, description, tags,
+        """INSERT INTO youtube_uploads (video_id, video_path, title, description, tags,
                                          privacy_status, status, created_at)
-           VALUES ('/tmp/v.mp4', 'T', 'D', 'a,b', 'private', 'pending', ?)""", (now,))
+           VALUES (?, '/tmp/v.mp4', 'T', 'D', 'a,b', 'private', 'pending', ?)""",
+        (video_id, now))
     conn.commit()
     return cur.lastrowid
 
@@ -114,7 +115,7 @@ def test_unexpected_transfer_exception_marks_upload_and_video_failed(tmp_path, m
         "INSERT INTO videos (filename, file_path, upload_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         ("v.mp4", "/tmp/v.mp4", "queued", now, now),
     ).lastrowid
-    upload_id = _upload_row(conn)
+    upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
     monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("unexpected transfer")))
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
@@ -150,7 +151,7 @@ def test_failed_transfer_with_video_id_marks_both_rows(tmp_path, monkeypatch):
         "INSERT INTO videos (filename, file_path, upload_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         ("v.mp4", "/tmp/v.mp4", "queued", now, now),
     ).lastrowid
-    upload_id = _upload_row(conn)
+    upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
     monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "failed", "error": "mạng lỗi"})
     ctx, _ = _ctx(conn, upload_id, video_id=video_id)
@@ -188,7 +189,7 @@ def test_a_missing_source_file_is_fatal(tmp_path, monkeypatch):
         handler.handle(ctx)
 
 
-def test_video_row_is_updated_when_the_payload_carries_one(tmp_path, monkeypatch):
+def test_video_row_is_updated_when_the_upload_row_carries_one(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     now = datetime.now(timezone.utc).isoformat()
@@ -197,7 +198,7 @@ def test_video_row_is_updated_when_the_payload_carries_one(tmp_path, monkeypatch
            VALUES ('v.mp4', '/tmp/v.mp4', 'queued', ?, ?)""", (now, now))
     conn.commit()
     video_id = cur.lastrowid
-    upload_id = _upload_row(conn)
+    upload_id = _upload_row(conn, video_id=video_id)
     monkeypatch.setattr(
         handler.youtube, "process_upload",
         lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
@@ -236,7 +237,7 @@ def test_raised_publish_exception_marks_upload_and_video_failed(tmp_path, monkey
         "INSERT INTO videos (filename, file_path, upload_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         ("v.mp4", "/tmp/v.mp4", "queued", now, now),
     ).lastrowid
-    upload_id = _upload_row(conn)
+    upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
     monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
     monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: (_ for _ in ()).throw(ValueError("publish failed")))
@@ -274,7 +275,7 @@ def test_raised_sync_exception_marks_upload_and_video_failed(tmp_path, monkeypat
         "INSERT INTO videos (filename, file_path, upload_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         ("v.mp4", "/tmp/v.mp4", "queued", now, now),
     ).lastrowid
-    upload_id = _upload_row(conn)
+    upload_id = _upload_row(conn, video_id=video_id)
     conn.commit()
     monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: {"status": "done", "youtube_video_id": "xyz"})
     monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda c, uid: {"status": "published"})

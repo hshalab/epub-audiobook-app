@@ -164,8 +164,9 @@ def _create_upload_atomically(conn: sqlite3.Connection, row: dict) -> int:
             return current[0]
         conn.execute("UPDATE patch_pipeline SET stage='upload', upload_status='claiming', config_snapshot=?, updated_at=? WHERE patch_id=?", (snapshot, _now(), row["patch_id"]))
         cur = conn.execute("""INSERT INTO youtube_uploads
-            (video_id, video_path, title, description, tags, privacy_status, status, metadata_snapshot, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""", (row["video_id"], row["video_path"], metadata["title"], metadata["description"], json.dumps(metadata["tags"]), metadata["privacy_status"], snapshot, _now()))
+            (video_id, video_path, title, description, tags, privacy_status, status,
+             metadata_snapshot, render_source_type, render_source_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 'patch', ?, ?)""", (row["video_id"], row["video_path"], metadata["title"], metadata["description"], json.dumps(metadata["tags"]), metadata["privacy_status"], snapshot, row["patch_id"], _now()))
         conn.execute("UPDATE patch_pipeline SET upload_status='queued', youtube_upload_id=?, updated_at=? WHERE patch_id=?", (cur.lastrowid, _now(), row["patch_id"]))
         conn.commit()
         return cur.lastrowid

@@ -389,6 +389,8 @@ class PatchWorker:
                                 description=yt_info["description"],
                                 tags=yt_info["tags"],
                                 privacy_status=settings.youtube_default_privacy,
+                                render_source_type="book",
+                                render_source_id=job.id,
                             )
                     if book:
                         self._log_event(
