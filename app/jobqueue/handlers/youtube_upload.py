@@ -7,6 +7,8 @@ from app import youtube
 from app.jobqueue.models import JobFatalError
 from app.patch_publishing import sync_pipeline_from_upload
 from app.video_repository import update_video
+from app.video_integrity import validate_video
+from app.video_recovery import schedule_rerender
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,23 @@ def handle(ctx) -> dict:
     upload_id = ctx.job.payload.get("upload_id")
     if upload_id is None:
         raise JobFatalError("payload thiếu upload_id")
-    video_id = ctx.job.payload.get("video_id")
+    upload = ctx.conn.execute("SELECT * FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    if upload is None:
+        raise JobFatalError(f"upload {upload_id} không tồn tại")
+    video_id = upload["video_id"] or ctx.job.payload.get("video_id")
+
+    ctx.progress(0, 1, phase="validating")
+    youtube.mark_validation_started(ctx.conn, upload_id)
+    validation = validate_video(upload["video_path"])
+    if not validation.valid:
+        decision = schedule_rerender(ctx.conn, upload_id, validation)
+        ctx.log(f"validation failed: {validation.error_code}: {validation.message}", level=logging.ERROR)
+        if decision.action == "rerender":
+            return {"rerender_scheduled": True, "retry_count": decision.retry_count}
+        if decision.action == "retry_validation":
+            raise RuntimeError(f"{validation.error_code}: {validation.message}")
+        raise JobFatalError(decision.message)
+    youtube.mark_validation_valid(ctx.conn, upload_id)
 
     ctx.progress(0, 1, phase="uploading")
     if video_id:

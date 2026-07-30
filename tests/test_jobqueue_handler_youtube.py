@@ -11,12 +11,15 @@ from app.jobqueue.context import JobContext
 from app.jobqueue.joblog import JobLogger
 from app.jobqueue.handlers import youtube_upload as handler
 from app.jobqueue.models import JobFatalError
+from app.video_integrity import ValidationFacts, ValidationResult
 
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "data_root", str(tmp_path))
+    monkeypatch.setattr(handler, "validate_video", lambda path: ValidationResult(
+        True, None, "", (), ValidationFacts(), 0))
     yield
 
 
@@ -65,6 +68,27 @@ def test_successful_upload_returns_the_video_id(tmp_path, monkeypatch):
     assert calls == [("publish", upload_id), ("sync", upload_id)]
     row = conn.execute("SELECT status, youtube_video_id FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
     assert dict(row) == {"status": "done", "youtube_video_id": "abc123"}
+
+
+def test_validation_finishes_before_youtube_transfer(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
+    upload_id = _upload_row(conn); calls = []
+    monkeypatch.setattr(handler, "validate_video", lambda path: calls.append("validate") or ValidationResult(True, None, "", (), ValidationFacts(), 0))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda c, uid: calls.append(c.execute("SELECT validation_status FROM youtube_uploads WHERE id=?", (uid,)).fetchone()[0]) or {"status": "done", "youtube_video_id": "yt"})
+    monkeypatch.setattr(handler.youtube, "publish_completed_upload", lambda *a: {"status": "published"})
+    monkeypatch.setattr(handler, "sync_pipeline_from_upload", lambda *a: None)
+    handler.handle(_ctx(conn, upload_id)[0])
+    assert calls == ["validate", "valid"]
+
+
+def test_invalid_external_video_never_calls_youtube(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db")); db.init_schema(conn)
+    upload_id = _upload_row(conn); calls = []
+    monkeypatch.setattr(handler, "validate_video", lambda path: ValidationResult(False, "decode_failed", "broken", (), ValidationFacts(), 0))
+    monkeypatch.setattr(handler.youtube, "process_upload", lambda *a: calls.append("upload"))
+    with pytest.raises(JobFatalError, match="external"):
+        handler.handle(_ctx(conn, upload_id)[0])
+    assert calls == []
 
 
 def test_a_failed_transfer_marks_the_upload_and_raises(tmp_path, monkeypatch):
