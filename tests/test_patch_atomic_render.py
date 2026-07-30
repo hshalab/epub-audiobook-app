@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app import db
 from app.config import settings
+from app.jobqueue import store
 from app.main import app
 from app.patch_publishing import enqueue_patch_publish, run_patch_publish_stage
 from app.routes import patches
@@ -20,18 +22,34 @@ def _seed(conn, audio):
     conn.execute("INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,audio_path,created_at,updated_at) VALUES (1,1,0,0,0,'done',?,?,?)", (str(audio), now, now)); conn.commit()
 
 
-def test_generate_patch_route_publishes_only_validated_temp(tmp_path, monkeypatch):
+def test_generate_patch_route_enqueues_without_rendering(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db")); monkeypatch.setattr(settings, "data_root", str(tmp_path)); monkeypatch.setattr(settings, "enable_worker", False)
     audio = tmp_path / "a.wav"; audio.write_bytes(b"a"); image = tmp_path / "i.jpg"; image.write_bytes(b"i"); seen = {}
     monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(image))
-    monkeypatch.setattr(patches.video_gen, "generate_segment", lambda *a, **k: (seen.update(render=Path(a[2])), Path(a[2]).write_bytes(b"new")))
-    monkeypatch.setattr(patches, "validate_video", lambda p: seen.update(validated=Path(p)) or VALID)
+    monkeypatch.setattr(patches.video_gen, "generate_segment", lambda *a, **k: seen.update(render=True))
     with TestClient(app) as client:
         _seed(client.app.state.conn, audio)
-        assert client.post("/books/1/patches/1/generate-video?ajax=1").status_code == 200
-    final = tmp_path / "books" / "1" / "patch_videos" / "1.mp4"
-    assert seen["render"] == seen["validated"] != final
-    assert final.read_bytes() == b"new"
+        response = client.post("/books/1/patches/1/generate-video?ajax=1")
+        job = store.get(client.app.state.conn, response.json()["job_id"])
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert response.json()["deduplicated"] is False
+    assert job.job_type == "patch_video"
+    assert job.book_id == 1
+    assert job.payload == {"patch_id": 1, "upload_youtube": False, "privacy": ""}
+    assert "render" not in seen
+
+
+def test_generate_patch_route_deduplicates_live_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db")); monkeypatch.setattr(settings, "data_root", str(tmp_path)); monkeypatch.setattr(settings, "enable_worker", False)
+    audio = tmp_path / "a.wav"; audio.write_bytes(b"a"); image = tmp_path / "i.jpg"; image.write_bytes(b"i")
+    monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(image))
+    with TestClient(app) as client:
+        _seed(client.app.state.conn, audio)
+        first = client.post("/books/1/patches/1/generate-video?ajax=1")
+        second = client.post("/books/1/patches/1/generate-video?ajax=1")
+    assert second.status_code == 202
+    assert second.json() == {"status": "queued", "job_id": first.json()["job_id"], "deduplicated": True}
 
 
 def test_publish_stage_publishes_only_validated_temp(tmp_path, monkeypatch):

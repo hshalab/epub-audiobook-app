@@ -7,6 +7,10 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.config import settings
+from app.jobqueue import store
+from app.jobqueue.context import JobContext
+from app.jobqueue.handlers import patch_video
+from app.jobqueue.joblog import JobLogger
 from app.main import app
 from app.routes import patches
 from app.video_integrity import ValidationFacts, ValidationResult
@@ -14,8 +18,16 @@ from app.video_integrity import ValidationFacts, ValidationResult
 
 @pytest.fixture(autouse=True)
 def _valid_generated_video(monkeypatch):
-    monkeypatch.setattr(patches, "validate_video", lambda p: ValidationResult(
-        True, None, "", (), ValidationFacts(), 0))
+    valid = lambda p: ValidationResult(True, None, "", (), ValidationFacts(), 0)
+    monkeypatch.setattr(patches, "validate_video", valid)
+    monkeypatch.setattr(patch_video, "validate_video", valid)
+
+
+def _run_queued_patch_video(conn, response):
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    job = store.claim(conn, "patch_video", "test")
+    return patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
 
 
 def _seed_book_and_patch(conn, book_id=7, patch_id=11, audio_path="audio.wav"):
@@ -76,16 +88,17 @@ def test_generated_patch_video_is_linked_to_its_patch(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "enable_worker", False)
     audio = tmp_path / "narration.wav"; audio.write_bytes(b"audio")
     image = tmp_path / "background.jpg"; image.write_bytes(b"image")
-    monkeypatch.setattr(patches.video_gen, "generate_segment",
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment",
                         lambda *args, **kwargs: Path(args[2]).write_bytes(b"video"))
-    monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay",
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay",
                         lambda *args, **kwargs: str(image))
     with TestClient(app) as client:
         conn = client.app.state.conn
         _seed_book_and_patch(conn, book_id=1, patch_id=1, audio_path=str(audio))
         response = client.post("/books/1/patches/1/generate-video?ajax=1")
+        _run_queued_patch_video(conn, response)
         row = conn.execute("SELECT book_id, patch_id FROM videos").fetchone()
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert (row["book_id"], row["patch_id"]) == (1, 1)
 
 
@@ -162,8 +175,8 @@ def test_generate_patch_video_mixes_book_background_music(tmp_path, monkeypatch)
         captured.update(kwargs)
         Path(args[2]).write_bytes(b"video")
 
-    monkeypatch.setattr(patches.video_gen, "generate_segment", render)
-    monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(image))
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", render)
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(image))
 
     with TestClient(app) as client:
         conn = client.app.state.conn
@@ -185,8 +198,9 @@ def test_generate_patch_video_mixes_book_background_music(tmp_path, monkeypatch)
         )
         conn.commit()
         response = client.post("/books/1/patches/1/generate-video?ajax=1")
+        _run_queued_patch_video(conn, response)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert captured["music_path"] == str(music)
     assert captured["music_volume"] == 0.3
 
@@ -217,9 +231,9 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
         concat_calls.append((list(segments), out_path))
         Path(out_path).write_bytes(b"final")
 
-    monkeypatch.setattr(patches.video_gen, "generate_segment", render)
-    monkeypatch.setattr(patches.video_gen, "concat_segments", concat)
-    monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(image))
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", render)
+    monkeypatch.setattr(patch_video.video_gen, "concat_segments", concat)
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(image))
 
     with TestClient(app) as client:
         conn = client.app.state.conn
@@ -237,8 +251,9 @@ def test_generate_patch_video_appends_intro_and_outro(tmp_path, monkeypatch):
         )
         conn.commit()
         response = client.post("/books/1/patches/1/generate-video?ajax=1")
+        _run_queued_patch_video(conn, response)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     audios = [call[1] for call in segment_calls]
     assert audios == [str(intro), str(audio), str(outro)]
     assert len(concat_calls) == 1
@@ -440,9 +455,9 @@ def test_generate_patch_video_uses_saved_shared_video_config(tmp_path, monkeypat
         captured.update(kwargs)
         Path(args[2]).write_bytes(b"video")
 
-    monkeypatch.setattr(patches.video_gen, "generate_background_sequence", render_sequence)
-    monkeypatch.setattr(patches.video_gen, "generate_segment", lambda *args, **kwargs: Path(args[2]).write_bytes(b"video"))
-    monkeypatch.setattr(patches.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(fallback))
+    monkeypatch.setattr(patch_video.video_gen, "generate_background_sequence", render_sequence)
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda *args, **kwargs: Path(args[2]).write_bytes(b"video"))
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *args, **kwargs: str(fallback))
 
     with TestClient(app) as client:
         conn = client.app.state.conn
@@ -468,8 +483,9 @@ def test_generate_patch_video_uses_saved_shared_video_config(tmp_path, monkeypat
         )
         conn.commit()
         response = client.post("/books/1/patches/1/generate-video?ajax=1")
+        _run_queued_patch_video(conn, response)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert captured["args"][:2] == ([str(bg1), str(bg2)], str(audio))
     assert captured["image_duration"] == 7
     assert captured["mode"] == "random"

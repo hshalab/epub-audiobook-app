@@ -417,120 +417,21 @@ async def generate_patch_video(
     if not raw_bg:
         raise HTTPException(status_code=400, detail="No background image available")
 
-    shared_backgrounds = [p for p in video_config.get("backgrounds", []) if isinstance(p, str)]
-    use_shared_sequence = len(shared_backgrounds) > 1 and not (patch.image_path and Path(patch.image_path).exists())
-    if use_shared_sequence:
-        image = raw_bg
-        image_type = "none"
-    elif video_gen.is_video_background(raw_bg):
-        image = raw_bg
-        image_type = "none"
-    else:
-        image = image_overlay.ensure_patch_overlay(book, patch, settings.default_font_path or None, background_path=raw_bg) or raw_bg
-        image_type = patch.image_type if patch.image_type and patch.image_type != "static" else (book.default_image_animation or "none")
-
-    w, h = (book.video_resolution or "1920x1080").split("x")
-
-    resolution = (int(w), int(h))
-    fps = book.video_fps or 30
-
-    out_dir = Path(settings.data_root) / "books" / str(book_id) / "patch_videos"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = str(out_dir / f"{patch_id}.mp4")
-
-    voices_dir = Path(settings.data_root) / "voices"
-    intro_audio = voices_dir / video_config["intro_voice"] if video_config.get("intro_voice") else None
-    outro_audio = voices_dir / video_config["outro_voice"] if video_config.get("outro_voice") else None
-    intro_audio = str(intro_audio) if intro_audio and intro_audio.is_file() else None
-    outro_audio = str(outro_audio) if outro_audio and outro_audio.is_file() else None
-
-    def _render_main(target: str) -> None:
-        if use_shared_sequence:
-            video_gen.generate_background_sequence(
-                shared_backgrounds, patch.audio_path, target,
-                resolution=resolution,
-                fps=fps,
-                image_duration=float(video_config.get("image_duration_seconds", 15)),
-                mode=video_config.get("background_mode", "sequential"),
-                seed=f"{book_id}-{patch.id}",
-                start_index=patch.patch_index,
-                music_path=music_path,
-                music_volume=book.music_volume,
-                codec=video_config["codec"],
-                quality=video_config["quality"],
-                audio_bitrate=video_config["audio_bitrate"],
-                crossfade=bool(video_config.get("crossfade_enabled")),
-                crossfade_seconds=float(video_config.get("crossfade_seconds", 1)),
-                ken_burns=bool(video_config.get("ken_burns_enabled")),
-                progress_bar=bool(video_config.get("progress_bar_enabled")),
-            )
-        else:
-            video_gen.generate_segment(
-                image, patch.audio_path, target,
-                image_type=image_type,
-                resolution=resolution,
-                fps=fps,
-                use_nvenc=settings.use_nvenc,
-                music_path=music_path,
-                music_volume=book.music_volume,
-                codec=video_config["codec"],
-                quality=video_config["quality"],
-                audio_bitrate=video_config["audio_bitrate"],
-            )
-
-    def _render(target: str) -> None:
-        if not intro_audio and not outro_audio:
-            _render_main(target)
-            return
-        with tempfile.TemporaryDirectory(prefix="patch_video_") as tmp:
-            segments: list[str] = []
-            if intro_audio:
-                intro_path = str(Path(tmp) / "intro.mp4")
-                video_gen.generate_segment(
-                    raw_bg, intro_audio, intro_path, image_type="none",
-                    resolution=resolution, fps=fps, codec=video_config["codec"],
-                    quality=video_config["quality"], audio_bitrate=video_config["audio_bitrate"],
-                )
-                segments.append(intro_path)
-            main_path = str(Path(tmp) / "main.mp4")
-            _render_main(main_path)
-            segments.append(main_path)
-            if outro_audio:
-                outro_path = str(Path(tmp) / "outro.mp4")
-                video_gen.generate_segment(
-                    raw_bg, outro_audio, outro_path, image_type="none",
-                    resolution=resolution, fps=fps, codec=video_config["codec"],
-                    quality=video_config["quality"], audio_bitrate=video_config["audio_bitrate"],
-                )
-                segments.append(outro_path)
-            video_gen.concat_segments(segments, target)
-
-    try:
-        await asyncio.to_thread(
-            publish_validated_video, out_path, _render, validator=validate_video,
-        )
-    except Exception as exc:
-        if _wants_json(request, ajax):
-            return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    video_path = Path(out_path)
+    dedupe_key = f"patch_video:patch={patch_id}"
     with locked_conn(request) as conn:
-        video_db_id = _register_patch_video(conn, book, patch, video_path)
-
-    youtube_status: dict | None = None
-    if upload_youtube:
-        with locked_conn(request) as conn:
-            from app.patch_publishing import seed_patch_video
-            seed_patch_video(conn, patch_id, video_db_id, str(video_path))
-        youtube_status = await asyncio.to_thread(_run_publish_stage, request, patch_id)
-
+        existing = store.find_live_by_dedupe(conn, dedupe_key)
+        job_id = existing.id if existing else store.enqueue(
+            conn, "patch_video",
+            payload={"patch_id": patch_id, "upload_youtube": upload_youtube, "privacy": privacy},
+            book_id=book_id, dedupe_key=dedupe_key,
+        )
+    if job_id is None:
+        raise HTTPException(status_code=500, detail="Could not enqueue patch video")
     if _wants_json(request, ajax):
         return JSONResponse({
-            "status": "done",
-            "video_url": f"/books/{book_id}/patches/{patch_id}/video?v={int(time.time())}",
-            "youtube": youtube_status,
-        })
+            "status": "queued", "job_id": job_id,
+            "deduplicated": existing is not None,
+        }, status_code=202)
     return RedirectResponse(url=f"/books/{book_id}/patches/build", status_code=303)
 
 

@@ -568,6 +568,7 @@
                     data-updated="{{ patch.updated_at }}"
                     data-youtube="{% if youtube_configured %}1{% else %}0{% endif %}">
                     <span class="pv-pipeline-state"></span>
+                    <div class="pv-job-state" hidden></div>
                     {# An already-rendered MP4 stays playable/deletable even when the audio
                        is gone (failed or reset patch), so the wrap is not gated on audio
                        alone - only on there being nothing at all to show. #}
@@ -684,6 +685,11 @@
 .pv-yt-state { font-size:var(--font-size-xs); }
 .pv-yt-state.ok { color:var(--color-success, #16a34a); }
 .pv-yt-state.err { color:var(--color-error, #dc2626); }
+.pv-job-state { display:grid; gap:4px; min-width:180px; font-size:var(--font-size-xs); }
+.pv-job-state[hidden] { display:none; }
+.pv-job-state progress { width:100%; }
+.pv-job-state pre { max-width:360px; max-height:180px; overflow:auto; white-space:pre-wrap; margin:4px 0 0; padding:6px; background:var(--bg-primary); border:1px solid var(--border-color); }
+.pv-job-error { color:var(--color-error, #dc2626); }
 
 /* Workflow navigation and selected-patch action groups */
 .book-tools { position:relative; }
@@ -2209,6 +2215,96 @@ function initVideoCells() {
     });
 }
 
+const TERMINAL_VIDEO_JOBS = new Set(['done', 'failed', 'cancelled']);
+
+function renderPatchVideoJob(job, cell) {
+    const jobId = job.id;
+    const state = cell.querySelector('.pv-job-state');
+    const wrap = cell.querySelector('.pv-wrap');
+    if (!state) return;
+    state.hidden = false;
+    if (wrap) wrap.hidden = !TERMINAL_VIDEO_JOBS.has(job.status);
+    state.replaceChildren();
+    const label = document.createElement('span');
+    label.textContent = `${job.status}${job.phase ? ' / ' + job.phase : ''}`;
+    state.appendChild(label);
+    if (job.progress_total) {
+        const progress = document.createElement('progress');
+        progress.max = job.progress_total; progress.value = job.progress_current || 0;
+        state.appendChild(progress);
+    }
+    if (job.error_message) {
+        const error = document.createElement('span'); error.className = 'pv-job-error';
+        error.textContent = job.error_message; state.appendChild(error);
+    }
+    const details = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = 'Log';
+    const pre = document.createElement('pre'); pre.textContent = 'Đang tải log…';
+    details.append(summary, pre); state.appendChild(details);
+    details.addEventListener('toggle', async () => {
+        if (!details.open) return;
+        try { const res = await fetch(`/queue/jobs/${jobId}/log`); pre.textContent = res.ok ? await res.text() : `HTTP ${res.status}`; }
+        catch (e) { pre.textContent = e.message || String(e); }
+    }, { once: true });
+    if (job.status === 'failed' || job.status === 'cancelled') {
+        const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn-outline btn-sm'; retry.textContent = 'Thử lại';
+        retry.onclick = async () => {
+            const res = await fetch(`/queue/jobs/${jobId}/retry`, { method: 'POST' });
+            if (!res.ok) return showToast('Không thể thử lại job video.', 'error');
+            monitorPatchVideoJob(jobId, cell);
+        };
+        state.appendChild(retry);
+    }
+    if (job.status === 'done') {
+        cell.dataset.hasVideo = '1'; cell.dataset.updated = String(Date.now());
+        state.hidden = true; if (wrap) wrap.hidden = false; buildVideoCell(cell);
+    }
+}
+
+function monitorPatchVideoJob(jobId, cell) {
+    cell.dataset.jobId = String(jobId);
+    let polling = false;
+    const poll = async () => {
+        if (polling || cell.dataset.jobId !== String(jobId)) return;
+        polling = true;
+        try {
+            const res = await fetch(`/queue/jobs/${jobId}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const job = await res.json(); renderPatchVideoJob(job, cell);
+            if (!TERMINAL_VIDEO_JOBS.has(job.status)) setTimeout(poll, 2000);
+        } catch (_) { setTimeout(poll, 3000); }
+        finally { polling = false; }
+    };
+    const stream = new EventSource(`/queue/jobs/${jobId}/stream`);
+    stream.onmessage = (event) => {
+        let data; try { data = JSON.parse(event.data); } catch (_) { return; }
+        if (data.type === 'progress') {
+            renderPatchVideoJob(data, cell);
+            if (TERMINAL_VIDEO_JOBS.has(data.status)) stream.close();
+        }
+    };
+    stream.onerror = () => { stream.close(); poll(); };
+}
+
+async function restorePatchVideoJobs() {
+    try {
+        const res = await fetch(`/queue/jobs?type=patch_video&book_id=${BOOK_ID}`);
+        if (!res.ok) return;
+        const newest = new Map();
+        for (const job of (await res.json()).jobs) {
+            const pid = Number(job.payload && job.payload.patch_id);
+            if (pid && !newest.has(pid)) newest.set(pid, job);
+        }
+        for (const [pid, job] of newest) {
+            const cell = document.getElementById('patch-video-' + pid);
+            if (cell && (job.status === 'pending' || job.status === 'running' || job.status === 'cancelling' || job.status === 'failed')) {
+                renderPatchVideoJob(job, cell);
+                if (!TERMINAL_VIDEO_JOBS.has(job.status)) monitorPatchVideoJob(job.id, cell);
+            }
+        }
+    } catch (_) {}
+}
+
 // ---- Per-row actions -------------------------------------------------
 async function genPatchVideo(pid, cell, opts = {}) {
     const uploadYoutube = opts.uploadYoutube || false;
@@ -2224,17 +2320,11 @@ async function genPatchVideo(pid, cell, opts = {}) {
         if (privacy) fd.set('privacy', privacy);
         const res = await fetch(`/books/${BOOK_ID}/patches/${pid}/generate-video?ajax=1`, { method: 'POST', body: fd });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.status === 'error') throw new Error(data.detail || `HTTP ${res.status}`);
-        cell.dataset.hasVideo = '1';
-        cell.dataset.updated = String(Date.now());
-        buildVideoCell(cell);
-        let msg = `Đã tạo video: ${cell.dataset.patchName}`;
-        if (data.youtube) {
-            if (data.youtube.queued) msg += ' · đã xếp hàng YouTube';
-            else if (data.youtube.reason && data.youtube.reason !== 'not_configured') msg += ` · ${ytReason(data.youtube.reason)}`;
-        }
+        if (!res.ok || data.status !== 'queued') throw new Error(data.detail || `HTTP ${res.status}`);
+        monitorPatchVideoJob(data.job_id, cell);
+        let msg = data.deduplicated ? `Video đã ở trong queue: ${cell.dataset.patchName}` : `Đã xếp hàng video: ${cell.dataset.patchName}`;
         showToast(msg);
-        return true;
+        return data.deduplicated ? 'deduplicated' : 'queued';
     } catch (e) {
         wrap.innerHTML = prev;
         showToast('Tạo video lỗi: ' + (e.message || e), 'error');
@@ -2491,7 +2581,7 @@ async function genSelectedVideos() {
     const privacy = getBatchPrivacy();
     const orig = btn.textContent;
     btn.disabled = true;
-    let done = 0, errors = 0, started = 0;
+    let queued = 0, deduplicated = 0, errors = 0, started = 0;
     const CONCURRENCY = Math.min(2, ids.length);
     let cursor = 0;
     async function worker() {
@@ -2500,12 +2590,12 @@ async function genSelectedVideos() {
             const cell = document.getElementById('patch-video-' + pid);
             started++;
             btn.textContent = `Tạo video ${started}/${ids.length}…`;
-            const ok = await genPatchVideo(pid, cell, { uploadYoutube, privacy });
-            if (ok) done++; else errors++;
+            const result = await genPatchVideo(pid, cell, { uploadYoutube, privacy });
+            if (result === 'queued') queued++; else if (result === 'deduplicated') deduplicated++; else errors++;
         }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-    btn.textContent = `${done} xong${errors ? ', ' + errors + ' lỗi' : ''}`;
+    btn.textContent = `${queued} đã queue${deduplicated ? ', ' + deduplicated + ' đã có' : ''}${errors ? ', ' + errors + ' lỗi' : ''}`;
     btn.disabled = false;
     setTimeout(() => { btn.textContent = orig; }, 4000);
 }
@@ -2623,6 +2713,7 @@ async function genSelectedImages() {
         finally { btn.disabled = false; btn.textContent = orig; }
     });
     initVideoCells();
+    restorePatchVideoJobs();
 
 })();
 </script>

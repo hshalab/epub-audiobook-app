@@ -135,3 +135,13 @@ def test_video_creator_reveals_generate_config_after_audio_upload():
     script = Path("app/static/video_creator.js").read_text(encoding="utf-8")
     assert "step-table').classList.remove('hidden')" in script
     assert "step-results').classList.remove('hidden')" in script
+
+
+def test_book_detail_observes_patch_video_jobs_inline():
+    template = Path("app/templates/book_detail.html").read_text(encoding="utf-8")
+    assert 'class="pv-job-state"' in template
+    assert "new EventSource(`/queue/jobs/${jobId}/stream`)" in template
+    assert "`/queue/jobs/${jobId}/log`" in template
+    assert "`/queue/jobs/${jobId}/retry`" in template
+    assert "`/queue/jobs?type=patch_video&book_id=${BOOK_ID}`" in template
+    assert "data.status !== 'queued'" in template

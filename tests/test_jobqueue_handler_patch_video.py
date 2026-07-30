@@ -3,11 +3,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app import db, youtube
+from app.config import settings
 from app.jobqueue import store
 from app.jobqueue.context import JobContext
 from app.jobqueue.handlers import patch_video
 from app.jobqueue.joblog import JobLogger
 from app.video_integrity import ValidationFacts, ValidationResult
+
+
+def test_manual_patch_job_renders_without_pipeline(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "manual.db")); db.init_schema(conn)
+    now = datetime.now(timezone.utc).isoformat(); audio = tmp_path / "a.wav"; audio.write_bytes(b"a")
+    image = tmp_path / "bg.jpg"; image.write_bytes(b"i")
+    monkeypatch.setattr(settings, "data_root", str(tmp_path)); monkeypatch.setattr(settings, "default_background_image", str(image))
+    conn.execute("INSERT INTO book (id,title,original_filename,epub_path,patch_size,status,video_resolution,video_fps,created_at,updated_at) VALUES (1,'B','b','b',1,'done','1280x720',24,?,?)", (now, now))
+    conn.execute("INSERT INTO patch (id,book_id,patch_index,chapter_start,chapter_end,status,audio_path,created_at,updated_at) VALUES (2,1,0,0,0,'done',?,?,?)", (str(audio), now, now)); conn.commit()
+    seen = {}
+    monkeypatch.setattr(patch_video.image_overlay, "ensure_patch_overlay", lambda *a, **k: str(image))
+    monkeypatch.setattr(patch_video.video_gen, "generate_segment", lambda a,b,out,**kw: (seen.update(a=a,b=b,out=out,kw=kw), Path(out).write_bytes(b"new")))
+    monkeypatch.setattr(patch_video, "validate_video", lambda p: ValidationResult(True,None,"",(),ValidationFacts(),0))
+    job_id = store.enqueue(conn, "patch_video", payload={"patch_id": 2}, book_id=1); job = store.claim(conn, "patch_video", "w")
+    result = patch_video.handle(JobContext(job, conn, JobLogger(job_id, "patch_video"), lambda: False))
+    output = tmp_path / "books" / "1" / "patch_videos" / "2.mp4"
+    assert result["output_path"] == str(output)
+    assert output.read_bytes() == b"new"
+    assert seen["out"] != str(output)
+    assert seen["kw"]["resolution"] == (1280, 720)
+    assert conn.execute("SELECT patch_id FROM videos WHERE file_path=?", (str(output),)).fetchone()[0] == 2
+    assert conn.execute("SELECT phase FROM job WHERE id=?", (job_id,)).fetchone()[0] == "done"
 
 
 def test_patch_recovery_renders_atomically_and_resumes_upload(tmp_path, monkeypatch):
