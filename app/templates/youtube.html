@@ -133,7 +133,11 @@
                 <td style="text-align:center"><input type="checkbox" class="yt-upload-checkbox" value="{{ u.id }}"></td>
                 <td>{{ u.title or '(no title)' }}</td>
                 <td id="yt-status-{{ u.id }}">
-                    {% if u.status == 'done' %}
+                    {% if u.validation_status == 'validating' %}
+                        <span class="yt-status-uploading">validating</span>
+                    {% elif u.validation_status == 'waiting_for_rerender' %}
+                        <span class="yt-status-pending">rerendering {{ u.integrity_retry_count }}/2</span>
+                    {% elif u.status == 'done' %}
                         <span class="yt-status-done">Done</span>
                     {% elif u.status == 'uploading' %}
                         <span class="yt-status-uploading">Uploading</span>
@@ -181,6 +185,9 @@
             </tr>
             {% if u.error_message %}
             <tr class="yt-error-row"><td colspan="8" class="yt-error-msg">{{ u.error_message }}</td></tr>
+            {% endif %}
+            {% if u.validation_status == 'failed' and u.validation_error_code %}
+            <tr class="yt-error-row"><td colspan="8" class="yt-error-msg">validation failed: {{ u.validation_error_code }} - {{ u.validation_error_message }}</td></tr>
             {% endif %}
         {% endfor %}
         </tbody>

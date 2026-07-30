@@ -10,6 +10,14 @@ import pytest
 from app import db, youtube
 
 
+def test_youtube_template_contains_integrity_recovery_states():
+    template = (Path(__file__).parents[1] / "app" / "templates" / "youtube.html").read_text("utf-8")
+    assert "validating" in template
+    assert "rerendering {{ u.integrity_retry_count }}/2" in template
+    assert "validation failed:" in template
+    assert "validation_error_code" in template
+
+
 def test_set_thumbnail_compresses_images_over_youtube_limit(tmp_path, monkeypatch):
     from PIL import Image
 
