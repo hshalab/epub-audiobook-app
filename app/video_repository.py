@@ -27,17 +27,19 @@ def insert_video(
     description: str = "",
     tags: str = "",
     privacy: str = "private",
+    render_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = _now_iso()
     cur = conn.execute(
         """INSERT INTO videos
            (filename, original_name, title, description, tags, privacy,
             file_path, file_size_bytes, resolution, batch_id, source_audio,
-            background_path, upload_status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local_only', ?, ?)""",
+             background_path, render_config_json, upload_status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local_only', ?, ?)""",
         (filename, original_name, title, description, tags, privacy,
          file_path, file_size_bytes, resolution, batch_id, source_audio,
-         background_path, now, now),
+         background_path, json.dumps(render_config, sort_keys=True) if render_config is not None else None,
+         now, now),
     )
     conn.commit()
     return get_video(conn, cur.lastrowid)
@@ -171,7 +173,8 @@ def update_video(
     **fields: Any,
 ) -> dict[str, Any] | None:
     allowed = {"title", "description", "tags", "privacy", "upload_status",
-               "youtube_video_id", "youtube_upload_id", "error_message", "duration_sec"}
+               "youtube_video_id", "youtube_upload_id", "error_message", "duration_sec",
+               "file_path", "source_audio", "background_path", "render_config_json"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return get_video(conn, video_id)

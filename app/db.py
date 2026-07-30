@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS videos (
     batch_id TEXT,
     source_audio TEXT,
     background_path TEXT,
+    render_config_json TEXT,
     upload_status TEXT DEFAULT 'local_only',
     youtube_video_id TEXT,
     youtube_upload_id INTEGER,
@@ -196,6 +197,13 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     tags            TEXT,
     privacy_status  TEXT NOT NULL DEFAULT 'private',
     status          TEXT NOT NULL DEFAULT 'pending',
+    validation_status TEXT NOT NULL DEFAULT 'pending',
+    validation_error_code TEXT,
+    validation_error_message TEXT,
+    validated_at TEXT,
+    integrity_retry_count INTEGER NOT NULL DEFAULT 0,
+    render_source_type TEXT NOT NULL DEFAULT 'external',
+    render_source_id INTEGER,
     error_message   TEXT,
     uploaded_at     TEXT,
     created_at      TEXT NOT NULL
@@ -537,6 +545,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "metadata_snapshot": "TEXT",
         "retry_count": "INTEGER NOT NULL DEFAULT 0",
         "next_retry_at": "TEXT",
+        "validation_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "validation_error_code": "TEXT",
+        "validation_error_message": "TEXT",
+        "validated_at": "TEXT",
+        "integrity_retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "render_source_type": "TEXT NOT NULL DEFAULT 'external'",
+        "render_source_id": "INTEGER",
     }
     for name, definition in upload_columns.items():
         if name not in uploads_existing:
@@ -546,6 +561,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE videos ADD COLUMN book_id INTEGER REFERENCES book(id) ON DELETE SET NULL")
     if "patch_id" not in videos_existing:
         conn.execute("ALTER TABLE videos ADD COLUMN patch_id INTEGER REFERENCES patch(id) ON DELETE SET NULL")
+    if "render_config_json" not in videos_existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN render_config_json TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_patch_id ON videos(patch_id) WHERE patch_id IS NOT NULL")
     _backfill_patch_video_links(conn)
     sync_target_existing = {row["name"] for row in conn.execute("PRAGMA table_info(drive_sync_target)")}

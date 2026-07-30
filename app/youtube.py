@@ -381,11 +381,16 @@ def enqueue_upload(
     privacy_status: str | None = None,
     video_id: int | None = None,
     playlist_id: str = "",
+    *,
+    render_source_type: str = "external",
+    render_source_id: int | None = None,
 ) -> int:
     """Create a pending youtube_uploads record. Returns upload_id.
 
     The actual upload is done by the caller (worker or route).
     """
+    if render_source_type not in {"book", "patch", "standalone", "external"}:
+        raise ValueError("invalid render_source_type")
     if privacy_status is None:
         privacy_status = settings.youtube_default_privacy
     metadata_snapshot = json.dumps({"automation": {"youtube": {
@@ -394,12 +399,38 @@ def enqueue_upload(
     now = _now_iso()
     cursor = conn.execute(
         """INSERT INTO youtube_uploads
-           (video_id, video_path, title, description, tags, privacy_status, status, metadata_snapshot, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-        (video_id, video_path, title, description, json.dumps(tags or []), privacy_status, metadata_snapshot, now),
+           (video_id, video_path, title, description, tags, privacy_status, status,
+            metadata_snapshot, render_source_type, render_source_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+        (video_id, video_path, title, description, json.dumps(tags or []), privacy_status,
+         metadata_snapshot, render_source_type, render_source_id, now),
     )
     conn.commit()
     return cursor.lastrowid
+
+
+def mark_validation_started(conn: sqlite3.Connection, upload_id: int) -> None:
+    conn.execute(
+        "UPDATE youtube_uploads SET validation_status='validating', validation_error_code=NULL, validation_error_message=NULL WHERE id=?",
+        (upload_id,),
+    )
+    conn.commit()
+
+
+def mark_validation_valid(conn: sqlite3.Connection, upload_id: int) -> None:
+    conn.execute(
+        "UPDATE youtube_uploads SET validation_status='valid', validation_error_code=NULL, validation_error_message=NULL, validated_at=? WHERE id=?",
+        (_now_iso(), upload_id),
+    )
+    conn.commit()
+
+
+def mark_validation_failed(conn: sqlite3.Connection, upload_id: int, code: str, message: str) -> None:
+    conn.execute(
+        "UPDATE youtube_uploads SET validation_status='failed', validation_error_code=?, validation_error_message=?, validated_at=? WHERE id=?",
+        (code, message[-2000:], _now_iso(), upload_id),
+    )
+    conn.commit()
 
 
 def list_uploads(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
