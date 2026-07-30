@@ -71,6 +71,12 @@ def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
     enqueue_pending_patch_jobs for why voxcpm_tts is excluded."""
     counts = {"video": 0, "youtube_upload": 0}
 
+    conn.execute(
+        """UPDATE youtube_uploads SET validation_status='pending'
+           WHERE status='pending' AND validation_status='validating'"""
+    )
+    conn.commit()
+
     for row in conn.execute(
         "SELECT id, book_id FROM book_job WHERE status='pending' AND job_type='video' ORDER BY id"
     ).fetchall():
@@ -93,5 +99,24 @@ def backfill_pending_jobs(conn: sqlite3.Connection) -> dict[str, int]:
             dedupe_key=f"youtube_upload:upload={row['id']}",
         ) is not None:
             counts["youtube_upload"] += 1
+
+    for row in conn.execute(
+        """SELECT id, render_source_type, render_source_id, integrity_retry_count
+           FROM youtube_uploads WHERE validation_status='waiting_for_rerender'
+           ORDER BY id"""
+    ).fetchall():
+        source_type, source_id = row["render_source_type"], row["render_source_id"]
+        if source_type == "book":
+            job_type, payload = "video", {"book_job_id": source_id, "recovery_upload_id": row["id"]}
+        elif source_type == "patch":
+            job_type, payload = "patch_video", {"patch_id": source_id, "recovery_upload_id": row["id"]}
+        elif source_type == "standalone":
+            job_type, payload = "standalone_video", {"video_id": source_id, "recovery_upload_id": row["id"]}
+        else:
+            continue
+        store.enqueue(
+            conn, job_type, payload=payload,
+            dedupe_key=f"{job_type}:source={source_id}:integrity_retry={row['integrity_retry_count']}",
+        )
 
     return counts

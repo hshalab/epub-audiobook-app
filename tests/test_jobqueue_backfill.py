@@ -94,6 +94,24 @@ def test_pending_uploads_become_youtube_jobs(tmp_path):
     assert store.list_jobs(conn, job_type="youtube_upload")[0].payload["upload_id"] == cur.lastrowid
 
 
+def test_interrupted_validation_returns_to_pending_without_resetting_count(tmp_path):
+    conn = _conn(tmp_path); now = datetime.now(timezone.utc).isoformat()
+    upload_id = conn.execute("INSERT INTO youtube_uploads (video_path,status,validation_status,integrity_retry_count,created_at) VALUES ('v','pending','validating',1,?)", (now,)).lastrowid; conn.commit()
+    backfill_pending_jobs(conn)
+    row = conn.execute("SELECT validation_status,integrity_retry_count FROM youtube_uploads WHERE id=?", (upload_id,)).fetchone()
+    assert tuple(row) == ("pending", 1)
+
+
+def test_waiting_patch_rerender_is_restored_by_generation(tmp_path):
+    conn = _conn(tmp_path); now = datetime.now(timezone.utc).isoformat()
+    upload_id = conn.execute("INSERT INTO youtube_uploads (video_path,status,validation_status,integrity_retry_count,render_source_type,render_source_id,created_at) VALUES ('v','waiting_for_rerender','waiting_for_rerender',2,'patch',9,?)", (now,)).lastrowid; conn.commit()
+    backfill_pending_jobs(conn); backfill_pending_jobs(conn)
+    jobs = store.list_jobs(conn, job_type="patch_video")
+    assert len(jobs) == 1
+    assert jobs[0].payload == {"patch_id": 9, "recovery_upload_id": upload_id}
+    assert jobs[0].dedupe_key.endswith("integrity_retry=2")
+
+
 def test_running_it_twice_creates_nothing_new(tmp_path):
     conn = _conn(tmp_path)
     _patch(conn)
