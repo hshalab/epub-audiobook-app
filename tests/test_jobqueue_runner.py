@@ -151,3 +151,15 @@ async def test_pool_status_reports_capacity_and_pending(factory):
     q = JobQueue(factory, concurrency={"demo": 3}); q.register("demo", lambda ctx: {})
     status = q.pool_status()[0]
     assert status["capacity"] == 3 and status["running"] == 0 and status["pending"] == 2
+
+
+@pytest.mark.asyncio
+async def test_runner_supplies_connection_factory_for_keep_alive(factory):
+    conn = factory(); job_id = store.enqueue(conn, "demo"); seen = {}
+    def fn(ctx):
+        seen["factory"] = ctx._conn_factory
+        return {}
+    q = queue(factory); q.register("demo", fn)
+    await q.start(); await drain(conn); await q.stop(5)
+    assert store.get(conn, job_id).status == "done"
+    assert seen["factory"] is factory

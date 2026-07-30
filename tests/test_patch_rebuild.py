@@ -65,6 +65,35 @@ def test_rebuild_out_of_bounds_rejected(conn):
         repository.rebuild_patches(conn, book_id, [(0, 5)])
 
 
+def test_delete_patch_keeps_remaining_indexes_stable(conn):
+    """Deleting a patch must not shift the numbers of the surviving patches:
+    patch_index drives the YouTube episode number and the export filenames, so
+    renumbering would silently relabel already-published episodes."""
+    book_id = _seed_book(conn, 12)
+    patches = repository.rebuild_patches(conn, book_id, [(0, 2), (3, 5), (6, 8), (9, 11)])
+    assert [p.patch_index for p in patches] == [0, 1, 2, 3]
+
+    assert repository.delete_patch(conn, patches[1].id) is True
+
+    remaining = repository.list_patches(conn, book_id)
+    assert [(p.id, p.patch_index) for p in remaining] == [
+        (patches[0].id, 0),
+        (patches[2].id, 2),
+        (patches[3].id, 3),
+    ]
+
+
+def test_rebuild_after_delete_renumbers_from_zero(conn):
+    """A full rebuild replaces the plan outright, so it restarts at 0 even
+    though a previous delete left a gap behind."""
+    book_id = _seed_book(conn, 12)
+    patches = repository.rebuild_patches(conn, book_id, [(0, 2), (3, 5), (6, 8)])
+    repository.delete_patch(conn, patches[0].id)
+
+    rebuilt = repository.rebuild_patches(conn, book_id, [(0, 5), (6, 11)])
+    assert [p.patch_index for p in rebuilt] == [0, 1]
+
+
 def test_build_patch_text_skips_excluded(conn):
     book_id = _seed_book(conn, 5)
     repository.set_chapter_excluded(conn, book_id, 2, True)

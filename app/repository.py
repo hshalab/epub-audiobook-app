@@ -402,8 +402,13 @@ def reset_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
 
 
 def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
-    """Delete a single patch, clean up its files, and renumber remaining patches.
-    Refuses if the patch is currently 'processing'."""
+    """Delete a single patch and clean up its files.
+    Refuses if the patch is currently 'processing'.
+
+    The surviving patches keep their patch_index, leaving a gap: the index is the
+    episode number in the YouTube metadata and in the export filenames, so
+    renumbering would relabel episodes that are already rendered or published.
+    A full rebuild_patches() call is what renumbers from 0."""
     patch = get_patch(conn, patch_id)
     if patch is None or patch.status == "processing":
         return False
@@ -422,16 +427,6 @@ def delete_patch(conn: sqlite3.Connection, patch_id: int) -> bool:
     _delete_chunk_dir(book_id, patch_id)
 
     conn.execute("DELETE FROM patch WHERE id = ?", (patch_id,))
-
-    remaining = conn.execute(
-        "SELECT id FROM patch WHERE book_id = ? ORDER BY patch_index",
-        (book_id,),
-    ).fetchall()
-    for new_idx, row in enumerate(remaining):
-        conn.execute(
-            "UPDATE patch SET patch_index = ?, updated_at = ? WHERE id = ?",
-            (new_idx, _now(), row["id"]),
-        )
 
     conn.execute(
         """UPDATE book SET final_audio_path = NULL, final_video_path = NULL,

@@ -7,6 +7,17 @@ import numpy as np
 from app.chunker import split_into_tts_chunks
 
 
+def _seed_rng(seed: int) -> None:
+    """Make sampling reproducible.
+
+    VoxCPM 2.x dropped the per-call `seed` argument from generate() - passing it raises
+    TypeError - so the seed has to go onto torch's global RNG right before each call.
+    Safe because the worker keeps synthesis strictly sequential."""
+    import torch  # heavy import, deferred until first real use
+
+    torch.manual_seed(seed)
+
+
 class VoxCPMEngine:
     def __init__(
         self,
@@ -50,11 +61,11 @@ class VoxCPMEngine:
                 # reference_wav_path alone.
                 kwargs["prompt_wav_path"] = reference_wav_path
                 kwargs["prompt_text"] = prompt_text
+        _seed_rng(self.seed)
         return self._model.generate(
             text=text,
             cfg_value=self.cfg_value,
             inference_timesteps=self.inference_timesteps,
-            seed=self.seed,
             **kwargs,
         )
 

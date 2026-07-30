@@ -30,14 +30,16 @@ def handle(ctx) -> dict:
     if not patch.audio_path or not Path(patch.audio_path).is_file():
         raise JobFatalError(f"source_unavailable: audio missing: {patch.audio_path}")
     ctx.progress(0, 6, phase="preparing")
-    output = (pipeline["video_path"] if pipeline else None) or str(
+    recovery_upload_id = ctx.job.payload.get("recovery_upload_id")
+    recovery_pipeline = pipeline if recovery_upload_id is not None else None
+    output = (recovery_pipeline["video_path"] if recovery_pipeline else None) or str(
         Path(settings.data_root) / "books" / str(book.id) / "patch_videos" / f"{patch_id}.mp4"
     )
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    media = json.loads(pipeline["media_snapshot"] or "{}") if pipeline else {}
+    media = json.loads(recovery_pipeline["media_snapshot"] or "{}") if recovery_pipeline else {}
     render_config = media.get("render_config")
-    if pipeline:
-        image = pipeline["thumbnail_path"]
+    if recovery_pipeline:
+        image = recovery_pipeline["thumbnail_path"]
         if not image or not Path(image).is_file():
             raise JobFatalError(f"source_unavailable: thumbnail missing: {image}")
         if render_config is not None and not isinstance(render_config, dict):
@@ -52,12 +54,13 @@ def handle(ctx) -> dict:
                 raise JobFatalError(f"source_unavailable: {key} missing: {value}")
         ctx.progress(1, 6, phase="overlay")
         ctx.progress(2, 6, phase="encoding")
-        publish_validated_video(
-            output,
-            lambda temp: video_gen.generate_standalone_video(
-                patch.audio_path, image, temp, **render_config),
-            validator=validate_video,
-        )
+        with ctx.keep_alive():
+            publish_validated_video(
+                output,
+                lambda temp: video_gen.generate_standalone_video(
+                    patch.audio_path, image, temp, **render_config),
+                validator=validate_video,
+            )
     else:
         config = get_book_video_config(ctx.conn, book)
         fallback = video_gen.resolve_patch_image(patch, book, settings.default_background_image)
@@ -131,19 +134,19 @@ def handle(ctx) -> dict:
 
         ctx.log(f"render patch {patch_id}: audio={patch.audio_path} background={raw_bg}")
         ctx.progress(2, 6, phase="encoding")
-        publish_validated_video(output, render, validator=validate_video)
+        with ctx.keep_alive():
+            publish_validated_video(output, render, validator=validate_video)
 
     ctx.progress(4, 6, phase="registering")
     video = upsert_patch_video(ctx.conn, book_id=book.id, patch_id=patch_id,
                                file_path=output, resolution=book.video_resolution)
-    if pipeline:
+    if recovery_pipeline:
         ctx.conn.execute(
             """UPDATE patch_pipeline SET stage='upload', video_status='done', video_path=?,
                video_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE patch_id=?""",
             (output, video["id"], patch_id),
         )
     ctx.conn.commit()
-    recovery_upload_id = ctx.job.payload.get("recovery_upload_id")
     youtube_status = None
     if recovery_upload_id is not None:
         resume_upload_after_render(ctx.conn, recovery_upload_id)

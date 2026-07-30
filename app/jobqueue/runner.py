@@ -139,7 +139,10 @@ class JobQueue:
     def _execute(self, spec, job, tracker):
         conn = self._conn_factory()
         logger = JobLogger(job.id, job.job_type)
-        ctx = JobContext(job, conn, logger, lambda: self._cancelled(conn, job.id))
+        ctx = JobContext(
+            job, conn, logger, lambda: self._cancelled(conn, job.id),
+            conn_factory=self._conn_factory,
+        )
         original_write = ctx._write
         def tracked_write(now):
             original_write(now)

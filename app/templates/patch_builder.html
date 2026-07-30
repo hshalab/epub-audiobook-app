@@ -104,7 +104,7 @@
                             <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                         </form>
                         <form action="/books/{{ book.id }}/patches/{{ p.id }}/delete" method="post" style="display:inline"
-                              onsubmit="return confirm('Delete this patch? Patches will be renumbered.')">
+                              onsubmit="return confirm('Delete this patch? The remaining patches keep their numbers.')">
                             <button type="submit" class="btn-danger btn-sm">Delete</button>
                         </form>
                         {% endif %}

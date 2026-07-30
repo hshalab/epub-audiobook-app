@@ -587,7 +587,7 @@
                         <button type="submit" class="btn-outline btn-sm">Regenerate</button>
                     </form>
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
-                          data-confirm="Xóa patch này? Các patch còn lại sẽ được đánh số lại.">
+                          data-confirm="Xóa patch này? Các patch còn lại vẫn giữ nguyên số thứ tự.">
                         <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
                     {% endif %}
