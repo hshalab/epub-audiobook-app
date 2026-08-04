@@ -6,7 +6,8 @@ Upload `.epub` files, automatically split into chapters and patches, synthesize 
 
 - **EPUB Parsing** — Extract chapters from EPUB files with smart chapter detection
 - **Patch System** — Split books into manageable patches for processing
-- **TTS Synthesis** — VoxCPM2-based text-to-speech with per-chunk WAV output
+- **TTS Synthesis** — Unified VoxCPM2, OmniVoice, VieNeu fast, Edge TTS, and gTTS generation
+- **Batch Colab/Kaggle Export** — Export one or more selected patches through the shared batch notebook
 - **Audio Merge** — Combine patches into full audiobook files
 - **Video Generation** — Create videos with custom backgrounds per patch/chapter
 - **YouTube Upload** — Auto-upload generated videos to YouTube
@@ -95,6 +96,26 @@ ffprobe -version
 ```
 
 Open http://localhost:8000
+
+### Batch Export To Colab/Kaggle
+
+Remote TTS export uses only the batch workflow:
+
+1. Open a book and go to its **Patches** table.
+2. Select one or more patches. To process only one patch, select that patch alone.
+3. Click **Export** and choose the TTS model, voice/language, chunk size, and effects.
+4. Download the batch ZIP, export it to a Drive Desktop target, or upload it through the Drive API for Kaggle.
+5. Run `colab_kaggle_batch_tts_template.ipynb` from the package.
+6. Import the generated results back into the app.
+
+Every remote export contains `batch_manifest.json` and uses the same resumable batch pipeline, including a
+300 ms pause between chunks and chapter timeline output.
+
+A package is text plus the shared voice reference clip and nothing else: chunk text travels inside each
+patch's `manifest.json`, and background images and music stay in the app, which renders video from the
+imported WAV. Each extra patch therefore adds one small JSON file to the sync, not an image.
+
+See `docs/google-drive-accounts.md` for Drive Desktop, rclone, and Kaggle account setup.
 
 ### Pages
 

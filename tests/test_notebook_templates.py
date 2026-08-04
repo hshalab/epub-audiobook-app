@@ -299,6 +299,51 @@ def test_cell8_validator_requires_non_empty_text():
     assert validate([entry(0, text=123), entry(1)], chunks) is None
 
 
+def test_cell8_normalize_chunk_manifest_rebuilds_derivable_fields():
+    helpers = _cell8_helpers()
+    normalize = helpers["normalize_chunk_manifest"]
+
+    compact = {
+        "chunk_count": 3,
+        "chapter_titles": {"1": "One", "2": "Two"},
+        "chunk_metadata": [
+            {"chapter_index": 1, "is_chapter_start": True, "text": "a"},
+            {"chapter_index": 1, "is_chapter_start": False, "text": "b"},
+            {"chapter_index": 2, "is_chapter_start": True, "text": "c"},
+        ],
+    }
+    assert normalize(compact) is True
+    assert compact["chunks"] == ["chunk_000.txt", "chunk_001.txt", "chunk_002.txt"]
+    assert compact["expected_outputs"] == ["chunk_000.wav", "chunk_001.wav", "chunk_002.wav"]
+    assert compact["chunk_metadata"] == [
+        {"chapter_index": 1, "is_chapter_start": True, "text": "a", "filename": "chunk_000.txt", "chapter_title": "One"},
+        {"chapter_index": 1, "is_chapter_start": False, "text": "b", "filename": "chunk_001.txt", "chapter_title": "One"},
+        {"chapter_index": 2, "is_chapter_start": True, "text": "c", "filename": "chunk_002.txt", "chapter_title": "Two"},
+    ]
+
+    # Legacy manifests (derivable fields already present) pass through untouched.
+    legacy = {
+        "chunk_count": 1,
+        "chunks": ["chunk_000.txt"],
+        "expected_outputs": ["chunk_000.wav"],
+        "chunk_metadata": [
+            {"filename": "chunk_000.txt", "chapter_index": 1, "chapter_title": "One", "is_chapter_start": True, "text": "a"},
+        ],
+    }
+    before = json.dumps(legacy, sort_keys=True)
+    assert normalize(legacy) is True
+    assert json.dumps(legacy, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("manifest", [
+    {}, {"chunk_count": 0}, {"chunk_count": "3"}, {"chunk_count": True}, {"chunk_count": None},
+])
+def test_cell8_normalize_chunk_manifest_reports_unusable_manifests(manifest):
+    """A junk chunk_count must fail this one patch, not raise out of the batch loop -
+    every other bad-manifest case in Cell 8 is contained the same way."""
+    assert _cell8_helpers()["normalize_chunk_manifest"](manifest) is False
+
+
 def test_cell8_chunk_text_prefers_manifest_and_falls_back_to_txt(tmp_path):
     helpers = _cell8_helpers()
     chunk_text_for = helpers["chunk_text_for"]
@@ -386,6 +431,8 @@ def _fake_batch_inventory(patch_count=3, merged=0, chunks_per_patch=2):
             for i in range(patch_count)
         ],
     }
+    # Current packages ship neither music nor backgrounds; batches exported before
+    # that still have them on Drive, and the planner must keep ignoring them.
     remote = {"batch_manifest.json": "id", "reference.wav": "id", "music/bg.mp3": "id"}
     for i, entry in enumerate(manifest["patches"]):
         remote[f"{entry['folder']}/manifest.json"] = "id"
@@ -465,7 +512,7 @@ def _manifest_cell(template):
     """The code cell that loads the manifest and resolves the TTS model."""
     cells = _code_cells(template)
     for src in cells:
-        # single-patch: manifest.get("tts"); batch: batch_manifest.get("tts")
+        # Batch runtime reads the selected model from batch_manifest.get("tts").
         if "get(\"tts\")" in src or "get('tts')" in src:
             return src
     raise AssertionError(f"{template.name}: no manifest cell resolves the tts contract")

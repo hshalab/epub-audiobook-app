@@ -95,48 +95,34 @@ def _write_patch_files(
     patch: Patch,
     dest_dir: Path,
     reference_rel: str | None,
-    overlay_image_path: str | None = None,
     tts: dict | None = None,
     max_chars: int = 0,
 ) -> dict:
-    """Write manifest.json (with chunk text inlined) + background image for one patch into
-    dest_dir and return the manifest dict. overlay_image_path is the pre-rendered
-    background image (text already baked in by Pillow); falls back to raw background."""
+    """Write manifest.json (with chunk text inlined) for one patch into dest_dir and
+    return the manifest dict. The manifest is the only file a patch folder needs: the
+    notebook synthesizes audio from it, and video is rendered back in the app."""
     plan = repository.build_patch_chunk_plan(conn, patch, max_chars=max_chars or None)
     if not plan:
         raise ValueError(f"patch {patch.id} has no text to export")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    chunk_filenames = []
     chunk_metadata = []
-    for i, item in enumerate(plan):
-        # chunk_NNN.txt is a logical id only - the text itself travels in the manifest,
-        # so a whole patch is one file to download instead of one per chunk.
-        filename = f"chunk_{i:03d}.txt"
-        chunk_filenames.append(filename)
+    chapter_titles: dict[str, str] = {}
+    for item in plan:
+        # The text travels inside the manifest, so a whole patch is one file to
+        # download instead of one per chunk. Everything derivable stays out of it too:
+        # chunk_NNN names come from the position, and chapter_title is de-duplicated
+        # into chapter_titles - the notebook and the import code rebuild both.
+        if item["is_chapter_start"]:
+            chapter_titles.setdefault(str(item["chapter_index"]), item["chapter_title"])
         chunk_metadata.append(
             {
-                "filename": filename,
                 "chapter_index": item["chapter_index"],
-                "chapter_title": item["chapter_title"],
                 "is_chapter_start": item["is_chapter_start"],
                 "text": item["text"],
             }
         )
-
-    bg_filename: str | None = None
-    bg_source = overlay_image_path
-    if not bg_source and book.background_image_path and Path(book.background_image_path).exists():
-        bg_source = book.background_image_path
-    if not bg_source:
-        default = settings.default_background_image
-        if Path(default).exists():
-            bg_source = default
-    if bg_source:
-        ext = Path(bg_source).suffix.lower() or ".jpg"
-        bg_filename = f"background{ext}"
-        shutil.copyfile(bg_source, dest_dir / bg_filename)
 
     manifest = {
         "patch_id": patch.id,
@@ -147,50 +133,17 @@ def _write_patch_files(
         "chapter_end": patch.chapter_end,
         "max_chars": max_chars or patch.max_chars or settings.tts_max_chars,
         "chunk_count": len(plan),
-        "chunks": chunk_filenames,
+        "chapter_titles": chapter_titles,
         "chunk_metadata": chunk_metadata,
         "reference_wav": reference_rel,
         "reference_transcript": book.voice_transcript or None,
         "voxcpm_model_id": "openbmb/VoxCPM2",
         "tts": tts or {"model_id": "voxcpm2", "voice_id": None, "options": {}},
-        "expected_outputs": [f"chunk_{i:03d}.wav" for i in range(len(plan))],
-        "background_image": bg_filename,
     }
     (dest_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return manifest
-
-
-def package_chunk_count(package_dir: Path) -> int:
-    """Chunk count of a built single-patch package, read from its manifest.
-
-    Chunk texts no longer exist as separate files, so callers cannot count
-    chunk_NNN.txt to learn how big a package is."""
-    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-    return int(manifest["chunk_count"])
-
-
-def _copy_music_to_package(book: Book, conn: sqlite3.Connection, package_dir: Path) -> str | None:
-    """Copy the book's music file into package_dir/music/ and return the relative path,
-    or None if the book has no music assigned."""
-    if not book.music_id:
-        return None
-    music = repository.get_music(conn, book.music_id)
-    if music is None or not Path(music.file_path).exists():
-        return None
-    music_dir = package_dir / "music"
-    music_dir.mkdir(exist_ok=True)
-    dest_name = Path(music.file_path).name
-    shutil.copyfile(music.file_path, music_dir / dest_name)
-    return f"music/{dest_name}"
-
-
-def folder_name_for_patch(book_title: str, patch: Patch) -> str:
-    safe_title = _sanitize_name(book_title) or "book"
-    label = patch.name or str(patch.patch_index)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{safe_title} - patch {label} - {timestamp}"
 
 
 def folder_name_for_batch(book_title: str, patches: list[Patch]) -> str:
@@ -226,11 +179,10 @@ def build_batch_export_package(
     with_effects: bool = False,
 ) -> tuple[Path, dict]:
     """Write a multi-patch package: batch_manifest.json + the batch notebook at the
-    root, one shared voice reference clip, per-patch background images (overlays),
-    optional music, and per-patch subfolders under patches/.
+    root, one shared voice reference clip, and one manifest.json per patch under
+    patches/. Nothing else travels: background images and music are only ever used by
+    the app's own video rendering, so keeping them out keeps the Drive sync small.
     Returns (package_dir, batch_manifest); caller is responsible for deleting the directory."""
-    from app import image_overlay
-
     if not patches:
         raise ValueError("no patches to export")
     book_ids = {p.book_id for p in patches}
@@ -253,16 +205,12 @@ def build_batch_export_package(
         reference_wav_name = "reference" + voice_clip.suffix
         shutil.copyfile(voice_clip, package_dir / reference_wav_name)
 
-    music_rel = _copy_music_to_package(book, conn, package_dir)
-
-    font_path = settings.default_font_path or None
     patch_entries = []
     for patch in patches:
         folder_rel = f"patches/patch_{patch.patch_index:03d}"
         reference_rel = f"../../{reference_wav_name}" if reference_wav_name else None
-        overlay_path = image_overlay.ensure_patch_overlay(book, patch, font_path)
         manifest = _write_patch_files(
-            conn, book, patch, package_dir / folder_rel, reference_rel, overlay_path,
+            conn, book, patch, package_dir / folder_rel, reference_rel,
             tts=tts, max_chars=max_chars,
         )
         patch_entries.append({
@@ -276,16 +224,15 @@ def build_batch_export_package(
             "chunk_count": manifest["chunk_count"],
             "result_wav": f"result/{result_wav_name(patch)}",
             "result_mp4": f"result/{result_mp4_name(patch)}",
-            "background_image": f"{folder_rel}/{manifest['background_image']}" if manifest.get("background_image") else None,
         })
 
     timestamp = datetime.now(timezone.utc)
     batch_id = f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    # Render settings only - the media they refer to stays in the app, which is where
+    # video is rendered from the imported WAV.
     video_config = {
         "resolution": book.video_resolution or "1920x1080",
         "fps": book.video_fps or 30,
-        "music_file": music_rel,
-        "music_volume": book.music_volume,
         "youtube_privacy": settings.youtube_default_privacy,
     }
     batch_manifest = {

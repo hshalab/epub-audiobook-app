@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import shutil
 import tempfile
@@ -27,7 +28,7 @@ from app.config import settings
 from app.deps import locked_conn
 from app.jobqueue import store
 from app.patch_publishing import enqueue_patch_publish, fetch_thumbnail_inputs, on_patch_audio_ready, run_patch_publish_stage, warm_patch_thumbnail
-from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override
+from app.youtube_metadata import get_patch_youtube_override, load_timeline, resolve_patch_youtube_metadata, save_patch_youtube_override, validate_timeline
 from app.video_config import get_book_video_config
 from app.video_integrity import validate_video
 from app.video_publish import publish_validated_video
@@ -313,15 +314,16 @@ def _build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_
     try:
         infos = [sf.info(str(path)) for path in chunk_paths]
         rate = infos[0].samplerate
-        keys = {"filename", "chapter_index", "chapter_title", "is_chapter_start"}
-        if any(set(item) != keys or info.samplerate != rate or info.channels != infos[0].channels or item["filename"] != path.name
-               for info, item, path in zip(infos, metadata, chunk_paths)):
+        # Chunks pair with chunk_paths by position - both are built from the same
+        # chunk_NNN ordering - so the metadata carries no filename of its own.
+        keys = {"chapter_index", "chapter_title", "is_chapter_start"}
+        if any(set(item) != keys or info.samplerate != rate or info.channels != infos[0].channels
+               for info, item in zip(infos, metadata)):
             return None
         pause = round(rate * pause_ms / 1000)
         starts, chapters = [], []
         frame = 0
         previous_index = None
-        previous_title = None
         for index, (info, item) in enumerate(zip(infos, metadata)):
             chapter_index = item["chapter_index"]
             title = item["chapter_title"]
@@ -332,7 +334,7 @@ def _build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_
                     (index == 0 and not marker) or
                     (index > 0 and marker != (chapter_index != previous_index))):
                 return None
-            previous_index, previous_title = chapter_index, title
+            previous_index = chapter_index
             starts.append(frame)
             if marker:
                 chapters.append({"chapter_index": chapter_index, "start_frame": frame,
@@ -344,6 +346,30 @@ def _build_import_timeline(chunk_paths: list[Path], metadata: list[dict], pause_
         return {"version": 1, "sample_rate": rate, "total_frames": total_frames, "chapters": chapters}
     except (OSError, TypeError, ValueError, KeyError, sf.SoundFileError):
         return None
+
+
+def _timeline_metadata(manifest: dict) -> list[dict]:
+    """Reduce a patch manifest's chunk_metadata to the three fields
+    _build_import_timeline validates.
+
+    Current exports are compact: entries carry no chapter_title (titles are
+    de-duplicated into the chapter_titles map) and no filename. Older packages carry
+    both, plus the chunk text - dropping the extras here is what lets them import with
+    a chapter timeline too."""
+    titles = manifest.get("chapter_titles") or {}
+    metadata = []
+    for item in manifest.get("chunk_metadata") or []:
+        if not isinstance(item, dict):
+            return []
+        title = item.get("chapter_title")
+        if not isinstance(title, str) or not title.strip():
+            title = titles.get(str(item.get("chapter_index")))
+        metadata.append({
+            "chapter_index": item.get("chapter_index"),
+            "chapter_title": title,
+            "is_chapter_start": item.get("is_chapter_start"),
+        })
+    return metadata
 
 
 def _atomic_copy(source: Path, target: Path) -> None:
@@ -631,8 +657,8 @@ def download_batch_export(
 ):
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
-        # Same convention as the single-patch download: compute the timestamped name
-        # once and bake it into the notebook so its fallback matches the zip filename.
+        # Compute the timestamped batch name once and bake it into the notebook so
+        # its fallback matches the zip filename.
         folder_name = drive_export.folder_name_for_batch(book.title, patches)
         zip_path = _build_or_400(
             drive_export.build_batch_export_zip,
@@ -830,11 +856,11 @@ def import_patch_from_drive(request: Request, book_id: int, patch_id: int):
             temp_audio = audio_path.with_name(f".{audio_path.stem}.{uuid.uuid4().hex}.tmp.wav")
             try:
                 audio_merge.concat_wavs(chunk_paths, str(temp_audio), pause_ms=300)
-                metadata = None
+                metadata = []
                 patch_manifest = (patch_folder or package_folder) / "manifest.json"
                 if patch_manifest.is_file():
-                    metadata = json.loads(patch_manifest.read_text(encoding="utf-8")).get("chunk_metadata")
-                timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata or [], 300)
+                    metadata = _timeline_metadata(json.loads(patch_manifest.read_text(encoding="utf-8")))
+                timeline = _build_import_timeline([Path(p) for p in chunk_paths], metadata, 300)
                 _install_imported_wav(temp_audio, audio_path, timeline)
             finally:
                 temp_audio.unlink(missing_ok=True)
@@ -1091,3 +1117,144 @@ async def import_patch_from_upload(
             repository.update_patch_chunk_progress(conn, patch_id, imported)
 
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
+
+
+# drive_export names a batch's merged files "<patch_index:03d> - <patch name>.wav"
+# (plus a matching .timeline.json), so the leading number is the only part that
+# identifies the patch - the name half is free text the user may have renamed around.
+_RESULT_INDEX_RE = re.compile(r"^\s*(\d{1,4})(?!\d)")
+
+
+def _result_patch_index(filename: str) -> int | None:
+    match = _RESULT_INDEX_RE.match(Path(filename).name)
+    return int(match.group(1)) if match else None
+
+
+def _write_timeline_sidecar(audio_path: Path, timeline: dict) -> None:
+    sidecar = audio_path.with_suffix(".timeline.json")
+    temp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(timeline), encoding="utf-8")
+        os.replace(temp, sidecar)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _install_result_upload(audio_path: Path, audio: UploadFile | None, timeline_file: UploadFile | None) -> dict:
+    """Install one patch's uploaded result WAV and/or timeline sidecar.
+
+    A timeline is kept only when it describes the WAV it lands on - the same rule
+    load_timeline applies to a sidecar read from disk - so one dropped against the
+    wrong patch is reported back rather than installed. Raises ValueError with a
+    user-facing reason when nothing can be installed at all."""
+    timeline = None
+    if timeline_file is not None:
+        try:
+            timeline = json.loads(timeline_file.file.read().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"timeline không đọc được: {exc}") from exc
+
+    if audio is None:
+        # A timeline on its own backfills the sidecar of audio already in place.
+        if not audio_path.is_file():
+            raise ValueError("chưa có audio để gắn timeline")
+        info = sf.info(str(audio_path))
+        checked = validate_timeline(timeline, info.samplerate, info.frames)
+        if checked is not None:
+            _write_timeline_sidecar(audio_path, checked)
+        return {"audio": False, "timeline": "installed" if checked else "rejected"}
+
+    staged = audio_path.with_name(f".{audio_path.name}.{uuid.uuid4().hex}.upload")
+    try:
+        with open(staged, "wb") as dest:
+            shutil.copyfileobj(audio.file, dest)
+        try:
+            info = sf.info(str(staged))
+        except sf.SoundFileError as exc:
+            raise ValueError(f"WAV không hợp lệ: {exc}") from exc
+        checked = validate_timeline(timeline, info.samplerate, info.frames) if timeline is not None else None
+        # checked=None also clears a stale sidecar left by an earlier upload.
+        _install_imported_wav(staged, audio_path, checked)
+    finally:
+        staged.unlink(missing_ok=True)
+    return {
+        "audio": True,
+        "timeline": "none" if timeline is None else ("installed" if checked else "rejected"),
+    }
+
+
+@router.post("/books/{book_id}/patches/upload-results")
+async def upload_batch_results(
+    request: Request,
+    book_id: int,
+    files: list[UploadFile] = File(...),
+):
+    """Install a batch's whole result/ folder in one drop.
+
+    Every "NNN - name.wav" is matched to the patch with index NNN and installed as
+    that patch's audio; a "NNN - name.timeline.json" beside it becomes the chapter
+    sidecar. Timelines may also arrive on their own to backfill patches whose audio
+    is already installed. Each file is reported back individually - one bad file
+    never blocks the rest of the drop."""
+    with locked_conn(request) as conn:
+        if repository.get_book(conn, book_id) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        patches = {p.patch_index: p for p in repository.list_patches(conn, book_id)}
+
+    groups: dict[int, dict[str, UploadFile]] = {}
+    skipped: list[dict] = []
+    for upload in files:
+        name = Path(upload.filename or "").name
+        lower = name.lower()
+        kind = "timeline" if lower.endswith(".timeline.json") else "audio" if lower.endswith(".wav") else None
+        index = _result_patch_index(name)
+        if kind is None:
+            reason = "chỉ nhận .wav và .timeline.json"
+        elif index is None or index not in patches:
+            reason = "không khớp patch nào của sách này"
+        elif kind in groups.get(index, {}):
+            reason = f"trùng file {kind} cho patch {index:03d}"
+        else:
+            groups.setdefault(index, {})[kind] = upload
+            continue
+        skipped.append({"filename": name, "status": "skipped", "detail": reason})
+
+    audio_dir = Path(settings.data_root) / "books" / str(book_id) / "patches"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict] = []
+    installed_audio: list[tuple[int, Path]] = []
+    for index in sorted(groups):
+        patch, group = patches[index], groups[index]
+        audio_path = audio_dir / f"{patch.id}.wav"
+        row = {
+            "patch_id": patch.id,
+            "patch_index": index,
+            "patch_name": patch.name or str(index),
+            "filename": (group.get("audio") or group["timeline"]).filename,
+        }
+        if patch.status == "processing":
+            # Same refusal as the single-patch import: the worker owns this patch's
+            # audio right now, so installing over it would race the merge.
+            results.append({**row, "status": "error", "detail": "patch đang xử lý"})
+            continue
+        try:
+            outcome = await asyncio.to_thread(
+                _install_result_upload, audio_path, group.get("audio"), group.get("timeline")
+            )
+        except (ValueError, OSError) as exc:
+            logger.warning("result upload failed for patch %s", patch.id, exc_info=True)
+            results.append({**row, "status": "error", "detail": str(exc)})
+            continue
+        if outcome["audio"]:
+            installed_audio.append((patch.id, audio_path))
+        results.append({**row, "status": "ok", **outcome})
+
+    for patch_id, _ in installed_audio:
+        await asyncio.to_thread(_warm_thumbnail, request, patch_id)
+    with locked_conn(request) as conn:
+        for patch_id, audio_path in installed_audio:
+            repository.mark_patch_done(conn, patch_id, str(audio_path))
+            on_patch_audio_ready(conn, patch_id)
+
+    return {"ok": True, "installed": len(installed_audio), "results": results + skipped}

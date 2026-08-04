@@ -416,7 +416,16 @@ def test_batch_result_resolver_prefers_safe_result_and_patch_manifest(tmp_path):
     assert _resolve_batch_result(root / "patches" / "patch_000", 8) is None
 
 
-def test_import_fallback_uses_patch_manifest_and_output_chunks(client_with_target, tmp_path):
+@pytest.mark.parametrize("patch_manifest", [
+    # Current export: titles de-duplicated into chapter_titles, no filename per chunk.
+    {"chunk_count": 1, "chapter_titles": {"1": "One"},
+     "chunk_metadata": [{"chapter_index": 1, "is_chapter_start": True, "text": "hi"}]},
+    # Packages built before that - chunk_NNN.txt names and a title on every entry.
+    {"chunks": ["chunk_000.txt"], "expected_outputs": ["chunk_000.wav"],
+     "chunk_metadata": [{"filename": "chunk_000.txt", "chapter_index": 1,
+                         "chapter_title": "One", "is_chapter_start": True, "text": "hi"}]},
+], ids=["compact", "legacy"])
+def test_import_fallback_builds_timeline_from_patch_manifest(client_with_target, tmp_path, patch_manifest):
     c, book_id, patch_id, _, _ = client_with_target
     root = tmp_path / "batch"
     patch_folder = root / "patches" / f"patch_{patch_id:03d}"
@@ -426,9 +435,7 @@ def test_import_fallback_uses_patch_manifest_and_output_chunks(client_with_targe
         "patch_id": patch_id, "folder": f"patches/patch_{patch_id:03d}",
         "result_wav": f"result/{patch_id}.wav",
     }]}), encoding="utf-8")
-    (patch_folder / "manifest.json").write_text(json.dumps({"chunk_metadata": [
-        {"filename": "chunk_000.wav", "chapter_index": 1, "chapter_title": "One", "is_chapter_start": True},
-    ]}), encoding="utf-8")
+    (patch_folder / "manifest.json").write_text(json.dumps(patch_manifest), encoding="utf-8")
     chunk = output / "chunk_000.wav"
     _wav(chunk, 1200, 100)
     result = root / "result"
@@ -436,8 +443,8 @@ def test_import_fallback_uses_patch_manifest_and_output_chunks(client_with_targe
     (result / f"{patch_id}.wav").write_bytes(b"bad")
     from app import repository
     with db.connect(str(Path(settings.data_root) / "app.db")) as conn:
-        export = repository.create_patch_export(conn, patch_id, str(root), str(root), 3,
-                                                local_folder_path=str(root))
+        repository.create_patch_export(conn, patch_id, str(root), str(root), 1,
+                                       local_folder_path=str(root))
     response = c.post(f"/books/{book_id}/patches/{patch_id}/import", follow_redirects=False)
     assert response.status_code == 303
     canonical = Path(settings.data_root) / "books" / str(book_id) / "patches" / f"{patch_id}.timeline.json"
@@ -511,9 +518,10 @@ def test_sidecar_replace_failure_keeps_new_wav_and_removes_stale_sidecar(tmp_pat
 
 
 @pytest.mark.parametrize("bad", [
-    {"filename": "chunk_000.wav", "chapter_index": True, "chapter_title": "One", "is_chapter_start": True},
-    {"filename": "chunk_000.wav", "chapter_index": 2, "chapter_title": "One", "is_chapter_start": True},
-    {"filename": "chunk_000.wav", "chapter_index": 1, "chapter_title": "", "is_chapter_start": True},
+    {"chapter_index": True, "chapter_title": "One", "is_chapter_start": True},
+    {"chapter_index": 2, "chapter_title": "One", "is_chapter_start": True},
+    {"chapter_index": 1, "chapter_title": "", "is_chapter_start": True},
+    {"chapter_index": 1, "chapter_title": "One", "is_chapter_start": True, "filename": "chunk_000.wav"},
 ])
 def test_chunk_metadata_rejects_exact_schema_errors(tmp_path, bad):
     paths = []
@@ -521,8 +529,8 @@ def test_chunk_metadata_rejects_exact_schema_errors(tmp_path, bad):
         path = tmp_path / f"chunk_{index:03d}.wav"
         _wav(path, 1000, 100)
         paths.append(path)
-    metadata = [dict(bad), {"filename": "chunk_001.wav", "chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
-                {"filename": "chunk_002.wav", "chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
+    metadata = [dict(bad), {"chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
+                {"chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
     assert _build_import_timeline(paths, metadata, 300) is None
 
 
@@ -532,8 +540,8 @@ def test_corrupt_existing_chunk_is_rejected(tmp_path):
         path = tmp_path / f"chunk_{index:03d}.wav"
         path.write_bytes(b"bad") if index == 1 else _wav(path, 1000, 100)
         paths.append(path)
-    metadata = [{"filename": path.name, "chapter_index": index, "chapter_title": str(index), "is_chapter_start": True}
-                for index, path in enumerate(paths)]
+    metadata = [{"chapter_index": index, "chapter_title": str(index), "is_chapter_start": True}
+                for index in range(len(paths))]
     assert _build_import_timeline(paths, metadata, 300) is None
 
 
@@ -545,9 +553,9 @@ def test_chunk_metadata_builds_timeline_with_pause(tmp_path):
     _wav(second, 2000, 100)
     third = tmp_path / "chunk_002.wav"
     _wav(third, 2000, 100)
-    metadata = [{"filename": first.name, "chapter_index": 1, "chapter_title": "One", "is_chapter_start": True},
-                {"filename": second.name, "chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
-                {"filename": third.name, "chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
+    metadata = [{"chapter_index": 1, "chapter_title": "One", "is_chapter_start": True},
+                {"chapter_index": 2, "chapter_title": "Two", "is_chapter_start": True},
+                {"chapter_index": 3, "chapter_title": "Three", "is_chapter_start": True}]
     timeline = _build_import_timeline([first, second, third], metadata, pause_ms=300)
     assert timeline["version"] == 1
     assert timeline["sample_rate"] == 100
@@ -563,8 +571,8 @@ def test_import_timeline_preserves_noncontiguous_source_chapter_indexes(tmp_path
         _wav(path, 1000, 100)
         paths.append(path)
     metadata = [
-        {"filename": paths[0].name, "chapter_index": 10, "chapter_title": "Ten", "is_chapter_start": True},
-        {"filename": paths[1].name, "chapter_index": 12, "chapter_title": "Twelve", "is_chapter_start": True},
+        {"chapter_index": 10, "chapter_title": "Ten", "is_chapter_start": True},
+        {"chapter_index": 12, "chapter_title": "Twelve", "is_chapter_start": True},
     ]
     timeline = _build_import_timeline(paths, metadata, pause_ms=300)
     assert [c["chapter_index"] for c in timeline["chapters"]] == [10, 12]
@@ -577,9 +585,9 @@ def test_import_timeline_rejects_duplicate_or_regressing_chapter_indexes(tmp_pat
         path = tmp_path / f"chunk_{index:03d}.wav"
         _wav(path, 1000, 100)
         paths.append(path)
-    metadata = [{"filename": path.name, "chapter_index": indexes[index],
-                 "chapter_title": str(index), "is_chapter_start": True}
-                for index, path in enumerate(paths)]
+    metadata = [{"chapter_index": indexes[index], "chapter_title": str(index),
+                 "is_chapter_start": True}
+                for index in range(len(paths))]
     assert _build_import_timeline(paths, metadata, pause_ms=300) is None
 
 
@@ -603,7 +611,7 @@ def test_sidecar_cleanup_refusal_does_not_fail_import(tmp_path, monkeypatch):
 def test_invalid_chunk_metadata_disables_timeline(tmp_path):
     chunk = tmp_path / "chunk_000.wav"
     _wav(chunk, 100, 100)
-    assert _build_import_timeline([chunk], [{"filename": "wrong.wav"}], pause_ms=300) is None
+    assert _build_import_timeline([chunk], [{"chapter_index": 1}], pause_ms=300) is None
 
 
 @pytest.mark.parametrize("count", [1, 2])
@@ -614,7 +622,7 @@ def test_chunk_metadata_builds_timeline_for_short_imports(tmp_path, count):
         path = tmp_path / f"chunk_{index:03d}.wav"
         _wav(path, 1000, 100)
         paths.append(path)
-        metadata.append({"filename": path.name, "chapter_index": index + 1,
+        metadata.append({"chapter_index": index + 1,
                          "chapter_title": f"Chapter {index + 1}", "is_chapter_start": True})
     assert _build_import_timeline(paths, metadata, pause_ms=300) is not None
 

@@ -27,12 +27,24 @@ def load_timeline(audio_path) -> dict | None:
     try:
         info = sf.info(str(audio_path))
         timeline = json.loads(Path(audio_path).with_suffix(".timeline.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, sf.SoundFileError):
+        return None
+    return validate_timeline(timeline, info.samplerate, info.frames)
+
+
+def validate_timeline(timeline, samplerate: int, frames: int) -> dict | None:
+    """The timeline itself, or None unless it describes exactly this audio.
+
+    Split out of load_timeline so a timeline that arrives on its own - uploaded
+    straight from a batch's result/ folder - is held to the same rule as one read
+    from disk beside its WAV."""
+    try:
         if not isinstance(timeline, dict) or timeline.get("version") != 1:
             return None
-        rate, frames = timeline["sample_rate"], timeline["total_frames"]
-        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0 or rate != info.samplerate:
+        rate, total = timeline["sample_rate"], timeline["total_frames"]
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0 or rate != samplerate:
             return None
-        if isinstance(frames, bool) or not isinstance(frames, int) or frames < 0 or frames != info.frames:
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0 or total != frames:
             return None
         chapters = timeline["chapters"]
         if not isinstance(chapters, list) or not chapters:
@@ -46,7 +58,7 @@ def load_timeline(audio_path) -> dict | None:
             if (isinstance(chapter_index, bool) or not isinstance(chapter_index, int) or
                     (index and chapter_index <= chapters[index - 1]["chapter_index"])):
                 return None
-            if (isinstance(start, bool) or not isinstance(start, int) or not 0 <= start <= frames or
+            if (isinstance(start, bool) or not isinstance(start, int) or not 0 <= start <= total or
                     isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or
                     not math.isclose(seconds, start / rate, rel_tol=0, abs_tol=1e-9) or
                     not isinstance(title, str) or not title.strip()):
@@ -55,7 +67,7 @@ def load_timeline(audio_path) -> dict | None:
         if starts[0] != 0 or any(b <= a for a, b in zip(starts, starts[1:])):
             return None
         return timeline
-    except (OSError, TypeError, ValueError, UnicodeDecodeError, KeyError, json.JSONDecodeError, sf.SoundFileError):
+    except (TypeError, ValueError, KeyError):
         return None
 
 

@@ -55,12 +55,12 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
 
     metadata = manifest["chunk_metadata"]
     assert all(
-        list(item.keys()) == ["filename", "chapter_index", "chapter_title", "is_chapter_start", "text"]
+        list(item.keys()) == ["chapter_index", "is_chapter_start", "text"]
         for item in metadata
     )
-    assert manifest["chunks"] == [f"chunk_{i:03d}.txt" for i in range(5)]
-    assert manifest["expected_outputs"] == [f"chunk_{i:03d}.wav" for i in range(5)]
-    assert all(isinstance(name, str) for name in manifest["chunks"] + manifest["expected_outputs"])
+    assert "chunks" not in manifest
+    assert "expected_outputs" not in manifest
+    assert manifest["chapter_titles"] == {"0": "One", "1": "Two"}
     assert [item["chapter_index"] for item in metadata] == [0, 0, 0, 1, 1]
     assert [item["is_chapter_start"] for item in metadata] == [True, False, False, True, False]
     assert [item["text"] for item in metadata] == [
@@ -71,8 +71,8 @@ def test_write_patch_files_exports_chunk_metadata_at_chapter_boundaries(conn, tm
         "Beta two.",
     ]
     assert all("Never export" not in item["text"] for item in metadata)
-    assert [manifest[key] for key in ("patch_id", "book_id", "book_title", "patch_name", "chapter_start", "chapter_end", "max_chars", "chunk_count", "reference_wav", "reference_transcript", "voxcpm_model_id", "background_image")] == [
-        patch.id, patch.book_id, book.title, str(patch.patch_index), 0, 4, 18, 5, None, None, "openbmb/VoxCPM2", "background.jpg"
+    assert [manifest[key] for key in ("patch_id", "book_id", "book_title", "patch_name", "chapter_start", "chapter_end", "max_chars", "chunk_count", "reference_wav", "reference_transcript", "voxcpm_model_id")] == [
+        patch.id, patch.book_id, book.title, str(patch.patch_index), 0, 4, 18, 5, None, None, "openbmb/VoxCPM2"
     ]
     saved_manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert saved_manifest == manifest
@@ -87,31 +87,57 @@ def test_write_patch_files_rejects_empty_plan(conn, tmp_path):
         drive_export._write_patch_files(connection, book, patch, tmp_path, None)
 
 
-def test_write_patch_files_inlines_text_and_writes_no_txt_files(conn, tmp_path):
+def test_write_patch_files_writes_the_manifest_and_nothing_else(conn, tmp_path):
+    """A patch folder is one file. Chunk text travels inside the manifest, and the
+    background image stays in the app - both keep the Drive sync small."""
     connection, book, patch = conn
     dest = tmp_path / "patch"
     manifest = drive_export._write_patch_files(connection, book, patch, dest, "reference.wav")
 
-    assert list(dest.glob("chunk_*.txt")) == []
+    assert [p.name for p in dest.iterdir()] == ["manifest.json"]
+    assert "background_image" not in manifest
 
     plan = repository.build_patch_chunk_plan(connection, patch)
     metadata = manifest["chunk_metadata"]
     assert len(metadata) == len(plan)
-    assert manifest["chunks"] == [f"chunk_{i:03d}.txt" for i in range(len(plan))]
-    assert manifest["expected_outputs"] == [f"chunk_{i:03d}.wav" for i in range(len(plan))]
+    assert "chunks" not in manifest
+    assert "expected_outputs" not in manifest
+    assert manifest["chunk_count"] == len(plan)
 
     for entry, item in zip(metadata, plan):
         assert set(entry) == {
-            "filename", "chapter_index", "chapter_title", "is_chapter_start", "text",
+            "chapter_index", "is_chapter_start", "text",
         }
         assert entry["text"] == item["text"]
         assert entry["text"].strip()
 
 
-def test_package_chunk_count_reads_the_manifest(conn, tmp_path):
+def test_exported_manifest_satisfies_the_notebook_and_the_importer(conn, tmp_path):
+    """The compact manifest has two independent readers - Cell 8 in the notebook and the
+    app's Drive import - and each rebuilds the fields it leaves out. Nothing else pins
+    those two rebuilds to what the exporter actually writes, so run one real export
+    through both."""
+    from test_notebook_templates import _cell8_helpers
+
+    from app.routes.patches import _timeline_metadata
+
     connection, book, patch = conn
     dest = tmp_path / "patch"
-    manifest = drive_export._write_patch_files(connection, book, patch, dest, "reference.wav")
-    assert drive_export.package_chunk_count(dest) == manifest["chunk_count"]
+    drive_export._write_patch_files(connection, book, patch, dest, None)
+    exported = (dest / "manifest.json").read_text(encoding="utf-8")
+
+    # Notebook side: rebuild the omitted fields, then run its own validator over them.
+    helpers = _cell8_helpers()
+    manifest = json.loads(exported)
+    assert helpers["normalize_chunk_manifest"](manifest) is True
+    assert helpers["validate_chunk_metadata"](manifest["chunk_metadata"], manifest["chunks"]) is not None
+    assert [helpers["chunk_text_for"](manifest, i, str(dest)) for i in range(manifest["chunk_count"])] == [
+        item["text"] for item in json.loads(exported)["chunk_metadata"]
+    ]
+
+    # Import side: titles come back out of the chapter_titles map, in chunk order.
+    imported = _timeline_metadata(json.loads(exported))
+    assert all(set(item) == {"chapter_index", "chapter_title", "is_chapter_start"} for item in imported)
+    assert [item["chapter_title"] for item in imported] == ["One", "One", "One", "Two", "Two"]
 
 

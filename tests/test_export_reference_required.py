@@ -47,18 +47,53 @@ def test_batch_export_requires_voice_reference(conn):
 
 
 def test_batch_export_bundles_reference(conn, tmp_path, monkeypatch):
-    from app import image_overlay
-
     clip = tmp_path / "voice.wav"
     clip.write_bytes(b"RIFFfakewav")
     monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
-    monkeypatch.setattr(image_overlay, "ensure_patch_overlay", lambda *a, **k: None)
     patch = _seed_book_and_patch(conn, voice_clip_path=str(clip))
 
     package_dir, batch_manifest = drive_export.build_batch_export_package(conn, [patch])
     try:
         assert batch_manifest["reference_wav"] == "reference.wav"
         assert (package_dir / "reference.wav").exists()
+    finally:
+        import shutil
+
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
+def test_batch_export_leaves_background_and_music_behind(conn, tmp_path, monkeypatch):
+    """Only text and the voice clip travel: video is rendered back in the app, so
+    shipping the background image and the music track would just bloat the sync."""
+    clip = tmp_path / "voice.wav"
+    clip.write_bytes(b"RIFFfakewav")
+    background = tmp_path / "cover.jpg"
+    background.write_bytes(b"\xff\xd8fakejpeg")
+    music_file = tmp_path / "loop.mp3"
+    music_file.write_bytes(b"ID3fakemp3")
+    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
+    patch = _seed_book_and_patch(conn, voice_clip_path=str(clip))
+    music_id = conn.execute(
+        "INSERT INTO music (name, file_path, created_at) VALUES ('loop', ?, ?)",
+        (str(music_file), "2026-01-01T00:00:00+00:00"),
+    ).lastrowid
+    conn.execute(
+        "UPDATE book SET background_image_path = ?, music_id = ? WHERE id = ?",
+        (str(background), music_id, patch.book_id),
+    )
+    conn.commit()
+
+    package_dir, batch_manifest = drive_export.build_batch_export_package(conn, [patch])
+    try:
+        files = sorted(p.relative_to(package_dir).as_posix() for p in package_dir.rglob("*") if p.is_file())
+        assert files == [
+            "batch_manifest.json",
+            "colab_kaggle_batch_tts_template.ipynb",
+            "patches/patch_000/manifest.json",
+            "reference.wav",
+        ]
+        assert "music_file" not in batch_manifest["video_config"]
+        assert "background_image" not in batch_manifest["patches"][0]
     finally:
         import shutil
 

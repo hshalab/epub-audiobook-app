@@ -519,6 +519,28 @@
          <input type="hidden" name="model_id"><input type="hidden" name="voice_id">
          <input type="hidden" name="max_chars"><input type="hidden" name="with_effects">
      </form>
+    <details id="result-upload" class="result-upload">
+        <summary>Upload kết quả hàng loạt (thư mục <code>result/</code>)</summary>
+        <p class="ru-hint">
+            Thả cả <code>.wav</code> lẫn <code>.timeline.json</code> vào chung một ô. File được ghép vào patch
+            theo số <code>NNN</code> đứng đầu tên — đúng cách notebook đặt tên (<code>NNN - tên.wav</code>).
+            Timeline không khớp WAV sẽ bị bỏ qua và báo lại, timeline thả riêng sẽ gắn vào audio đã có sẵn.
+        </p>
+        <div id="ru-drop" class="ru-drop" tabindex="0" role="button"
+             aria-label="Kéo thả hoặc bấm để chọn file kết quả">
+            <strong>Kéo &amp; thả file kết quả vào đây</strong>
+            <span>hoặc bấm để chọn — nhận nhiều file cùng lúc</span>
+        </div>
+        <input type="file" id="ru-input" multiple accept=".wav,.json" hidden>
+        <div id="ru-preview" hidden>
+            <div class="ru-bar">
+                <span id="ru-summary" class="ru-summary"></span>
+                <button type="button" class="btn-outline btn-sm" id="ru-clear">Xóa danh sách</button>
+                <button type="button" class="btn-primary btn-sm" id="ru-submit">Upload</button>
+            </div>
+            <ul id="ru-list" class="ru-list"></ul>
+        </div>
+    </details>
     <div class="table-wrap">
     <table data-table-key="patch-table">
         <thead>
@@ -550,7 +572,8 @@
                some rows report stage='published' with no upload behind them. #}
             {% set has_yt_upload = '1' if pipeline and pipeline.youtube_video_id else '0' %}
             <tr data-patch-status="{{ patch.status }}" data-pipeline="{{ pipeline_group }}"
-                data-episode="{{ episode }}" data-has-yt-upload="{{ has_yt_upload }}">
+                data-episode="{{ episode }}" data-has-yt-upload="{{ has_yt_upload }}"
+                data-patch-index="{{ patch.patch_index }}">
                 <td class="patch-select-cell"><input type="checkbox" class="batch-patch-checkbox" name="patch_ids" value="{{ patch.id }}"
                            form="batch-export-form" {% if patch.status == 'processing' %}disabled{% endif %}></td>
                 <td class="patch-stt-cell">{{ episode }}</td>
@@ -558,7 +581,7 @@
                     <strong>{{ patch.name or patch.patch_index }}</strong>
                 </td>
                 <td>{{ patch.chapter_start }}&ndash;{{ patch.chapter_end }}</td>
-                <td>{% if patch.audio_path %}<audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>{% else %}&mdash;{% endif %}</td>
+                <td id="patch-audio-{{ patch.id }}">{% if patch.audio_path %}<audio controls preload="none" class="patch-audio-player" src="/books/{{ book.id }}/patches/{{ patch.id }}/audio"></audio>{% else %}&mdash;{% endif %}</td>
                 <td class="patch-image-cell">
                     <button type="button" class="patch-thumb-btn" data-patch-id="{{ patch.id }}"
                             data-patch-name="{{ patch.name or patch.patch_index }}"
@@ -620,18 +643,11 @@
                        title="Mở Text Studio để xem và chỉnh văn bản trước khi tạo speech">Preview</a>
                     <button type="button" class="btn-outline btn-sm" onclick="openChunksModal({{ patch.id }})">&#9654; Chunks</button>
                     {% if patch.status != "processing" %}
-                    <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/regenerate" method="post" style="display:inline">
-                        <button type="submit" class="btn-outline btn-sm">Regenerate</button>
-                    </form>
                     <form data-guard action="/books/{{ book.id }}/patches/{{ patch.id }}/delete" method="post" style="display:inline"
                           data-confirm="Xóa patch này? Các patch còn lại vẫn giữ nguyên số thứ tự.">
                         <button type="submit" class="btn-danger btn-sm">Xóa</button>
                     </form>
                     {% endif %}
-                     <button type="button" class="btn-outline btn-sm patch-media-btn"
-                            data-patch-id="{{ patch.id }}" data-patch-name="{{ patch.name or patch.patch_index }}"
-                             data-patch-status="{{ patch.status }}">Media</button>
-                     <button type="button" class="btn-outline btn-sm" data-patch-youtube-id="{{ patch.id }}">Publish</button>
                 </td>
             </tr>
         {% endfor %}
@@ -669,9 +685,9 @@
 .video-config-grid { margin-bottom:var(--space-md); }
 .vc-wide { grid-column:1/-1; }
 
-.vc-background-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:var(--space-sm); }
+.vc-background-grid { display:flex; flex-direction:column; gap:var(--space-xs); }
 .vc-background-option { display:flex; gap:var(--space-xs); align-items:center; padding:var(--space-xs); border:1px solid var(--border-color); border-radius:var(--border-radius); }
-.vc-background-preview { width:64px; height:40px; object-fit:cover; }
+.vc-background-preview { flex:none; width:96px; height:54px; object-fit:cover; border-radius:var(--border-radius-sm); }
 .vc-background-option span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vc-background-del { flex:none; background:none; border:none; cursor:pointer; padding:2px; opacity:.45; font-size:var(--font-size-sm); line-height:1; }
 .vc-background-del:hover { opacity:1; color:var(--color-error, #dc2626); }
@@ -726,6 +742,28 @@
 .bn-check { font-size:var(--font-size-xs); white-space:nowrap; color:var(--text-muted); }
 .btn-link { border:0; background:none; padding:0; color:var(--color-primary); cursor:pointer; font:inherit; text-decoration:underline; }
 .patch-inline-section select { font-size:var(--font-size-xs); padding:2px 4px; }
+
+/* Bulk upload of a batch's result/ folder: one dropzone for WAVs and timelines. */
+.result-upload { margin-bottom:var(--space-md); }
+.result-upload > summary { cursor:pointer; font-weight:500; font-size:var(--font-size-sm); }
+.ru-hint { margin:var(--space-sm) 0; color:var(--text-muted); font-size:var(--font-size-xs); line-height:1.5; }
+.ru-drop { display:flex; flex-direction:column; gap:2px; align-items:center; padding:var(--space-lg); border:2px dashed var(--border-color); border-radius:var(--border-radius); background:var(--bg-primary); color:var(--text-muted); font-size:var(--font-size-sm); text-align:center; cursor:pointer; }
+.ru-drop strong { color:var(--text-primary); }
+.ru-drop:hover, .ru-drop:focus-visible, .ru-drop.dragging { border-color:var(--color-primary); background:color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.ru-bar { display:flex; align-items:center; gap:var(--space-xs); margin:var(--space-sm) 0; flex-wrap:wrap; }
+.ru-summary { margin-right:auto; font-size:var(--font-size-xs); color:var(--text-muted); }
+.ru-list { display:grid; gap:4px; max-height:340px; overflow:auto; margin:0; padding:0; list-style:none; }
+.ru-row { display:flex; align-items:center; gap:var(--space-sm); padding:var(--space-xs) var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); font-size:var(--font-size-xs); }
+.ru-row.is-loose { border-style:dashed; opacity:.75; }
+.ru-idx { font-variant-numeric:tabular-nums; font-weight:600; color:var(--text-muted); }
+.ru-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary); }
+.ru-files { display:flex; gap:4px; flex-wrap:wrap; }
+.ru-tag { padding:1px 6px; border:1px solid var(--border-color); border-radius:999px; color:var(--text-muted); }
+.ru-tag.on { border-color:var(--color-primary); color:var(--color-primary); }
+.ru-state { min-width:7rem; text-align:right; }
+.ru-state.ok { color:var(--color-success, #16a34a); }
+.ru-state.err { color:var(--color-error, #dc2626); }
+.ru-state.warn { color:var(--color-warning, #d97706); }
 </style>
 
 <dialog id="studio-modal" class="book-modal" style="width:min(960px,calc(100% - 2rem))">
@@ -756,10 +794,11 @@
         .patch-bottom-nav.visible { display:flex; }
         body.has-bottom-nav { padding-bottom:64px; }
          .patch-search { display:flex; gap:var(--space-sm); align-items:center; flex-wrap:wrap; margin-bottom:var(--space-sm); }
-         .patch-search input { flex:1; min-width:200px; max-width:320px; }
+          .patch-search input { flex:0 1 240px; min-width:180px; max-width:240px; }
          .patch-search-flags { margin-top:calc(-1 * var(--space-xs)); }
          .patch-flag-label { color:var(--text-muted); font-size:var(--font-size-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
-         .patch-search select { padding:0.35rem 0.5rem; border:1px solid var(--border-color); border-radius:var(--border-radius-sm); background:var(--bg-card); color:var(--text-primary); font:inherit; font-size:var(--font-size-sm); }
+          .patch-search select { width:auto; max-width:180px; padding:0.35rem 0.5rem; border:1px solid var(--border-color); border-radius:var(--border-radius-sm); background:var(--bg-card); color:var(--text-primary); font:inherit; font-size:var(--font-size-sm); }
+          @media (max-width:640px) { .patch-search input { flex:1 1 180px; max-width:none; } }
          .patch-pagination { display:flex; gap:var(--space-xs); align-items:center; justify-content:center; margin-top:var(--space-sm); flex-wrap:wrap; }
         .patch-pagination button { padding:var(--space-xs) var(--space-sm); border:1px solid var(--border-color); border-radius:var(--border-radius); background:var(--bg-card); color:var(--text-primary); cursor:pointer; font:inherit; font-size:var(--font-size-sm); }
         .patch-pagination button:hover:not(:disabled) { background:var(--border-color); }
@@ -2452,6 +2491,34 @@ async function genPatchVideo(pid, cell, opts = {}) {
     }
 }
 
+// Bring one patch row up to date after its audio landed, whichever upload put it
+// there: status badge, the player cell, the video cell (which also backs the
+// "Có âm thanh" filter) and the batch checkbox.
+function markPatchAudioReady(pid) {
+    const statusCell = document.getElementById(`patch-status-${pid}`);
+    if (statusCell) statusCell.innerHTML = '<span class="badge badge-done">Hoàn tất</span>';
+    const audioCell = document.getElementById(`patch-audio-${pid}`);
+    if (audioCell) {
+        // Cache-bust: the same URL now serves a different file.
+        audioCell.innerHTML = `<audio controls preload="none" class="patch-audio-player" src="/books/${BOOK_ID}/patches/${pid}/audio?v=${Date.now()}"></audio>`;
+    }
+    const videoCell = document.getElementById(`patch-video-${pid}`);
+    if (videoCell) {
+        videoCell.dataset.audioReady = '1';
+        let wrap = videoCell.querySelector('.pv-wrap');
+        if (!wrap) {
+            const muted = videoCell.querySelector('.pv-muted');
+            if (muted) muted.remove();
+            wrap = document.createElement('div');
+            wrap.className = 'pv-wrap';
+            videoCell.appendChild(wrap);
+        }
+        buildVideoCell(videoCell);
+    }
+    const checkbox = document.querySelector(`.batch-patch-checkbox[value="${pid}"]`);
+    if (checkbox) checkbox.disabled = false;
+}
+
 async function uploadPatchAudio(btn) {
     const pid = parseInt(btn.dataset.patchId, 10);
     const modal = document.getElementById('patch-image-modal');
@@ -2472,23 +2539,7 @@ async function uploadPatchAudio(btn) {
             let d; try { d = await res.json(); } catch (_) {}
             throw new Error((d && d.detail) || `HTTP ${res.status}`);
         }
-        const statusCell = document.getElementById(`patch-status-${pid}`);
-        if (statusCell) statusCell.innerHTML = '<span class="badge badge-done">Hoàn tất</span>';
-        const videoCell = document.getElementById(`patch-video-${pid}`);
-        if (videoCell) {
-            videoCell.dataset.audioReady = '1';
-            let wrap = videoCell.querySelector('.pv-wrap');
-            if (!wrap) {
-                const muted = videoCell.querySelector('.pv-muted');
-                if (muted) muted.remove();
-                wrap = document.createElement('div');
-                wrap.className = 'pv-wrap';
-                videoCell.appendChild(wrap);
-            }
-            buildVideoCell(videoCell);
-        }
-        const checkbox = document.querySelector(`.batch-patch-checkbox[value="${pid}"]`);
-        if (checkbox) checkbox.disabled = false;
+        markPatchAudioReady(pid);
         modal.close();
         showToast(`Patch ${pid} — Hoàn tất`);
     } catch (e) {
@@ -2842,6 +2893,178 @@ async function genSelectedImages() {
     initVideoCells();
     restorePatchVideoJobs();
 
+})();
+
+/* Bulk upload of a batch's result/ folder through one dropzone.
+   Files are grouped client-side exactly the way the route groups them - by the
+   leading NNN, the patch index the notebook named them after - so the preview list
+   can promise nothing the upload will not deliver. Rows are built from DOM nodes,
+   not innerHTML: patch names and filenames are user text. */
+(function initResultUpload() {
+    const section = document.getElementById('result-upload');
+    if (!section) return;
+    const drop = document.getElementById('ru-drop');
+    const input = document.getElementById('ru-input');
+    const preview = document.getElementById('ru-preview');
+    const listEl = document.getElementById('ru-list');
+    const summaryEl = document.getElementById('ru-summary');
+    const submitBtn = document.getElementById('ru-submit');
+    const clearBtn = document.getElementById('ru-clear');
+
+    const PATCHES = new Map();
+    document.querySelectorAll('tr[data-patch-index]').forEach(row => {
+        const checkbox = row.querySelector('.batch-patch-checkbox');
+        const name = row.querySelector('.patch-name-cell strong');
+        if (!checkbox) return;
+        PATCHES.set(parseInt(row.dataset.patchIndex, 10), {
+            id: parseInt(checkbox.value, 10),
+            name: (name && name.textContent.trim()) || row.dataset.patchIndex,
+        });
+    });
+
+    const staged = new Map();  // filename -> File, so re-dropping a file replaces it
+    let states = new Map();    // patch index -> {text, cls} from the last upload
+
+    const pad = index => String(index).padStart(3, '0');
+    const size = bytes => bytes >= 1048576
+        ? `${(bytes / 1048576).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+    function classify(file) {
+        const lower = file.name.toLowerCase();
+        const kind = lower.endsWith('.timeline.json') ? 'timeline'
+            : lower.endsWith('.wav') ? 'audio' : null;
+        const match = /^\s*(\d{1,4})(?!\d)/.exec(file.name);
+        return { kind, index: match ? parseInt(match[1], 10) : null };
+    }
+
+    function group() {
+        const rows = new Map();
+        const loose = [];
+        for (const file of staged.values()) {
+            const { kind, index } = classify(file);
+            if (!kind) { loose.push({ file, detail: 'không phải .wav hay .timeline.json' }); continue; }
+            if (index === null || !PATCHES.has(index)) { loose.push({ file, detail: 'không khớp patch nào của sách này' }); continue; }
+            const row = rows.get(index) || { index, patch: PATCHES.get(index) };
+            if (row[kind]) { loose.push({ file, detail: `trùng file cho patch ${pad(index)}` }); continue; }
+            row[kind] = file;
+            rows.set(index, row);
+        }
+        return { rows: [...rows.values()].sort((a, b) => a.index - b.index), loose };
+    }
+
+    function span(className, text) {
+        const el = document.createElement('span');
+        el.className = className;
+        el.textContent = text;
+        return el;
+    }
+
+    function render() {
+        const { rows, loose } = group();
+        listEl.textContent = '';
+        for (const row of rows) {
+            const state = states.get(row.index);
+            const li = document.createElement('li');
+            li.className = 'ru-row';
+            const files = document.createElement('span');
+            files.className = 'ru-files';
+            files.append(
+                span(`ru-tag${row.audio ? ' on' : ''}`, row.audio ? `WAV ${size(row.audio.size)}` : 'chưa có WAV'),
+                span(`ru-tag${row.timeline ? ' on' : ''}`, row.timeline ? 'timeline' : 'chưa có timeline'),
+            );
+            li.append(
+                span('ru-idx', pad(row.index)),
+                span('ru-name', row.patch.name),
+                files,
+                span(`ru-state ${state ? state.cls : ''}`, state ? state.text : 'chờ upload'),
+            );
+            listEl.appendChild(li);
+        }
+        for (const item of loose) {
+            const li = document.createElement('li');
+            li.className = 'ru-row is-loose';
+            li.append(
+                span('ru-idx', '—'),
+                span('ru-name', item.file.name),
+                span('ru-state warn', item.detail),
+            );
+            listEl.appendChild(li);
+        }
+        summaryEl.textContent = staged.size
+            ? `${staged.size} file → ${rows.length} patch` + (loose.length ? `, ${loose.length} file bị bỏ qua` : '')
+            : '';
+        preview.hidden = !staged.size;
+        submitBtn.disabled = !rows.length;
+    }
+
+    function add(files) {
+        for (const file of files) staged.set(file.name, file);
+        states = new Map();
+        render();
+    }
+
+    // What the server did with one patch, in the row's own words.
+    function stateFor(item) {
+        if (item.status !== 'ok') return { text: item.detail || 'lỗi', cls: 'err' };
+        if (item.timeline === 'rejected') {
+            return { text: item.audio ? 'đã cài — timeline lệch WAV' : 'timeline lệch WAV', cls: 'warn' };
+        }
+        if (!item.audio) return { text: 'đã gắn timeline', cls: 'ok' };
+        return { text: item.timeline === 'installed' ? 'đã cài + timeline' : 'đã cài (không timeline)', cls: 'ok' };
+    }
+
+    drop.addEventListener('click', () => input.click());
+    drop.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); }
+    });
+    input.addEventListener('change', () => { add(input.files); input.value = ''; });
+    ['dragenter', 'dragover'].forEach(type => drop.addEventListener(type, event => {
+        event.preventDefault();
+        drop.classList.add('dragging');
+    }));
+    ['dragleave', 'drop'].forEach(type => drop.addEventListener(type, event => {
+        event.preventDefault();
+        drop.classList.remove('dragging');
+    }));
+    drop.addEventListener('drop', event => { if (event.dataTransfer) add(event.dataTransfer.files); });
+    clearBtn.addEventListener('click', () => { staged.clear(); states = new Map(); render(); });
+
+    submitBtn.addEventListener('click', async () => {
+        const { rows } = group();
+        if (!rows.length) return;
+        const orig = submitBtn.textContent;
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Đang tải lên…';
+        try {
+            const fd = new FormData();
+            for (const row of rows) {
+                if (row.audio) fd.append('files', row.audio);
+                if (row.timeline) fd.append('files', row.timeline);
+            }
+            const res = await fetch(`/books/${BOOK_ID}/patches/upload-results`, { method: 'POST', body: fd });
+            if (!res.ok) {
+                let d; try { d = await res.json(); } catch (_) {}
+                throw new Error((d && d.detail) || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            states = new Map();
+            let failed = 0;
+            for (const item of data.results) {
+                if (item.patch_index === undefined) continue;
+                states.set(item.patch_index, stateFor(item));
+                if (item.status !== 'ok') failed += 1;
+                else if (item.audio) markPatchAudioReady(item.patch_id);
+            }
+            render();
+            showToast(`Đã cài ${data.installed} audio` + (failed ? `, ${failed} patch lỗi` : ''), failed ? 'error' : 'ok');
+        } catch (e) {
+            showToast('Upload kết quả lỗi: ' + (e.message || e), 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = orig;
+        }
+    });
 })();
 </script>
 {% endblock %}

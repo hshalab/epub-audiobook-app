@@ -1,9 +1,31 @@
-# Quản lý tài khoản Google Drive (export patch)
+# Quản lý tài khoản Google Drive cho batch export
 
-App có tính năng export patch/batch lên Google Drive tại trang `/drive` (xem `app/routes/drive.py`,
-`app/drive_export.py`, bảng `drive_sync_target`). Cơ chế: app copy package export vào một **folder cục bộ**
+App chỉ xuất package Colab/Kaggle theo **batch**. Người dùng chọn một hoặc nhiều patch trên trang sách,
+mở modal **Export**, chọn model TTS và đích Drive, rồi tạo một package chứa
+`batch_manifest.json`, các thư mục patch và batch notebook.
+
+Package chỉ gồm **text + clip voice reference**: text của từng chunk nằm ngay trong `manifest.json` của
+patch, còn ảnh nền và nhạc nền **không** được đóng gói — video vẫn render tại app từ file WAV import về.
+Nhờ vậy mỗi patch thêm vào batch chỉ tốn thêm một file JSON nhỏ, sync lên Drive nhanh hơn hẳn.
+
+Cơ chế Drive: app copy package batch vào một **folder cục bộ**
 trên máy chạy server; folder đó phải được đồng bộ lên đúng tài khoản Google Drive bằng cách nào đó.
 App không quan tâm folder được đồng bộ bằng cách nào — chỉ cần đúng đường dẫn.
+
+## Quy trình batch export
+
+1. Mở trang chi tiết sách và chuyển tới bảng **Patches**.
+2. Chọn các patch cần xử lý. Có thể chọn duy nhất một patch; package tạo ra vẫn là package batch.
+3. Bấm **Export** để mở modal TTS.
+4. Chọn model, voice hoặc ngôn ngữ, `max_chars` và hiệu ứng nếu cần.
+5. Chọn một trong các đích:
+   - **Download selected (.zip)** để tải package và tự đưa lên Colab/Kaggle.
+   - **Export vào Drive Desktop** để copy vào sync target cục bộ.
+   - **Export lên Drive (Kaggle)** để upload qua Drive API.
+6. Mở `colab_kaggle_batch_tts_template.ipynb`, đặt đúng cờ `IS_KAGGLE`, rồi chạy các cell theo thứ tự.
+7. Notebook tạo WAV và timeline trong thư mục `result`. Quay lại app để import kết quả rồi render video.
+
+Khi chỉ cần xử lý một patch, hãy chọn đúng patch đó trong bảng rồi dùng batch export như trên.
 
 Hiện có 10 tài khoản (`codex1`..`codex10@g.lsts.edu.vn`), chia làm 2 nhóm vì **Google Drive for Desktop
 chỉ cho đăng nhập tối đa 4 tài khoản cùng lúc** (giới hạn cứng của chính ứng dụng, không cấu hình được).
@@ -53,7 +75,7 @@ ngoài ra có nút **Sync all folders** đẩy tất cả target có remote mộ
 .\scripts\rclone_push_drives.ps1 codex7
 ```
 
-Chạy sau khi export xong (thủ công), hoặc tự thêm Windows Task Scheduler nếu muốn tự động theo chu kỳ.
+Chạy sau khi batch export xong (thủ công), hoặc tự thêm Windows Task Scheduler nếu muốn tự động theo chu kỳ.
 
 ### ⚠️ Luật an toàn quan trọng nhất: KHÔNG BAO GIỜ dùng `rclone sync` để đẩy lên các remote này
 
@@ -64,7 +86,7 @@ Script `rclone_push_drives.ps1` dùng `rclone copy`, **không phải** `rclone s
 - Ngày 2026-07-21, chạy thử với folder staging codex5 đang trống đã **xoá mất 173 file export thật** đã có sẵn
   trên tài khoản đó từ trước (không phải do script này tạo ra). Phục hồi được nhờ Google Drive Trash
   (`rclone backend untrash "codex5:EPUB Audiobook Exports"`), nhưng lần sau có thể không may mắn vậy.
-- Vì mỗi lần export, app tạo folder tên riêng có timestamp (xem `app/drive_export.py`), không bao giờ cần
+- Vì mỗi lần batch export, app tạo folder tên riêng có timestamp (xem `app/drive_export.py`), không bao giờ cần
   xoá gì ở phía remote — `copy` là đủ và an toàn tuyệt đối cho mục đích này.
 
 Nếu cần viết thêm script/thao tác rclone khác nhắm vào các remote này, luôn dùng `copy`, không dùng `sync`,
