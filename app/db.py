@@ -104,6 +104,31 @@ CREATE INDEX IF NOT EXISTS idx_job_book ON job(book_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dedupe ON job(dedupe_key)
     WHERE dedupe_key IS NOT NULL AND status IN ('pending','running');
 
+CREATE TABLE IF NOT EXISTS flow_definition (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_definition_id INTEGER NOT NULL REFERENCES flow_definition(id) ON DELETE RESTRICT,
+    book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'running',
+    definition_snapshot TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS job_dependency (
+    job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+    depends_on_job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+    PRIMARY KEY (job_id, depends_on_job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_job_dependency_upstream ON job_dependency(depends_on_job_id);
+
 CREATE TABLE IF NOT EXISTS drive_oauth_client (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT NOT NULL,
@@ -460,6 +485,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in pipeline_existing:
             conn.execute(f"ALTER TABLE patch_pipeline ADD COLUMN {name} {definition}")
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(book)")}
+    job_existing = {row["name"] for row in conn.execute("PRAGMA table_info(job)")}
+    for name, definition in {
+        "flow_run_id": "INTEGER REFERENCES flow_run(id) ON DELETE CASCADE",
+        "node_id": "TEXT",
+        "patch_id": "INTEGER REFERENCES patch(id) ON DELETE CASCADE",
+    }.items():
+        if name not in job_existing:
+            conn.execute(f"ALTER TABLE job ADD COLUMN {name} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_flow_run ON job(flow_run_id, patch_id, id)")
     if "voice_clip_path" not in existing:
         conn.execute("ALTER TABLE book ADD COLUMN voice_clip_path TEXT")
     if "voice_transcript" not in existing:

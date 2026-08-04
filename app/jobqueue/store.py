@@ -18,6 +18,7 @@ _COLUMNS = (
     "progress_current, progress_total, result_json, error_message, attempt_count, "
     "max_attempts, next_retry_at, worker_id, heartbeat_at, created_at, started_at, "
     "finished_at, updated_at"
+    ", flow_run_id, node_id, patch_id"
 )
 
 
@@ -52,6 +53,10 @@ def enqueue(
     dedupe_key: str | None = None,
     priority: int = 100,
     max_attempts: int = 3,
+    flow_run_id: int | None = None,
+    node_id: str | None = None,
+    patch_id: int | None = None,
+    depends_on: int | None = None,
 ) -> int | None:
     """Trả về id job mới, hoặc None nếu đã có job cùng dedupe_key đang pending/running.
 
@@ -61,16 +66,23 @@ def enqueue(
     try:
         cur = conn.execute(
             """INSERT INTO job (job_type, status, priority, book_id, payload_json,
-                                dedupe_key, max_attempts, created_at, updated_at)
-               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
+                                dedupe_key, max_attempts, created_at, updated_at,
+                                flow_run_id, node_id, patch_id)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (job_type, priority, book_id, json.dumps(payload or {}), dedupe_key,
-             max_attempts, now, now),
+             max_attempts, now, now, flow_run_id, node_id, patch_id),
         )
     except sqlite3.IntegrityError:
         conn.rollback()
         return None
+    job_id = cur.lastrowid
+    if depends_on is not None:
+        conn.execute(
+            "INSERT INTO job_dependency (job_id, depends_on_job_id) VALUES (?, ?)",
+            (job_id, depends_on),
+        )
     conn.commit()
-    return cur.lastrowid
+    return job_id
 
 
 def get(conn: sqlite3.Connection, job_id: int) -> Job | None:
@@ -101,8 +113,13 @@ def claim(
                    heartbeat_at=?, attempt_count=attempt_count+1, error_message=NULL,
                    next_retry_at=NULL, updated_at=?
              WHERE id=(SELECT id FROM job
-                        WHERE status='pending' AND job_type=?
-                          AND (next_retry_at IS NULL OR next_retry_at<=?)
+                         WHERE status='pending' AND job_type=?
+                           AND (next_retry_at IS NULL OR next_retry_at<=?)
+                           AND NOT EXISTS (
+                               SELECT 1 FROM job_dependency d
+                               JOIN job upstream ON upstream.id=d.depends_on_job_id
+                               WHERE d.job_id=job.id AND upstream.status!='done'
+                           )
                         ORDER BY priority, id LIMIT 1)
                AND status='pending'
          RETURNING {_COLUMNS}""",
@@ -318,6 +335,24 @@ def clear_inactive(conn: sqlite3.Connection) -> int:
     cur = conn.execute("DELETE FROM job WHERE status NOT IN ('running', 'cancelling')")
     conn.commit()
     return cur.rowcount
+
+
+def delete_pending(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Delete only work that has not started; dependent jobs are cancelled for auditability."""
+    job = get(conn, job_id)
+    if job is None or job.status != PENDING:
+        return False
+    now = _now()
+    conn.execute(
+        """UPDATE job SET status='cancelled', error_message='upstream job was deleted',
+                  finished_at=?, updated_at=? WHERE id IN (
+                  SELECT job_id FROM job_dependency WHERE depends_on_job_id=?)
+                  AND status='pending'""",
+        (now, now, job_id),
+    )
+    conn.execute("DELETE FROM job WHERE id=? AND status='pending'", (job_id,))
+    conn.commit()
+    return True
 
 
 def pending_count(conn: sqlite3.Connection, job_type: str) -> int:

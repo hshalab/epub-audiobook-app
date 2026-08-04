@@ -99,6 +99,17 @@ def test_clear_queue_deletes_inactive_and_preserves_active(client):
     assert {job.status for job in store.list_jobs(conn)} == {"running", "cancelling"}
 
 
+def test_delete_removes_only_pending_job(client):
+    c, conn, _ = client
+    pending = store.enqueue(conn, "video")
+    running = store.enqueue(conn, "video")
+    conn.execute("UPDATE job SET status='running' WHERE id=?", (running,))
+    conn.commit()
+    assert c.delete(f"/queue/jobs/{pending}").json()["deleted"] is True
+    assert store.get(conn, pending) is None
+    assert c.delete(f"/queue/jobs/{running}").status_code == 409
+
+
 def test_queue_page_exposes_clear_control(client):
     response = client[0].get("/queue")
     assert response.status_code == 200

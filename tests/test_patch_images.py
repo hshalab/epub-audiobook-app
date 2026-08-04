@@ -146,12 +146,13 @@ def test_resolve_patch_image_returns_none_when_nothing_available():
 
 @patch("app.video_gen.subprocess.run")
 def test_generate_segment_static(mock_run):
+    mock_run.return_value = MagicMock(stdout="10.0\n")
     video_gen.generate_segment(
         "/tmp/img.jpg", "/tmp/audio.wav", "/tmp/out.mp4",
         image_type="none", resolution=(1920, 1080), fps=30,
     )
-    mock_run.assert_called_once()
-    cmd = mock_run.call_args[0][0]
+    assert mock_run.call_count == 2  # ffprobe (narration length) + ffmpeg
+    cmd = mock_run.call_args_list[1][0][0]
     assert "ffmpeg" in cmd[0]
     assert "-loop" in cmd
     assert "1920" in " ".join(cmd)

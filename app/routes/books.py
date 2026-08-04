@@ -207,6 +207,7 @@ def book_detail(request: Request, book_id: int):
         if f.is_file() and f.suffix.lower() in _voice_exts
     ]
     current_voice_name = Path(book.voice_clip_path).name if book and book.voice_clip_path else None
+    from app.tts_engine import list_tts_models
 
     return templates.TemplateResponse(
         request, "book_detail.html", {
@@ -225,6 +226,8 @@ def book_detail(request: Request, book_id: int):
             "voices": voices,
             "current_voice_name": current_voice_name,
             "default_max_chars": settings.tts_max_chars,
+            "tts_models": list_tts_models(),
+            "default_tts_engine": settings.tts_engine,
             "patch_video_ids": patch_video_ids,
             "youtube_configured": youtube_configured,
             "youtube_auto_upload": settings.youtube_auto_upload,
@@ -294,7 +297,8 @@ async def save_video_config(request: Request, book_id: int):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
+        book = repository.get_book(conn, book_id)
+        if book is None:
             raise HTTPException(status_code=404, detail="book not found")
         return save_book_video_config(conn, book_id, validated)
 
@@ -996,6 +1000,11 @@ async def auto_build_patches(
     start_chapter_str = body.get("start_chapter")
     end_chapter_str = body.get("end_chapter")
     patch_size_str = body.get("patch_size")
+    model_was_selected = bool(body.get("tts_engine") or body.get("model_id"))
+    tts_engine = str(body.get("tts_engine") or settings.tts_engine)
+    voice_id = str(body.get("voice_id") or "") or None
+    max_chars = int(body.get("max_chars") or 0)
+    with_effects = str(body.get("with_effects") or "0") in {"1", "true", "True"}
 
     try:
         start_chapter = int(start_chapter_str) if start_chapter_str else None
@@ -1017,7 +1026,8 @@ async def auto_build_patches(
             raise HTTPException(status_code=400, detail="patch_size must be an integer")
 
     with locked_conn(request) as conn:
-        if repository.get_book(conn, book_id) is None:
+        book = repository.get_book(conn, book_id)
+        if book is None:
             raise HTTPException(status_code=404, detail=f"book {book_id} not found")
         try:
             repository.auto_build_patches(conn, book_id, start_chapter, end_chapter, patch_size)
@@ -1026,7 +1036,14 @@ async def auto_build_patches(
         # This route is the "Start queue" button: building the patches is what puts them
         # on the TTS queue. Nothing else does - startup no longer backfills them.
         from app.jobqueue.backfill import enqueue_pending_patch_jobs
-        queued = enqueue_pending_patch_jobs(conn, book_id)
+        if model_was_selected and tts_engine in {"voxcpm2", "omnivoice", "vieneu-fast"} and (
+            not book.voice_clip_path or not Path(book.voice_clip_path).is_file()
+        ):
+            raise HTTPException(status_code=400, detail="model requires the book reference voice")
+        queued = enqueue_pending_patch_jobs(
+            conn, book_id, tts_engine=tts_engine, voice=voice_id,
+            max_chars=max_chars, with_effects=with_effects,
+        )
     logger.info("event=queue.start book_id=%s voxcpm_tts=%s", book_id, queued)
 
     return RedirectResponse(url=f"/books/{book_id}", status_code=303)

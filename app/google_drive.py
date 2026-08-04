@@ -438,7 +438,7 @@ def find_subfolder(service, parent_id: str, name: str) -> str | None:
     """Return the id of a folder named ``name`` directly inside ``parent_id``, or None.
 
     The Colab/Kaggle notebook writes synthesized chunk_NNN.wav files into an "output"
-    subfolder of the exported folder (see colab_kaggle_tts_template.ipynb) - this locates
+    subfolder of the exported folder (see the batch TTS notebook) - this locates
     it so the import routes can look there instead of the export folder's top level.
     """
     resp = service.files().list(

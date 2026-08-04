@@ -29,6 +29,17 @@ dependencies = [
 tts = [
     "voxcpm",
 ]
+omnivoice = [
+    "omnivoice",
+]
+vieneu-fast = [
+    "vieneu",
+]
+all-tts = [
+    "voxcpm",
+    "omnivoice",
+    "vieneu",
+]
 light-tts = [
     "edge-tts>=7.0",
     "gTTS>=2.5",

@@ -8,35 +8,16 @@
 
 <div class="card">
     <div class="card-header">
-        <h3 style="margin:0">Export to Colab / Kaggle</h3>
+        <h3 style="margin:0">Import synthesized chunks</h3>
     </div>
     <p class="preview-help" style="margin-top:0">
-        Export this patch's chunk texts (plus a ready-to-run notebook) so synthesis can run
-        on an external GPU, then import the resulting audio back.
+        Import chunk results created by the batch Colab/Kaggle notebook.
     </p>
-
-    {% if not sync_targets %}
-    <div class="warning-block">
-        <p style="margin:0"><strong>Chưa có folder đồng bộ.</strong> <a href="/drive">Thêm folder Google Drive Desktop</a> trước khi export tự động.</p>
-    </div>
-    {% endif %}
-
-    <div class="btn-group">
-        <a href="/books/{{ book.id }}/patches/{{ patch.id }}/export/download" class="btn-primary btn-sm">Download package (.zip)</a>
-        {% if sync_targets and patch.status != 'processing' %}
-        <form action="/books/{{ book.id }}/patches/{{ patch.id }}/export" method="post" style="display:inline" class="drive-export-form">
-            <select name="sync_target_id" required><option value="">Chọn tài khoản</option>{% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}</select>
-            <button type="submit" class="btn-outline btn-sm">Export vào Drive Desktop</button>
-        </form>
-        {% endif %}
-    </div>
 
     {% if patch.status != 'processing' %}
     <div style="margin-top:var(--space-md);padding-top:var(--space-md);border-top:1px solid var(--border, #333)">
         <p class="preview-help" style="margin-top:0">
-            <strong>No Google connection needed.</strong> Download the .zip above, run the notebook on
-            any Colab/Kaggle account (even a different Google account), then upload the resulting
-            <code>chunk_NNN.wav</code> files (or a .zip of them) back here:
+            Upload the resulting <code>chunk_NNN.wav</code> files, or a zip containing them:
         </p>
         <form action="/books/{{ book.id }}/patches/{{ patch.id }}/import-local" method="post"
               enctype="multipart/form-data" class="form-row" style="align-items:flex-end">
@@ -174,29 +155,4 @@
     </table>
     </div>
 </div>
-{% block scripts %}
-{{ super() }}
-<script>
-(function () {
-    document.querySelectorAll('.drive-export-form').forEach(function (form) {
-        form.addEventListener('submit', async function (event) {
-            event.preventDefault();
-            const button = form.querySelector('button[type="submit"]');
-            if (button) { button.disabled = true; button.dataset.label = button.textContent; button.textContent = 'Đang export...'; }
-            try {
-                const response = await fetch(form.action, { method: 'POST', body: new FormData(form), headers: { 'Accept': 'application/json' } });
-                if (!response.ok) {
-                    const data = await response.json().catch(() => ({}));
-                    throw new Error(data.detail || 'Export thất bại');
-                }
-                window.location.href = response.url;
-            } catch (error) {
-                alert(error.message);
-                if (button) { button.disabled = false; button.textContent = button.dataset.label; }
-            }
-        });
-    });
-})();
-</script>
-{% endblock %}
 {% endblock %}

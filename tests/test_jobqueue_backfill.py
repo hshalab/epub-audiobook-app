@@ -41,6 +41,7 @@ def test_pending_patches_become_voxcpm_jobs(tmp_path):
     assert enqueue_pending_patch_jobs(conn) == 1
     job = store.list_jobs(conn, job_type="voxcpm_tts")[0]
     assert job.payload["patch_id"] == patch_id
+    assert job.payload["tts_engine"] == "voxcpm2"
     assert job.dedupe_key == f"voxcpm_tts:patch={patch_id}"
     assert job.book_id == 1
 
@@ -71,6 +72,13 @@ def test_pending_patch_jobs_can_be_scoped_to_one_book(tmp_path):
     assert enqueue_pending_patch_jobs(conn, book_id=1) == 1
     jobs = store.list_jobs(conn, job_type="voxcpm_tts")
     assert [j.payload["patch_id"] for j in jobs] == [mine]
+
+
+def test_pending_patch_jobs_snapshot_selected_tts_engine(tmp_path):
+    conn = _conn(tmp_path)
+    _patch(conn)
+    assert enqueue_pending_patch_jobs(conn, tts_engine="vieneu-fast") == 1
+    assert store.list_jobs(conn, job_type="voxcpm_tts")[0].payload["tts_engine"] == "vieneu-fast"
 
 
 def test_pending_book_jobs_become_video_jobs(tmp_path):
@@ -142,5 +150,5 @@ def test_build_queue_registers_all_four_handlers(tmp_path):
     assert queue.capacity("light_tts") == 10
     assert {p["job_type"] for p in queue.pool_status()} == {
         "voxcpm_tts", "video", "patch_video", "standalone_video",
-        "youtube_upload", "light_tts"
+        "youtube_upload", "light_tts", "flow_audio", "flow_video", "flow_youtube"
     }

@@ -1,7 +1,14 @@
-"""Sinh audio cho một patch bằng VoxCPM."""
+"""Sinh audio cho một patch bằng engine TTS đã chọn (mọi model trong catalog).
+
+Handler dùng chung cho toàn bộ pipeline audiobook: voxcpm2 / omnivoice /
+vieneu-fast / edge-tts / gtts đều chạy cùng mã này — viết chunk WAV, resume theo
+chunk, gộp patch, gộp sách và xếp hàng video khi xong.
+"""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 
 import soundfile as sf
@@ -12,28 +19,64 @@ from app.jobqueue import store
 from app.jobqueue.models import JobFatalError
 
 _CHUNK_PAUSE_MS = 300
-_engine = None
+_engines = {}
+
+_META_FILE = ".tts_meta"
 
 
-def get_engine():
-    global _engine
-    if _engine is None:
-        from app.tts_engine import VoxCPMEngine
-        _engine = VoxCPMEngine()
-    return _engine
+def get_engine(engine_id: str | None = None, voice: str | None = None):
+    from app.tts_engine import create_tts_engine
+
+    engine_id = engine_id or settings.tts_engine
+    key = (engine_id, voice)
+    if key not in _engines:
+        _engines[key] = create_tts_engine(engine_id, voice=voice)
+    return _engines[key]
+
+
+def chunk_fingerprint(engine, engine_id: str, max_chars: int, plan: list[dict]) -> str:
+    """Hash of everything that changes the audio: engine id + engine/model config +
+    voice + chunk cap + the exact chunked text. Stored in ``.tts_meta`` next to the
+    chunk files; a mismatch means the chunks on disk were produced under a different
+    model/voice/text and must be regenerated (not resumed)."""
+    model_cfg = getattr(engine, "config_fingerprint", lambda: engine_id)()
+    text = "\n\n".join(item["text"] for item in plan)
+    raw = f"{engine_id}|{model_cfg}|{max_chars}|{text}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
 def handle(ctx) -> dict:
-    patch_id = ctx.job.payload.get("patch_id")
+    from app.tts_engine import normalize_tt_payload
+
+    payload = normalize_tt_payload(ctx.job.payload, default_engine=settings.tts_engine)
+    patch_id = payload.get("patch_id")
     if patch_id is None:
         raise JobFatalError("payload thiếu patch_id")
     patch = repository.get_patch(ctx.conn, patch_id)
     if patch is None:
         raise JobFatalError(f"patch {patch_id} không tồn tại")
 
-    ctx.log(f"synthesize patch {patch_id} (book {patch.book_id})")
+    engine_id = payload["tts_engine"]
+    voice = payload.get("voice") or None
+    max_chars = int(payload.get("max_chars") or 0)
+    with_effects = bool(payload.get("with_effects"))
+    if settings.tts_write_chunk_files:
+        snapshot_dir = Path(settings.data_root) / "books" / str(patch.book_id) / "patches" / f"{patch.id}_chunks"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        (snapshot_dir / ".tts_request.json").write_text(json.dumps({
+            "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
+            "with_effects": with_effects,
+        }), encoding="utf-8")
+
+    ctx.log(f"synthesize patch {patch_id} (book {patch.book_id}) engine={engine_id}")
     try:
-        audio_path, chunk_count = synthesize_patch(ctx, patch, get_engine(), Path(settings.data_root))
+        engine = get_engine(engine_id, voice)
+        audio_path, chunk_count = synthesize_patch(
+            ctx, patch, engine, Path(settings.data_root),
+            engine_id=engine_id,
+            effective_max_chars=max_chars if max_chars > 0 else None,
+            with_effects=with_effects,
+        )
     except asyncio.CancelledError:
         raise
     except JobFatalError:
@@ -54,8 +97,11 @@ def handle(ctx) -> dict:
     return {"audio_path": audio_path, "chunks": chunk_count, "final_audio_path": final_path}
 
 
-def synthesize_patch(ctx, patch, engine, data_root: Path) -> tuple[str, int]:
-    plan_inputs = repository.fetch_patch_chunk_inputs(ctx.conn, patch)
+def synthesize_patch(
+    ctx, patch, engine, data_root: Path, *,
+    engine_id: str, effective_max_chars: int | None, with_effects: bool,
+) -> tuple[str, int]:
+    plan_inputs = repository.fetch_patch_chunk_inputs(ctx.conn, patch, max_chars=effective_max_chars)
     book = repository.get_book(ctx.conn, patch.book_id)
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
     if not plan:
@@ -79,15 +125,35 @@ def synthesize_patch(ctx, patch, engine, data_root: Path) -> tuple[str, int]:
             ctx.progress(index + 1, total)
         chapters, _ = audio_merge.build_chapter_marks(plan, [len(a) for a in wavs], engine.sample_rate, _CHUNK_PAUSE_MS)
         audio_merge.concat_chunks_to_wav(wavs, engine.sample_rate, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+        _apply_effects(ctx, with_effects, audio_path, plan)
         audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
         ctx.progress(total, total, phase="synthesizing")
         return audio_path, total
 
     chunk_dir = book_dir / f"{patch.id}_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
-    (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
     repository.update_patch_chunk_count(ctx.conn, patch.id, total)
-    start_index = max(0, min(patch.next_chunk_index, total))
+
+    # Fingerprint the run against the chunk files already on disk. Same config+text
+    # => resume from the persisted next_chunk_index; anything else => the chunks are
+    # stale, so wipe them and restart at zero.
+    meta_path = chunk_dir / _META_FILE
+    meta_key = chunk_fingerprint(engine, engine_id, effective_max_chars or 0, plan)
+    try:
+        reusable = meta_path.read_text(encoding="utf-8").strip() == meta_key
+    except OSError:
+        reusable = False
+    if not reusable:
+        for stale in chunk_dir.glob("chunk_*.wav"):
+            stale.unlink(missing_ok=True)
+        (chunk_dir / ".light_tts_meta").unlink(missing_ok=True)
+        meta_path.write_text(meta_key, encoding="utf-8")
+        if patch.next_chunk_index:
+            repository.update_patch_chunk_progress(ctx.conn, patch.id, 0)
+        ctx.log(f"model/config đổi (fingerprint {meta_key[:8]}); xóa chunk cũ, chạy lại từ đầu")
+        start_index = 0
+    else:
+        start_index = max(0, min(patch.next_chunk_index, total))
     if start_index > 0:
         ctx.log(f"resume từ chunk {start_index}/{total}")
 
@@ -107,9 +173,21 @@ def synthesize_patch(ctx, patch, engine, data_root: Path) -> tuple[str, int]:
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     ctx.progress(total, total, phase="merging")
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
+    _apply_effects(ctx, with_effects, audio_path, plan)
     audio_merge.try_write_timeline(timeline_path, engine.sample_rate, chapters, sf.info(audio_path).frames)
     ctx.progress(total, total, phase="synthesizing")
     return audio_path, total
+
+
+def _apply_effects(ctx, with_effects: bool, audio_path: str, plan: list[dict]) -> None:
+    """Overlay sound-effect clips onto the merged patch audio. Shared with the
+    LightTTS preview path so effects behave identically for every engine."""
+    if not with_effects:
+        return
+    from app.routes.text_studio import _mix_effects
+
+    mixed = _mix_effects(Path(audio_path).read_bytes(), "\n\n".join(i["text"] for i in plan), ctx.conn)
+    Path(audio_path).write_bytes(mixed)
 
 
 def finalize_book_if_ready(ctx, book_id: int) -> str | None:

@@ -64,6 +64,7 @@
                 Logs
             </a>
             <a href="/queue" {% if request.url.path.startswith('/queue') %}class="active"{% endif %}>Hàng đợi</a>
+            <a href="/flows" {% if request.url.path.startswith('/flows') %}class="active"{% endif %}>Flows</a>
         </nav>
         <div class="sidebar-footer">
             <button class="dark-toggle" onclick="toggleTheme()" title="Toggle dark mode" aria-label="Toggle dark mode">

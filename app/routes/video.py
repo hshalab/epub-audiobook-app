@@ -644,7 +644,6 @@ async def _run_single_video(
             "completed_at": completed_at.isoformat(timespec="seconds"),
         }
         # Auto-upload to YouTube if configured
-        from app.config import settings
         from app import youtube
         if settings.youtube_auto_upload and youtube.is_configured():
             try:

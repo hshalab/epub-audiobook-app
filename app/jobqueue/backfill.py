@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
+from pathlib import Path
 from typing import Callable
 
 from app.config import settings
 from app.jobqueue import store
-from app.jobqueue.handlers import light_tts, patch_video, standalone_video, video, voxcpm_tts, youtube_upload
+from app.jobqueue.handlers import flow_nodes, light_tts, patch_video, standalone_video, video, voxcpm_tts, youtube_upload
 from app.jobqueue.runner import JobQueue, parse_concurrency
 
 logger = logging.getLogger(__name__)
@@ -32,17 +34,33 @@ def build_queue(conn_factory: Callable[[], sqlite3.Connection]) -> JobQueue:
     queue.register("standalone_video", standalone_video.handle)
     queue.register("youtube_upload", youtube_upload.handle, cancellable=False)
     queue.register("light_tts", light_tts.handle)
+    queue.register("flow_audio", flow_nodes.audio)
+    queue.register("flow_video", flow_nodes.video)
+    queue.register("flow_youtube", flow_nodes.youtube, cancellable=False)
     return queue
 
 
-def enqueue_pending_patch_jobs(conn: sqlite3.Connection, book_id: int | None = None) -> int:
+def enqueue_pending_patch_jobs(
+    conn: sqlite3.Connection, book_id: int | None = None, tts_engine: str | None = None,
+    *, voice: str | None = None, max_chars: int = 0, with_effects: bool = False,
+    patch_ids: list[int] | None = None,
+) -> int:
     """Queue a voxcpm_tts job for every 'pending' patch, optionally of a single book.
 
     Deliberately NOT part of backfill_pending_jobs: synthesis is expensive and holds the
     GPU, so it only starts when an operator asks for it (Start queue / Retry failed /
     Requeue stuck / Reset all). Running it at startup would refill a queue that was just
     cleared from /queue."""
-    if book_id is None:
+    if patch_ids is not None:
+        ids = list(dict.fromkeys(int(patch_id) for patch_id in patch_ids))
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT id, book_id FROM patch WHERE id IN ({placeholders}) AND status!='processing' ORDER BY book_id, patch_index",
+            ids,
+        ).fetchall()
+    elif book_id is None:
         rows = conn.execute(
             "SELECT id, book_id FROM patch WHERE status='pending' ORDER BY book_id, patch_index"
         ).fetchall()
@@ -52,12 +70,33 @@ def enqueue_pending_patch_jobs(conn: sqlite3.Connection, book_id: int | None = N
             (book_id,),
         ).fetchall()
 
+    explicit_config = tts_engine is not None
+    engine_id = tts_engine or settings.tts_engine
+    from app.tts_engine import create_tts_engine
+    # Validate without loading the heavy model.
+    engine = create_tts_engine(engine_id)
+    del engine
     queued = 0
     for row in rows:
+        request = {
+            "tts_engine": engine_id, "voice": voice, "max_chars": max_chars,
+            "with_effects": with_effects,
+        }
+        if not explicit_config:
+            snapshot = (
+                Path(settings.data_root) / "books" / str(row["book_id"]) / "patches" /
+                f"{row['id']}_chunks" / ".tts_request.json"
+            )
+            try:
+                saved = json.loads(snapshot.read_text(encoding="utf-8"))
+                if saved.get("tts_engine"):
+                    request.update(saved)
+            except (OSError, ValueError, TypeError):
+                pass
         if store.enqueue(
             conn,
             "voxcpm_tts",
-            payload={"patch_id": row["id"]},
+            payload={"patch_id": row["id"], **request},
             book_id=row["book_id"],
             dedupe_key=f"voxcpm_tts:patch={row['id']}",
         ) is not None:

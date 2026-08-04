@@ -376,7 +376,7 @@ async def preview_paragraph(request: Request, book_id: int, patch_id: int):
         _require_patch(conn, book_id, patch_id)
         try:
             engine = LightTTSEngine(
-                backend=body.get("backend") or settings.light_tts_backend,
+                backend=body.get("tts_engine") or body.get("backend") or settings.light_tts_backend,
                 voice=body.get("voice") or settings.light_tts_voice,
             )
         except RuntimeError as exc:
@@ -397,6 +397,7 @@ async def preview_stream(
     book_id: int,
     patch_id: int,
     backend: str = "",
+    tts_engine: str = "",
     voice: str = "",
     with_effects: int = 0,
     max_chars: int = 0,
@@ -409,8 +410,9 @@ async def preview_stream(
     with locked_conn(request) as conn:
         _require_patch(conn, book_id, patch_id)
     key = dedupe_key(patch_id)
-    payload = {"patch_id": patch_id, "book_id": book_id, "backend": backend, "voice": voice,
-               "max_chars": max_chars, "with_effects": with_effects}
+    engine = tts_engine or backend or settings.light_tts_backend
+    payload = {"patch_id": patch_id, "book_id": book_id, "tts_engine": engine,
+               "voice": voice, "max_chars": max_chars, "with_effects": with_effects}
     with locked_conn(request) as conn:
         existing = store.find_live_by_dedupe(conn, key)
         if existing is not None:
@@ -446,6 +448,37 @@ async def preview_stream(
                 return
             await asyncio.sleep(0.3)
     return StreamingResponse(_bridge(), media_type="text/event-stream")
+
+
+@router.post("/books/{book_id}/tts/generate")
+async def generate_selected_tts(request: Request, book_id: int):
+    """Queue selected patches through the common five-model audiobook pipeline."""
+    from app.jobqueue.backfill import enqueue_pending_patch_jobs
+    from app.tts_engine import normalize_tt_payload
+
+    body = await request.json()
+    patch_ids = [int(value) for value in body.get("patch_ids") or []]
+    payload = normalize_tt_payload({
+        "tts_engine": body.get("model_id"),
+        "voice": body.get("voice_id"),
+        "max_chars": body.get("max_chars"),
+        "with_effects": body.get("with_effects"),
+    })
+    with locked_conn(request) as conn:
+        book = repository.get_book(conn, book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        if payload["tts_engine"] in {"voxcpm2", "omnivoice", "vieneu-fast"}:
+            if not book.voice_clip_path or not Path(book.voice_clip_path).is_file():
+                raise HTTPException(status_code=400, detail="model requires the book reference voice")
+        if payload["tts_engine"] in {"edge-tts", "gtts"} and not payload["voice"]:
+            raise HTTPException(status_code=400, detail="model requires a voice or language")
+        queued = enqueue_pending_patch_jobs(
+            conn, book_id, payload["tts_engine"], voice=payload["voice"],
+            max_chars=payload["max_chars"], with_effects=payload["with_effects"],
+            patch_ids=patch_ids,
+        )
+    return {"queued": queued}
 
 
 def _finish_patch_audio(

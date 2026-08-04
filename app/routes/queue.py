@@ -28,6 +28,7 @@ _JOB_FIELDS = ("id", "job_type", "status", "priority", "book_id", "phase",
                "progress_current", "progress_total", "error_message", "attempt_count",
                "max_attempts", "worker_id", "created_at", "started_at", "finished_at",
                "updated_at")
+_JOB_FIELDS += ("flow_run_id", "node_id", "patch_id")
 
 
 def _job_dict(job) -> dict:
@@ -213,6 +214,14 @@ def retry_job(request: Request, job_id: int):
         if not store.retry(conn, job_id):
             raise HTTPException(409, detail="chỉ retry được job đã kết thúc")
     return {"job_id": job_id, "retried": True}
+
+
+@router.delete("/queue/jobs/{job_id}")
+def delete_job(request: Request, job_id: int):
+    with locked_conn(request) as conn:
+        if not store.delete_pending(conn, job_id):
+            raise HTTPException(409, detail="chỉ xóa được job đang chờ")
+    return {"job_id": job_id, "deleted": True}
 
 
 @router.post("/queue/clear")

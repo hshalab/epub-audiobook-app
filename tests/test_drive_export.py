@@ -115,21 +115,3 @@ def test_package_chunk_count_reads_the_manifest(conn, tmp_path):
     assert drive_export.package_chunk_count(dest) == manifest["chunk_count"]
 
 
-def test_publish_path_counts_chunks_from_manifest_not_txt_files(conn, tmp_path):
-    """The Drive Desktop export route records chunk_count from the built package.
-
-    Guards the regression where dropping chunk_NNN.txt made the old
-    glob-based count silently record zero."""
-    import inspect
-
-    from app.routes import patches as patches_routes
-
-    connection, book, patch = conn
-    dest = tmp_path / "patch"
-    manifest = drive_export._write_patch_files(connection, book, patch, dest, "reference.wav")
-    assert manifest["chunk_count"] > 0
-
-    source = inspect.getsource(patches_routes)
-    assert 'f.suffix == ".txt"' not in source
-    assert "drive_export.package_chunk_count(" in source
-    assert drive_export.package_chunk_count(dest) == manifest["chunk_count"]

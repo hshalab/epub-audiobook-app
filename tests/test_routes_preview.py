@@ -88,7 +88,7 @@ def test_book_detail_groups_workflow_controls(client):
 
     assert 'class="book-tools"' in html
     assert 'data-open-dialog="video-config-modal"' in html
-    assert 'id="patch-media-modal"' in html
+    assert 'id="patch-image-modal"' in html
     assert 'class="batch-action-group"' in html
     assert '>Generate<' in html
     assert '>Export<' in html

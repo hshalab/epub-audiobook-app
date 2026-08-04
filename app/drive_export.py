@@ -1,15 +1,4 @@
-"""Build the exportable package (manifest + chunk texts + notebook template) for a
-patch, so it can be synthesized on Google Colab/Kaggle and the resulting audio
-re-imported. See app/google_drive.py for the Drive API calls and
-app/routes/patches.py for the export/import routes that tie it together.
-
-Two package shapes exist:
-- single patch: manifest.json (chunk text inlined in chunk_metadata) + notebook at
-  the package root (build_export_package / build_export_zip), and
-- batch: several patches under patches/patch_NNN/ with a batch_manifest.json and
-  a batch notebook at the root (build_batch_export_package / build_batch_export_zip),
-  so one Colab/Kaggle run can synthesize and merge every selected patch.
-"""
+"""Build batch packages for Colab/Kaggle synthesis and result re-import."""
 from __future__ import annotations
 
 import json
@@ -25,7 +14,6 @@ from app import repository
 from app.config import settings
 from app.models import Book, Patch
 
-_NOTEBOOK_TEMPLATE = Path(__file__).parent / "assets" / "colab_kaggle_tts_template.ipynb"
 _BATCH_NOTEBOOK_TEMPLATE = Path(__file__).parent / "assets" / "colab_kaggle_batch_tts_template.ipynb"
 _TMP_DIR = Path(settings.data_root) / "tmp" / "patch_export"
 
@@ -82,6 +70,25 @@ def _voice_clip_or_raise(book: Book) -> Path:
     return Path(book.voice_clip_path)
 
 
+def _export_tts_config(book: Book, model_id: str, voice_id: str | None = None) -> tuple[dict, Path | None]:
+    from app.tts_engine import list_tts_models
+
+    models = {model["id"]: model for model in list_tts_models()}
+    if model_id not in models:
+        raise ValueError(f"unknown TTS model: {model_id}")
+    model = models[model_id]
+    reference = _voice_clip_or_raise(book) if model["supports_reference"] else None
+    if not model["supports_reference"] and not voice_id:
+        voice_id = model.get("default_voice")
+    if not model["supports_reference"] and not voice_id:
+        raise ValueError(f"model '{model_id}' requires a voice or language")
+    return {
+        "model_id": model_id,
+        "voice_id": voice_id,
+        "options": {},
+    }, reference
+
+
 def _write_patch_files(
     conn: sqlite3.Connection,
     book: Book,
@@ -89,11 +96,13 @@ def _write_patch_files(
     dest_dir: Path,
     reference_rel: str | None,
     overlay_image_path: str | None = None,
+    tts: dict | None = None,
+    max_chars: int = 0,
 ) -> dict:
     """Write manifest.json (with chunk text inlined) + background image for one patch into
     dest_dir and return the manifest dict. overlay_image_path is the pre-rendered
     background image (text already baked in by Pillow); falls back to raw background."""
-    plan = repository.build_patch_chunk_plan(conn, patch)
+    plan = repository.build_patch_chunk_plan(conn, patch, max_chars=max_chars or None)
     if not plan:
         raise ValueError(f"patch {patch.id} has no text to export")
 
@@ -136,13 +145,14 @@ def _write_patch_files(
         "patch_name": patch.name or str(patch.patch_index),
         "chapter_start": patch.chapter_start,
         "chapter_end": patch.chapter_end,
-        "max_chars": patch.max_chars or settings.tts_max_chars,
+        "max_chars": max_chars or patch.max_chars or settings.tts_max_chars,
         "chunk_count": len(plan),
         "chunks": chunk_filenames,
         "chunk_metadata": chunk_metadata,
         "reference_wav": reference_rel,
         "reference_transcript": book.voice_transcript or None,
         "voxcpm_model_id": "openbmb/VoxCPM2",
+        "tts": tts or {"model_id": "voxcpm2", "voice_id": None, "options": {}},
         "expected_outputs": [f"chunk_{i:03d}.wav" for i in range(len(plan))],
         "background_image": bg_filename,
     }
@@ -174,73 +184,6 @@ def _copy_music_to_package(book: Book, conn: sqlite3.Connection, package_dir: Pa
     dest_name = Path(music.file_path).name
     shutil.copyfile(music.file_path, music_dir / dest_name)
     return f"music/{dest_name}"
-
-
-def build_export_package(
-    conn: sqlite3.Connection,
-    patch: Patch,
-    drive_folder_name: str | None = None,
-    hf_token: str | None = None,
-) -> Path:
-    """Write manifest.json + background image + optional music + notebook
-    template into a fresh temp directory. Caller is responsible for deleting it."""
-    from app import image_overlay
-
-    book = repository.get_book(conn, patch.book_id)
-    if book is None:
-        raise ValueError(f"book {patch.book_id} not found")
-    voice_clip = _voice_clip_or_raise(book)
-
-    _TMP_DIR.mkdir(parents=True, exist_ok=True)
-    package_dir = _TMP_DIR / f"patch_{patch.id}_{uuid.uuid4().hex[:8]}"
-    package_dir.mkdir(parents=True, exist_ok=True)
-
-    reference_wav_name = "reference" + voice_clip.suffix
-    shutil.copyfile(voice_clip, package_dir / reference_wav_name)
-
-    overlay_path = image_overlay.ensure_patch_overlay(
-        book, patch, settings.default_font_path or None
-    )
-    _write_patch_files(conn, book, patch, package_dir, reference_wav_name, overlay_path)
-
-    music_rel = _copy_music_to_package(book, conn, package_dir)
-
-    w, h = (book.video_resolution or "1920x1080").split("x")
-    video_config = {
-        "resolution": book.video_resolution or "1920x1080",
-        "fps": book.video_fps or 30,
-        "music_file": music_rel,
-        "music_volume": book.music_volume,
-        "youtube_privacy": settings.youtube_default_privacy,
-    }
-
-    folder_name = drive_folder_name or folder_name_for_patch(book.title, patch)
-    notebook_src = _NOTEBOOK_TEMPLATE.read_text(encoding="utf-8")
-    notebook_src = notebook_src.replace("__PATCH_ID__", str(patch.id))
-    notebook_src = notebook_src.replace(
-        "__DEFAULT_FOLDER_NAME__", json.dumps(folder_name)[1:-1]
-    )
-    notebook_src = notebook_src.replace("__HF_TOKEN__", (hf_token or settings.hf_token) or "")
-    notebook_src = notebook_src.replace(
-        "__VIDEO_CONFIG__", json.dumps(video_config, ensure_ascii=False)
-    )
-    (package_dir / "colab_kaggle_tts_template.ipynb").write_text(notebook_src, encoding="utf-8")
-
-    return package_dir
-
-
-def build_export_zip(
-    conn: sqlite3.Connection,
-    patch: Patch,
-    hf_token: str | None = None,
-) -> Path:
-    """Same package as build_export_package, zipped up for local download."""
-    package_dir = build_export_package(conn, patch, hf_token=hf_token)
-    try:
-        zip_path = shutil.make_archive(str(package_dir), "zip", root_dir=package_dir)
-    finally:
-        shutil.rmtree(package_dir, ignore_errors=True)
-    return Path(zip_path)
 
 
 def folder_name_for_patch(book_title: str, patch: Patch) -> str:
@@ -277,6 +220,10 @@ def build_batch_export_package(
     patches: list[Patch],
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
+    model_id: str = "voxcpm2",
+    voice_id: str | None = None,
+    max_chars: int = 0,
+    with_effects: bool = False,
 ) -> tuple[Path, dict]:
     """Write a multi-patch package: batch_manifest.json + the batch notebook at the
     root, one shared voice reference clip, per-patch background images (overlays),
@@ -292,7 +239,8 @@ def build_batch_export_package(
     book = repository.get_book(conn, patches[0].book_id)
     if book is None:
         raise ValueError(f"book {patches[0].book_id} not found")
-    voice_clip = _voice_clip_or_raise(book)
+    tts, voice_clip = _export_tts_config(book, model_id, voice_id)
+    tts["options"]["with_effects"] = with_effects
 
     patches = sorted(patches, key=lambda p: p.patch_index)
 
@@ -300,8 +248,10 @@ def build_batch_export_package(
     package_dir = _TMP_DIR / f"batch_{uuid.uuid4().hex[:8]}"
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    reference_wav_name = "reference" + voice_clip.suffix
-    shutil.copyfile(voice_clip, package_dir / reference_wav_name)
+    reference_wav_name = None
+    if voice_clip is not None:
+        reference_wav_name = "reference" + voice_clip.suffix
+        shutil.copyfile(voice_clip, package_dir / reference_wav_name)
 
     music_rel = _copy_music_to_package(book, conn, package_dir)
 
@@ -309,10 +259,11 @@ def build_batch_export_package(
     patch_entries = []
     for patch in patches:
         folder_rel = f"patches/patch_{patch.patch_index:03d}"
-        reference_rel = f"../../{reference_wav_name}"
+        reference_rel = f"../../{reference_wav_name}" if reference_wav_name else None
         overlay_path = image_overlay.ensure_patch_overlay(book, patch, font_path)
         manifest = _write_patch_files(
-            conn, book, patch, package_dir / folder_rel, reference_rel, overlay_path
+            conn, book, patch, package_dir / folder_rel, reference_rel, overlay_path,
+            tts=tts, max_chars=max_chars,
         )
         patch_entries.append({
             "patch_id": patch.id,
@@ -344,6 +295,7 @@ def build_batch_export_package(
         "book_title": book.title,
         "created_at": timestamp.isoformat(),
         "voxcpm_model_id": "openbmb/VoxCPM2",
+        "tts": tts,
         "reference_wav": reference_wav_name,
         "reference_transcript": book.voice_transcript or None,
         "patch_count": len(patch_entries),
@@ -371,10 +323,12 @@ def build_batch_export_zip(
     patches: list[Patch],
     drive_folder_name: str | None = None,
     hf_token: str | None = None,
+    **tts_options,
 ) -> Path:
     """Same package as build_batch_export_package, zipped up for local download."""
     package_dir, _ = build_batch_export_package(
-        conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token
+        conn, patches, drive_folder_name=drive_folder_name, hf_token=hf_token,
+        **tts_options,
     )
     try:
         zip_path = shutil.make_archive(str(package_dir), "zip", root_dir=package_dir)

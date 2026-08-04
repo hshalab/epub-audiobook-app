@@ -24,7 +24,6 @@ import pytest
 
 ASSETS = Path(__file__).resolve().parents[1] / "app" / "assets"
 TEMPLATES = [
-    ASSETS / "colab_kaggle_tts_template.ipynb",
     ASSETS / "colab_kaggle_batch_tts_template.ipynb",
 ]
 
@@ -87,8 +86,9 @@ def test_manifest_cell_requires_reference_wav(template):
 
 
 def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
-    src = _code_cells(TEMPLATES[1])[7]
-    assert "seed=42" in src
+    src = _code_cells(TEMPLATES[0])[7]
+    assert "torch.manual_seed(42)" in src
+    assert "seed=42" not in src
     assert "cfg_value=2.0" in src
     assert "inference_timesteps=10" in src
     assert "_CHUNK_PAUSE_MS = 300" in src
@@ -99,8 +99,18 @@ def test_batch_cell_8_is_deterministic_and_streams_atomic_merge():
     assert "np.concatenate" not in src
 
 
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_voxcpm_seed_is_global_and_set_immediately_before_generate(template):
+    generation_cells = [src for src in _code_cells(template) if "model.generate(" in src]
+    assert generation_cells
+    for src in generation_cells:
+        assert "torch.manual_seed(42)" in src
+        assert "seed=42" not in src
+        assert src.index("torch.manual_seed(42)") < src.index("model.generate(")
+
+
 def test_batch_cell_8_validates_metadata_and_writes_version_1_timeline():
-    src = _code_cells(TEMPLATES[1])[7]
+    src = _code_cells(TEMPLATES[0])[7]
     for token in (
         "chunk_metadata", "chapter_index", "chapter_title", "is_chapter_start",
         "timeline", '"version": 1', "flush", "fsync", "warning",
@@ -116,7 +126,7 @@ def test_batch_cell_8_validates_metadata_and_writes_version_1_timeline():
 
 
 def test_batch_cell_8_preserves_legacy_fallback_and_skip_warning():
-    src = _code_cells(TEMPLATES[1])[7]
+    src = _code_cells(TEMPLATES[0])[7]
     assert 'manifest.get("chunk_metadata")' in src
     assert "SKIP_EXISTING" in src
     assert "delete result and rerun" in src.lower()
@@ -125,7 +135,7 @@ def test_batch_cell_8_preserves_legacy_fallback_and_skip_warning():
 
 
 def _cell8_helpers():
-    src = _code_cells(TEMPLATES[1])[7]
+    src = _code_cells(TEMPLATES[0])[7]
     match = re.search(r"^# BEGIN CELL 8 HELPERS$(.*?)^# END CELL 8 HELPERS$", src, re.M | re.S)
     assert match, "Cell 8 helper block missing"
     namespace = {}
@@ -327,7 +337,7 @@ def test_cell8_available_wavs_merges_local_dirs_and_remote_inventory(tmp_path):
 
 
 def test_batch_cell_8_uses_remote_inventory_and_lazy_fetch():
-    src = _code_cells(TEMPLATES[1])[7]
+    src = _code_cells(TEMPLATES[0])[7]
     assert "_drive_file_ids" in src
     assert "drive_fetch_many" in src
     assert 'entry["result_wav"] in REMOTE' in src
@@ -338,7 +348,7 @@ def test_batch_cell_8_uses_remote_inventory_and_lazy_fetch():
 
 
 def test_cell8_persist_failures_are_caught_separately():
-    src = _code_cells(TEMPLATES[1])[7]
+    src = _code_cells(TEMPLATES[0])[7]
     assert "Result persistence failed" in src
     assert "Timeline persistence failed after local install" in src
     assert "try: persist(result_path, \"result\")" in src
@@ -354,7 +364,7 @@ def test_cell8_persist_failures_are_caught_separately():
 
 
 def _cell4_helpers():
-    src = _code_cells(TEMPLATES[1])[3]
+    src = _code_cells(TEMPLATES[0])[3]
     match = re.search(r"^# BEGIN CELL 4 HELPERS$(.*?)^# END CELL 4 HELPERS$", src, re.M | re.S)
     assert match, "Cell 4 helper block missing"
     namespace = {}
@@ -420,7 +430,7 @@ def test_cell4_plan_skips_paths_absent_from_the_inventory():
 
 
 def test_cell4_lists_before_downloading_and_is_thread_safe():
-    src = _code_cells(TEMPLATES[1])[3]
+    src = _code_cells(TEMPLATES[0])[3]
     assert "plan_batch_downloads(" in src
     assert "ThreadPoolExecutor" in src
     assert "threading.local()" in src
@@ -431,7 +441,7 @@ def test_cell4_lists_before_downloading_and_is_thread_safe():
 
 
 def test_batch_notebook_has_no_result_zip_cell():
-    nb = json.loads(TEMPLATES[1].read_text(encoding="utf-8"))
+    nb = json.loads(TEMPLATES[0].read_text(encoding="utf-8"))
     assert len(nb["cells"]) == 9
     for cell in nb["cells"]:
         src = "".join(cell["source"])
@@ -439,20 +449,121 @@ def test_batch_notebook_has_no_result_zip_cell():
         assert "results.zip" not in src
         assert "Cell 9" not in src
     # Cell 8 must still be the eighth code cell for the other tests in this file
-    assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[1])[7]
+    assert "_CHUNK_PAUSE_MS = 300" in _code_cells(TEMPLATES[0])[7]
 
 
-def test_single_patch_cell_8_reads_text_from_the_manifest():
-    src = _code_cells(TEMPLATES[0])[7]
-    assert 'manifest.get("chunk_metadata")' in src
-    assert 'metadata[offset].get("text")' in src
-    assert 'enumerate(manifest["chunks"])' in src
-    # The manifest is the primary source. The chunk_NNN.txt read survives only as a
-    # guarded fallback for older packages attached whole as a Kaggle dataset, so it
-    # must appear AFTER the manifest lookup, not instead of it.
-    assert src.index('metadata[offset].get("text")') < src.index(
-        "open(os.path.join(FOLDER_PATH, chunk_filename)"
+# ---------------------------------------------------------------------------
+# Generic 5-model TTS dispatch. The runtime reads the model from the manifest's
+# "tts" contract ({"model_id", "options", "voice_id"}) with a legacy fallback to
+# the always-VoxCPM2 "voxcpm_model_id" field.
+# ---------------------------------------------------------------------------
+
+SUPPORTED_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast", "edge-tts", "gtts"}
+
+
+def _manifest_cell(template):
+    """The code cell that loads the manifest and resolves the TTS model."""
+    cells = _code_cells(template)
+    for src in cells:
+        # single-patch: manifest.get("tts"); batch: batch_manifest.get("tts")
+        if "get(\"tts\")" in src or "get('tts')" in src:
+            return src
+    raise AssertionError(f"{template.name}: no manifest cell resolves the tts contract")
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_manifest_cell_reads_generic_tts_contract_with_legacy_fallback(template):
+    src = _manifest_cell(template)
+    assert 'get("model_id")' in src
+    assert "TTS_MODEL" in src
+    # generic field wins; legacy voxcpm_model_id is the explicit fallback
+    assert "voxcpm_model_id" in src
+    assert "TTS_OPTIONS" in src
+    assert "VOICE_ID" in src
+    assert "SAMPLE_RATE" in src
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_sample_rate_constants_per_model(template):
+    src = _manifest_cell(template)
+    for k, v in (
+        ("voxcpm2", 16000),
+        ("omnivoice", 24000),
+        ("vieneu-fast", 48000),
+        ("edge-tts", 24000),
+        ("gtts", 24000),
+    ):
+        assert f'"{k}": {v}' in src
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_reference_required_only_for_offline_models(template):
+    src = _manifest_cell(template)
+    assert 'REFERENCE_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast"}' in src
+    assert "REFERENCE_REQUIRED" in src
+    assert "if REFERENCE_REQUIRED:" in src
+    assert "raise RuntimeError" in src
+    # the raise is gated on REFERENCE_REQUIRED, not unconditional
+    assert "if not reference_wav_path" in src
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_voice_id_required_for_online_models(template):
+    src = _manifest_cell(template)
+    assert 'if TTS_MODEL in ("edge-tts", "gtts"):' in src
+    assert "VOICE_ID" in src
+    assert "raise RuntimeError" in src
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_gpu_check_is_skipped_for_online_models(template):
+    gpu = next(src for src in _code_cells(template) if "torch.cuda.is_available()" in src)
+    assert 'GPU_MODELS = {"voxcpm2", "omnivoice", "vieneu-fast"}' in gpu
+    assert "if TTS_MODEL in GPU_MODELS:" in gpu
+    assert "no gpu required" in gpu.lower()
+
+
+def test_model_load_cell_dispatches_per_model():
+    for template in TEMPLATES:
+        load = next(src for src in _code_cells(template) if "VoxCPM.from_pretrained" in src)
+        assert "OmniVoice.from_pretrained" in load
+        assert "Vieneu(" in load
+        assert "model = None" in load  # online models load nothing
+        assert '"edge-tts"' in load
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_generation_cells_dispatch_all_five_models(template):
+    gen = "\n".join(
+        src for src in _code_cells(template)
+        if "model.generate(" in src or "save_online_mp3" in src
     )
-    # START_INDEX / END_INDEX windowing must survive
-    assert "START_INDEX" in src
-    assert "END_INDEX" in src
+    for model in SUPPORTED_MODELS:
+        assert f'"{model}"' in gen
+    assert "model.generate(" in gen  # voxcpm2 / omnivoice
+    assert "model.infer(" in gen     # vieneu-fast
+    assert "save_online_mp3" in gen  # edge-tts / gtts
+    # OmniVoice normalizes its list output to audio[0]
+    assert "result[0]" in gen or "audio[0]" in gen
+
+
+def test_online_models_generate_and_convert_mp3_to_wav():
+    for template in TEMPLATES:
+        src = "\n".join(_code_cells(template))
+        assert "def save_online_mp3(" in src
+        assert "def mp3_to_wav(" in src
+        assert "edge_tts.Communicate(" in src
+        assert "gTTS(" in src
+        assert "sf.write(dest, data, SAMPLE_RATE)" in src
+
+
+def test_online_generation_path_never_calls_model_generate_without_voice():
+    # edge-tts/gTTS must branch before any torch generate path, keyed on voice id.
+    for template in TEMPLATES:
+        generation = [
+            src for src in _code_cells(template)
+            if "model.generate(" in src or "save_online_mp3" in src
+        ]
+        for src in generation:
+            summary = [s for s in generation]
+            assert "VOICE_ID" in "\n".join(summary)

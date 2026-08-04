@@ -32,7 +32,6 @@
         <summary>Tools</summary>
         <div class="book-tools-menu">
             <button type="button" data-open-dialog="normalization-modal">Cài đặt TTS</button>
-            <button type="button" data-open-dialog="light-tts-modal">Cài đặt LightTTS</button>
             <button type="button" data-open-dialog="video-config-modal">Cấu hình video</button>
             <button type="button" data-open-dialog="youtube-settings-modal">YouTube settings</button>
             <button type="button" data-open-dialog="rules-modal">Replace rules</button>
@@ -138,38 +137,76 @@
     </form>
 </dialog>
 
-<dialog id="light-tts-modal" class="book-modal">
+<dialog id="tts-modal" class="book-modal">
     <div class="card-header ui-modal-header">
-        <h3 style="margin:0">Cài đặt LightTTS</h3>
+        <h3 style="margin:0" id="tts-modal-title">Generate</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
-    <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
-        Chọn model (backend) và giọng đọc dùng khi chạy LightTTS cho các patch bên dưới.
-        LightTTS tổng hợp <strong>theo từng đoạn/câu (chunk)</strong> chứ không chạy cả patch cùng một lúc —
-        nên nhanh và không bị lỗi kết nối với patch dài. Chunk đã tạo được <strong>lưu lại</strong>;
-        chunk lỗi được tự động thử lại, và chạy lại chỉ tổng hợp các chunk còn thiếu.
-        Cài đặt được lưu lại trên trình duyệt.
-    </p>
-    <div class="form-group">
-        <label for="bookTtsBackend">Model / Backend</label>
-        <select id="bookTtsBackend"></select>
+    <div class="ui-modal-body">
+        <p style="margin:0 0 var(--space-md) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
+            Chọn model và cấu hình cho lượt xử lý này. Cấu hình chỉ áp dụng cho thao tác hiện tại
+            và được nhớ lại (theo sách) trên trình duyệt.
+        </p>
+        <div class="form-group">
+            <label for="tts-model">Model</label>
+            <select id="tts-model">
+                <option value="edge-tts">Edge TTS (Microsoft, online)</option>
+                <option value="gtts">gTTS (Google, online)</option>
+                {% for model in tts_models if model.supports_reference %}
+                <option value="{{ model.id }}" data-reference="1">{{ model.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div id="tts-voice-area"></div>
+        <div class="form-group">
+            <label for="tts-max-chars">Số ký tự tối đa mỗi chunk (max chars)</label>
+            <input type="number" id="tts-max-chars" min="1" max="5000" step="1"
+                   placeholder="Mặc định {{ default_max_chars }}">
+            <small style="color:var(--text-muted)">
+                Để trống = dùng mặc định ({{ default_max_chars }}). Chunk nhỏ hơn → ít lỗi hơn nhưng chậm hơn.
+            </small>
+        </div>
+        <label style="margin-top:var(--space-sm)">
+            <input type="checkbox" id="tts-fx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
+        </label>
+
+        <div id="tts-export-fields" hidden>
+            <hr style="border-color:var(--border-color);margin:var(--space-md) 0">
+            <div class="form-group" style="margin:0">
+                <label>Tải xuống / xuất cho các patch đã chọn</label>
+                <div class="btn-group" style="flex-wrap:wrap">
+                    <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled>Download selected (.zip)</button>
+                    {% if sync_targets %}
+                    <select name="sync_target_id" id="batch-sync-target" form="batch-export-form"
+                            title="Tài khoản Google Drive Desktop để xuất gói Colab/Kaggle">
+                        <option value="">Chọn tài khoản Drive</option>
+                        {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
+                    </select>
+                    <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
+                            formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
+                    {% endif %}
+                    {% if drive_accounts %}
+                    <select name="account_id" id="batch-drive-account" form="batch-export-form"
+                            title="Tài khoản Drive phải trùng với secret GDRIVE_CREDS đã đặt trên Kaggle">
+                        <option value="">Chọn tài khoản (Kaggle)</option>
+                        {% for a in drive_accounts %}<option value="{{ a.id }}">{{ a.account_email or ('account #' ~ a.id) }}</option>{% endfor %}
+                    </select>
+                    <button type="submit" form="batch-export-form" id="batch-drive-api-btn" class="btn-outline btn-sm" disabled
+                            formaction="/books/{{ book.id }}/patches/export-batch-api"
+                            title="Upload batch lên Drive qua API để chạy trên Kaggle (Cell 4 dùng GDRIVE_CREDS)">Export lên Drive (Kaggle)</button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <span id="tts-modal-error" class="error-block" hidden></span>
     </div>
-    <div class="form-group">
-        <label for="bookTtsVoice">Giọng đọc</label>
-        <select id="bookTtsVoice"></select>
+    <div class="ui-modal-footer">
+        <div class="ui-modal-footer-actions">
+            <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
+            <button type="button" id="tts-modal-confirm" class="btn-primary btn-sm">Generate</button>
+        </div>
     </div>
-    <div class="form-group">
-        <label for="bookTtsMaxChars">Số ký tự tối đa mỗi chunk (max chars)</label>
-        <input type="number" id="bookTtsMaxChars" min="1" max="5000" step="1"
-               placeholder="Mặc định {{ default_max_chars }}">
-        <small style="color:var(--text-muted)">
-            Áp dụng cho cả sách khi chia đoạn/câu lúc chạy LightTTS. Để trống = dùng mặc định ({{ default_max_chars }}).
-            Chunk nhỏ hơn → ít lỗi hơn nhưng chậm hơn.
-        </small>
-    </div>
-    <label style="margin-top:var(--space-sm)">
-        <input type="checkbox" id="bookTtsFx"> Chèn hiệu ứng âm thanh (theo effect marker trong text)
-    </label>
 </dialog>
 
 <dialog id="video-config-modal" class="book-modal">
@@ -319,7 +356,7 @@
 
 <dialog id="patch-image-modal" class="book-modal" style="width:min(900px,calc(100% - 2rem))">
     <div class="card-header ui-modal-header">
-        <h3 style="margin:0">Overlay &amp; Background — <span id="pi-title"></span></h3>
+        <h3 style="margin:0">Overlay, Background &amp; Media — <span id="pi-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
     <div class="pi-grid">
@@ -363,6 +400,19 @@
             </div>
         </div>
     </div>
+    <div style="border-top:1px solid var(--border-color);margin-top:var(--space-lg);padding-top:var(--space-md)">
+        <h4 style="margin-top:0">Upload media</h4>
+        <div id="pm-audio-section" class="form-group">
+            <label for="pm-audio-file">Audio kết quả</label>
+            <input type="file" id="pm-audio-file" class="patch-audio-file" accept=".wav,.mp3,.ogg,.flac">
+            <button type="button" class="btn-primary btn-sm patch-audio-upload-btn">Lưu &amp; Hoàn tất</button>
+        </div>
+        <div class="form-group">
+            <label for="pm-video-file">MP4 từ Colab / Kaggle</label>
+            <input type="file" id="pm-video-file" accept="video/mp4,.mp4">
+            <button type="button" class="btn-outline btn-sm" id="pm-video-upload">Upload MP4</button>
+        </div>
+    </div>
 </dialog>
 
 <dialog id="patch-video-modal" class="book-modal">
@@ -377,31 +427,14 @@
     </div>
 </dialog>
 
-<dialog id="patch-media-modal" class="book-modal">
-    <div class="card-header ui-modal-header">
-        <h3 style="margin:0">Patch media — <span id="pm-title"></span></h3>
-        <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
-    </div>
-    <div id="pm-audio-section" class="form-group">
-        <label for="pm-audio-file">Audio kết quả</label>
-        <input type="file" id="pm-audio-file" class="patch-audio-file" accept=".wav,.mp3,.ogg,.flac">
-        <button type="button" class="btn-primary btn-sm patch-audio-upload-btn">Lưu &amp; Hoàn tất</button>
-    </div>
-    <div class="form-group">
-        <label for="pm-video-file">MP4 từ Colab / Kaggle</label>
-        <input type="file" id="pm-video-file" accept="video/mp4,.mp4">
-        <button type="button" class="btn-outline btn-sm" id="pm-video-upload">Upload MP4</button>
-    </div>
-</dialog>
-
 <dialog id="chunks-modal" class="book-modal">
     <div class="card-header ui-modal-header">
         <h3 style="margin:0">Preview chunks — <span id="chunks-modal-title"></span></h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
     <p style="margin:0 0 var(--space-sm) 0;color:var(--text-muted);font-size:var(--font-size-sm)">
-        Nghe thử từng chunk bằng backend / giọng / max chars đang chọn trong
-        <strong>Cài đặt LightTTS</strong>. Chỉ nghe thử — không tổng hợp cả patch, không lưu.
+        Nghe thử từng chunk bằng model / giọng / max chars đang chọn trong
+        <strong>Generate</strong>. Chỉ nghe thử — không tổng hợp cả patch, không lưu.
     </p>
     <div id="chunks-modal-body"></div>
 </dialog>
@@ -423,9 +456,9 @@
         <form id="auto-build-form" class="auto-build-form" style="margin-top:var(--space-sm)">
             <label>Start chapter <input type="number" name="start_chapter" min="0" value="0" required id="ab-start"></label>
             <label>End chapter <input type="number" name="end_chapter" min="0" placeholder="to last chapter" id="ab-end"></label>
-            <label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
+<label>Patch size <input type="number" name="patch_size" min="1" value="{{ book.patch_size }}" size="3" id="ab-size"></label>
             <button type="button" class="btn-outline" onclick="previewAutoBuild()">Preview</button>
-            <button type="button" class="btn-primary" id="btn-start-queue" onclick="startQueue()" style="display:none">Start Queue</button>
+            <button type="button" class="btn-primary" id="btn-start-queue" onclick="openTtsModal('run', 'queue')" style="display:none">Start Queue</button>
         </form>
         <div id="auto-build-preview" style="display:none;margin-top:var(--space-md)">
             <p style="margin:0 0 var(--space-sm) 0;font-weight:500">Planned patches:</p>
@@ -482,7 +515,10 @@
             <option value="0">Chưa upload YT</option>
         </select>
     </div>
-     <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form"></form>
+     <form id="batch-export-form" method="post" action="/books/{{ book.id }}/patches/export-batch/download" class="batch-export-form">
+         <input type="hidden" name="model_id"><input type="hidden" name="voice_id">
+         <input type="hidden" name="max_chars"><input type="hidden" name="with_effects">
+     </form>
     <div class="table-wrap">
     <table data-table-key="patch-table">
         <thead>
@@ -526,6 +562,7 @@
                 <td class="patch-image-cell">
                     <button type="button" class="patch-thumb-btn" data-patch-id="{{ patch.id }}"
                             data-patch-name="{{ patch.name or patch.patch_index }}"
+                            data-patch-status="{{ patch.status }}"
                             data-image-type="{{ patch.image_type or 'static' }}"
                             data-bg-path="{{ patch.image_path or '' }}"
                             title="Xem / tải ảnh overlay">
@@ -612,7 +649,7 @@
     <span id="patch-selection-count" class="batch-selection-count"></span>
     <div class="batch-action-group">
     <span class="batch-action-label">Generate</span>
-    <button type="button" class="btn-outline btn-sm" id="btnRunSelectedLightTTS" onclick="runAllLightTTS()">&#9654; Run Selected</button>
+    <button type="button" class="btn-outline btn-sm" id="btnRunSelectedLightTTS" onclick="openTtsModal('run','run')">&#9654; Run Selected</button>
     <button type="button" class="btn-primary btn-sm" id="btnGenSelectedVideos" onclick="genSelectedVideos()">&#127916; Tạo video (đã chọn)</button>
     {% if youtube_configured %}
     <label class="bn-check" title="Áp dụng cho lượt tạo video này"><input type="checkbox" id="batch-auto-youtube" {% if youtube_auto_upload %}checked{% endif %}> Auto YouTube</label>
@@ -621,25 +658,7 @@
     </div>
     <div class="batch-action-group">
     <span class="batch-action-label">Export</span>
-    <button type="submit" form="batch-export-form" id="batch-download-btn" class="btn-primary btn-sm" disabled>Download selected (.zip)</button>
-    {% if sync_targets %}
-    <select name="sync_target_id" id="batch-sync-target" form="batch-export-form">
-        <option value="">Chọn tài khoản Drive</option>
-        {% for t in sync_targets %}<option value="{{ t.id }}">{{ t.name }} ({{ t.account_email }})</option>{% endfor %}
-    </select>
-    <button type="submit" form="batch-export-form" id="batch-drive-btn" class="btn-outline btn-sm" disabled
-            formaction="/books/{{ book.id }}/patches/export-batch">Export vào Drive Desktop</button>
-    {% endif %}
-    {% if drive_accounts %}
-    <select name="account_id" id="batch-drive-account" form="batch-export-form"
-            title="Tài khoản Drive phải trùng với secret GDRIVE_CREDS đã đặt trên Kaggle">
-        <option value="">Chọn tài khoản (Kaggle)</option>
-        {% for a in drive_accounts %}<option value="{{ a.id }}">{{ a.account_email or ('account #' ~ a.id) }}</option>{% endfor %}
-    </select>
-    <button type="submit" form="batch-export-form" id="batch-drive-api-btn" class="btn-outline btn-sm" disabled
-            formaction="/books/{{ book.id }}/patches/export-batch-api"
-            title="Upload batch lên Drive qua API để chạy trên Kaggle (Cell 4 dùng GDRIVE_CREDS)">Export lên Drive (Kaggle)</button>
-    {% endif %}
+    <button type="button" class="btn-primary btn-sm" onclick="openTtsModal('export')">Export selected</button>
     <button type="button" class="btn-outline btn-sm" id="copy-yt-desc">Copy Description</button>
     </div>
 </div>
@@ -1219,6 +1238,11 @@ function updatePatchRow(patchId, data) {
     if (!form) return;
     form.addEventListener('submit', async function (event) {
         const submitter = event.submitter;
+        const cfg = readTtsCfgFromModal();
+        form.elements.model_id.value = cfg.model;
+        form.elements.voice_id.value = cfg.voice || '';
+        form.elements.max_chars.value = cfg.maxChars || '';
+        form.elements.with_effects.value = cfg.withF ? '1' : '0';
         if (!submitter || (submitter.id !== 'batch-drive-btn' && submitter.id !== 'batch-drive-api-btn')) return;
         event.preventDefault();
         const action = submitter.formAction || form.action;
@@ -1507,7 +1531,7 @@ function filterAndPaginate(resetPage) {
         }
     };
 
-    window.startQueue = function() {
+    window.startQueue = function(cfg) {
         const form = document.getElementById('auto-build-form');
         const errEl = document.getElementById('ab-error');
         const btnStart = document.getElementById('btn-start-queue');
@@ -1515,6 +1539,14 @@ function filterAndPaginate(resetPage) {
         for (const el of form.elements) {
             if (el.name) formData.append(el.name, el.value);
         }
+        // Canonical TTS config drives the queue: model_id -> tts_engine, plus the
+        // full config forwarded for routes that want to persist it per patch.
+        const cfgData = cfg || getTtsCfg();
+        formData.set('tts_engine', cfgData.model);
+        formData.set('model_id', cfgData.model);
+        formData.set('voice_id', cfgData.voice || '');
+        formData.set('max_chars', cfgData.maxChars ? String(cfgData.maxChars) : '');
+        formData.set('with_effects', cfgData.withF ? '1' : '0');
 
         errEl.style.display = 'none';
         btnStart.disabled = true;
@@ -1855,71 +1887,164 @@ document.getElementById('copy-yt-desc')?.addEventListener('click', async functio
     }
 });
 
-// --- LightTTS model settings (backend/voice) — shared with Text Studio via
-//     the same localStorage keys ('tts-backend', 'tts-voice:<backend>'). ---
+// --- Shared Generate/Export TTS selection ----------------------------------
+// One per-book config (model, voice, max chars, effects) drives every persistent
+// TTS generate/export action through the #tts-modal dialog. The config is
+// operation-only: confirming a dialog applies it to that batch and remembers the
+// selection per book for the next open.
 function _ttsEsc(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
 
-async function loadBookVoicesForBackend(backend) {
-    const sel = document.getElementById('bookTtsVoice');
-    if (!sel) return;
-    if (!backend) { sel.innerHTML = ''; return; }
-    sel.innerHTML = '<option value="">Đang tải…</option>';
+const TTS_CFG_KEY = 'tts-cfg:' + BOOK_ID;
+const BOOK_REF_NAME = {{ (current_voice_name or '') | tojson }};
+
+// modelId -> how its voice field behaves. Light models map straight onto the
+// light-tts preview/run routes; reference-capable models require a book clip.
+const TTS_MODEL_INFO = {
+    'edge-tts': { kind: 'light', voices: 'edge-tts' },
+    'gtts': { kind: 'light', voices: 'gtts' },
+    'voxcpm2': { kind: 'reference' },
+    'omnivoice': { kind: 'reference' },
+    'vieneu-fast': { kind: 'reference' },
+};
+
+function defaultTtsCfg() {
+    return { model: 'edge-tts', voice: '', maxChars: 0, withF: false };
+}
+
+function getTtsCfg() {
     try {
-        const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(backend)}`);
-        if (!res.ok) { sel.innerHTML = ''; return; }
-        const data = await res.json();
-        const saved = localStorage.getItem('tts-voice:' + backend);
+        const saved = JSON.parse(localStorage.getItem(TTS_CFG_KEY) || 'null');
+        if (saved && TTS_MODEL_INFO[saved.model]) {
+            return {
+                model: saved.model,
+                voice: typeof saved.voice === 'string' ? saved.voice : '',
+                maxChars: Math.max(0, parseInt(saved.maxChars, 10) || 0),
+                withF: !!saved.withF,
+            };
+        }
+    } catch (_) {}
+    return defaultTtsCfg();
+}
+
+function saveTtsCfg(cfg) {
+    try {
+        localStorage.setItem(TTS_CFG_KEY, JSON.stringify({
+            model: cfg.model, voice: cfg.voice, maxChars: cfg.maxChars, withF: cfg.withF,
+        }));
+    } catch (_) {}
+}
+
+// The light routes (preview-stream / preview-paragraph) only speak backend+voice
+// for the online backends; a selected reference model previews via the fallback
+// backend instead of failing the whole stream.
+function lightTtsParams(cfg) {
+    const info = TTS_MODEL_INFO[cfg.model] || {};
+    if (info.kind === 'light') return { backend: cfg.model, voice: cfg.voice };
+    return { backend: 'edge-tts', voice: '' };
+}
+
+let ttsModalMode = 'run';        // 'run' | 'queue' | 'export'
+let ttsModalAction = 'run';      // deferred action for Generate mode
+
+function ttsModalError(message) {
+    const el = document.getElementById('tts-modal-error');
+    if (el) { el.textContent = message; el.hidden = !message; }
+}
+
+function openTtsModal(mode, action) {
+    const dlg = document.getElementById('tts-modal');
+    if (!dlg) return;
+    const cfg = getTtsCfg();
+    ttsModalMode = mode === 'export' ? 'export' : (action === 'queue' ? 'queue' : 'run');
+    ttsModalAction = ttsModalMode === 'queue' ? 'queue' : 'run';
+    const modelSel = document.getElementById('tts-model');
+    if (modelSel) modelSel.value = cfg.model;
+    const maxChars = document.getElementById('tts-max-chars');
+    if (maxChars) maxChars.value = cfg.maxChars ? String(cfg.maxChars) : '';
+    const fx = document.getElementById('tts-fx');
+    if (fx) fx.checked = cfg.withF;
+    document.getElementById('tts-export-fields').hidden = ttsModalMode !== 'export';
+    document.getElementById('tts-modal-title').textContent = ttsModalMode === 'export' ? 'Export' : 'Generate';
+    document.getElementById('tts-modal-confirm').textContent = ttsModalMode === 'export' ? 'Export' : 'Generate';
+    document.getElementById('tts-modal-confirm').disabled = false;
+    ttsModalError('');
+    renderTtsVoiceArea(cfg.model, cfg.voice);
+    dlg.showModal();
+}
+
+async function renderTtsVoiceArea(model, voice) {
+    const area = document.getElementById('tts-voice-area');
+    if (!area) return;
+    const info = TTS_MODEL_INFO[model] || TTS_MODEL_INFO['edge-tts'];
+    if (info.kind === 'reference') {
+        if (!BOOK_REF_NAME) {
+            area.innerHTML = '<p style="color:var(--text-muted);font-size:var(--font-size-xs)">' +
+                'Model này cần một voice tham chiếu của sách — tải lên voice tham chiếu trước.</p>';
+            return;
+        }
+        area.innerHTML = '<div class="form-group">' +
+            '<label for="tts-ref-voice">Voice tham chiếu (bắt buộc)</label>' +
+            '<input id="tts-ref-voice" readonly value="' + _ttsEsc(BOOK_REF_NAME) + '">' +
+            '<small style="color:var(--text-muted)">Voice mẫu của sách dùng để clone giọng cho model này.</small>' +
+            '</div>';
+        return;
+    }
+    area.innerHTML = '<div class="form-group">' +
+        `<label for="tts-light-voice">${model === 'gtts' ? 'Ngôn ngữ' : 'Giọng đọc'}</label>` +
+        '<select id="tts-light-voice"><option value="">Đang tải…</option></select>' +
+        '</div>';
+    const sel = document.getElementById('tts-light-voice');
+    try {
+        const res = await fetch(`/text-studio/light-tts/voices?backend=${encodeURIComponent(model)}`);
+        const data = res.ok ? await res.json() : { voices: [] };
         sel.innerHTML = (data.voices || []).map(v =>
-            `<option value="${_ttsEsc(v.id)}" ${v.id === saved ? 'selected' : ''}>${_ttsEsc(v.label)}</option>`
+            `<option value="${_ttsEsc(v.id)}" ${v.id === voice ? 'selected' : ''}>${_ttsEsc(v.label)}</option>`
         ).join('');
         if (!sel.value && sel.options.length) sel.selectedIndex = 0;
-    } catch (e) { sel.innerHTML = ''; }
-    sel.onchange = () => localStorage.setItem('tts-voice:' + backend, sel.value);
+    } catch (_) {
+        sel.innerHTML = '';
+    }
 }
 
-async function loadBookLightTTSBackends() {
-    const select = document.getElementById('bookTtsBackend');
-    if (!select) return;
+function readTtsCfgFromModal() {
+    const model = (document.getElementById('tts-model') || {}).value || 'edge-tts';
+    const info = TTS_MODEL_INFO[model] || TTS_MODEL_INFO['edge-tts'];
+    let voice = '';
+    if (info.kind === 'reference') {
+        voice = (document.getElementById('tts-ref-voice') || {}).value || '';
+    } else {
+        voice = (document.getElementById('tts-light-voice') || {}).value || '';
+    }
+    const maxChars = parseInt((document.getElementById('tts-max-chars') || {}).value, 10);
+    const withF = !!((document.getElementById('tts-fx') || {}).checked);
+    return { model, voice, maxChars: (maxChars >= 1 ? maxChars : 0), withF };
+}
+
+document.addEventListener('change', event => {
+    if (event.target.id === 'tts-model') renderTtsVoiceArea(event.target.value, '');
+});
+
+document.getElementById('tts-modal-confirm')?.addEventListener('click', async () => {
+    const confirm = document.getElementById('tts-modal-confirm');
+    confirm.disabled = true;
     try {
-        const res = await fetch('/text-studio/light-tts/backends');
-        if (res.ok) {
-            const data = await res.json();
-            const saved = localStorage.getItem('tts-backend');
-            select.innerHTML = (data.backends || []).map(b =>
-                `<option value="${_ttsEsc(b.id)}" ${!b.available ? 'disabled' : ''} ${b.id === saved ? 'selected' : ''}>${_ttsEsc(b.label)}${!b.available ? ' (chưa cài)' : ''}</option>`
-            ).join('');
-            if (!select.value && select.options.length) select.selectedIndex = 0;
-            select.onchange = () => {
-                localStorage.setItem('tts-backend', select.value);
-                loadBookVoicesForBackend(select.value);
-            };
-            await loadBookVoicesForBackend(select.value);
+        const cfg = readTtsCfgFromModal();
+        const info = TTS_MODEL_INFO[cfg.model];
+        if (info && info.kind === 'reference' && !cfg.voice) {
+            throw new Error('Chọn voice tham chiếu của sách để dùng model này.');
         }
-    } catch (e) {}
-    const fx = document.getElementById('bookTtsFx');
-    if (fx) {
-        fx.checked = localStorage.getItem('tts-fx') === '1';
-        fx.onchange = () => localStorage.setItem('tts-fx', fx.checked ? '1' : '0');
+        saveTtsCfg(cfg);
+        document.getElementById('tts-modal').close();
+        if (ttsModalMode === 'export') return;
+        if (ttsModalMode === 'queue') { await startQueue(cfg); return; }
+        await runAllLightTTS(cfg);
+    } catch (e) {
+        ttsModalError(e.message || String(e));
+    } finally {
+        confirm.disabled = false;
     }
-    const mc = document.getElementById('bookTtsMaxChars');
-    if (mc) {
-        mc.value = localStorage.getItem('tts-max-chars:' + BOOK_ID) || '';
-        mc.onchange = () => {
-            const v = parseInt(mc.value, 10);
-            if (v >= 1) localStorage.setItem('tts-max-chars:' + BOOK_ID, String(v));
-            else { mc.value = ''; localStorage.removeItem('tts-max-chars:' + BOOK_ID); }
-        };
-    }
-}
-loadBookLightTTSBackends();
+});
 
-function currentTTSSettings() {
-    const backend = (document.getElementById('bookTtsBackend') || {}).value || '';
-    const voice = (document.getElementById('bookTtsVoice') || {}).value || '';
-    const withFx = !!((document.getElementById('bookTtsFx') || {}).checked);
-    const maxChars = parseInt((document.getElementById('bookTtsMaxChars') || {}).value, 10);
-    return { backend, voice, withFx, maxChars: (maxChars >= 1 ? maxChars : 0) };
-}
 
 function setPatchProgress(patchId, done, total, failed) {
     const el = document.getElementById(`patch-progress-${patchId}`);
@@ -1937,11 +2062,12 @@ function setPatchStatus(patchId, html) {
 // onChunk(done, total) reports progress. Resolves on 'done', rejects on 'error'.
 function streamLightTTS(patchId, onChunk) {
     return new Promise((resolve, reject) => {
-        const { backend, voice, withFx, maxChars } = currentTTSSettings();
+        const cfg = getTtsCfg();
+        const { backend, voice } = lightTtsParams(cfg);
         const params = new URLSearchParams({
-            backend: backend || '', voice: voice || '', with_effects: withFx ? 1 : 0,
+            backend: backend || '', voice: voice || '', with_effects: cfg.withF ? 1 : 0,
         });
-        if (maxChars) params.set('max_chars', maxChars);
+        if (cfg.maxChars) params.set('max_chars', cfg.maxChars);
         const url = `/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-stream?${params}`;
         const es = new EventSource(url);
         ACTIVE_TASKS.add(patchId);
@@ -2020,7 +2146,7 @@ async function runPatchToCompletion(patchId, onChunk, onRetry) {
     throw lastError || new Error('LightTTS lỗi');
 }
 
-async function runAllLightTTS() {
+async function runAllLightTTS(cfg) {
     const btn = document.getElementById('btnRunSelectedLightTTS');
     const origText = btn.textContent;
     btn.disabled = true;
@@ -2038,32 +2164,23 @@ async function runAllLightTTS() {
         return;
     }
 
-    let done = 0, errors = 0, incomplete = 0;
-    for (const pid of patchIds) {
-        btn.textContent = `Patch ${done + errors + incomplete + 1}/${patchIds.length}…`;
-        setPatchStatus(pid, '<span class="badge badge-processing">Đang xử lý</span>');
-        try {
-            const res = await runPatchToCompletion(pid, (c, t, f) => setPatchProgress(pid, c, t, f), (nextPass) => {
-                btn.textContent = `Patch ${done + errors + incomplete + 1}/${patchIds.length} ↻ thử lại…`;
-            });
-            if (res.complete) {
-                setPatchStatus(pid, '<span class="badge badge-done">Hoàn tất</span>');
-                done++;
-            } else {
-                setPatchStatus(pid, '<span class="badge badge-failed">Còn lỗi</span>');
-                incomplete++;
-            }
-        } catch (e) {
-            setPatchStatus(pid, '<span class="badge badge-failed">Thất bại</span>');
-            errors++;
-        }
+    try {
+        const res = await fetch(`/books/${BOOK_ID}/tts/generate`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({patch_ids: patchIds, model_id: cfg.model, voice_id: cfg.voice,
+                max_chars: cfg.maxChars, with_effects: cfg.withF}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Không thể tạo queue TTS');
+        btn.textContent = `Đã xếp hàng ${data.queued} patch`;
+        patchIds.forEach(pid => setPatchStatus(pid, '<span class="badge badge-processing">Đã xếp hàng</span>'));
+    } catch (e) {
+        showToast(e.message || String(e), 'error');
+        btn.textContent = origText;
+    } finally {
+        btn.disabled = false;
+        setTimeout(() => { btn.textContent = origText; }, 4000);
     }
-    let summary = `${done} xong`;
-    if (errors) summary += `, ${errors} lỗi`;
-    if (incomplete) summary += `, ${incomplete} chưa đủ chunk (chạy lại để tiếp tục)`;
-    btn.textContent = summary;
-    btn.disabled = false;
-    setTimeout(() => { btn.textContent = origText; }, 4000);
 }
 
 // --- Per-chunk preview: list a patch's chunks, play each on demand (no save) ---
@@ -2074,7 +2191,7 @@ async function openChunksModal(patchId) {
     body.innerHTML = '<p style="color:var(--text-muted)">Đang tải danh sách chunk…</p>';
     dlg.showModal();
 
-    const { maxChars } = currentTTSSettings();
+    const { maxChars } = getTtsCfg();
     const qs = maxChars ? ('?max_chars=' + maxChars) : '';
     try {
         const res = await fetch(`/books/${BOOK_ID}/patches/${patchId}/chunk-texts${qs}`);
@@ -2129,14 +2246,15 @@ function renderChunkList(body, patchId, data) {
 }
 
 async function playChunk(patchId, text, btn, slot) {
-    const { backend, voice, withFx } = currentTTSSettings();
+    const cfg = getTtsCfg();
+    const { backend, voice } = lightTtsParams(cfg);
     const orig = btn.textContent;
     btn.disabled = true;
     btn.textContent = '…';
     try {
         const res = await fetch(`/books/${BOOK_ID}/text-studio/patches/${patchId}/preview-paragraph`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, backend: backend || undefined, voice: voice || undefined, with_effects: withFx })
+            body: JSON.stringify({ text, backend: backend || undefined, voice: voice || undefined, with_effects: cfg.withF })
         });
         if (!res.ok) {
             let msg = 'HTTP ' + res.status;
@@ -2336,7 +2454,7 @@ async function genPatchVideo(pid, cell, opts = {}) {
 
 async function uploadPatchAudio(btn) {
     const pid = parseInt(btn.dataset.patchId, 10);
-    const modal = document.getElementById('patch-media-modal');
+    const modal = document.getElementById('patch-image-modal');
     const fileInput = modal.querySelector('.patch-audio-file');
     if (!fileInput || !fileInput.files.length) {
         showToast('Chọn file audio trước.', 'error');
@@ -2375,15 +2493,15 @@ async function uploadPatchAudio(btn) {
         showToast(`Patch ${pid} — Hoàn tất`);
     } catch (e) {
         showToast('Upload audio lỗi: ' + (e.message || e), 'error');
-        btn.disabled = false;
-        btn.textContent = origText;
     } finally {
         ACTIVE_TASKS.delete(pid);
+        btn.disabled = false;
+        btn.textContent = origText;
     }
 }
 
 async function uploadPatchMp4(pid) {
-    const modal = document.getElementById('patch-media-modal');
+    const modal = document.getElementById('patch-image-modal');
     const input = document.getElementById('pm-video-file');
     if (!input.files.length) { showToast('Chọn file MP4 trước.', 'error'); return; }
     const btn = document.getElementById('pm-video-upload');
@@ -2509,7 +2627,23 @@ function _piBgPreview(path, isVideo) {
     }
 }
 
-function openPatchImageModal(pid, name, imageType, patchBgPath) {
+function configurePatchMedia(pid, status) {
+    const modal = document.getElementById('patch-image-modal');
+    document.getElementById('pm-audio-section').hidden = status === 'done';
+    document.getElementById('pm-audio-file').value = '';
+    document.getElementById('pm-video-file').value = '';
+    const audioBtn = modal.querySelector('.patch-audio-upload-btn');
+    audioBtn.disabled = false;
+    audioBtn.textContent = 'Lưu & Hoàn tất';
+    audioBtn.dataset.patchId = pid;
+    audioBtn.onclick = () => uploadPatchAudio(audioBtn);
+    const videoBtn = document.getElementById('pm-video-upload');
+    videoBtn.disabled = false;
+    videoBtn.textContent = 'Upload MP4';
+    videoBtn.onclick = () => uploadPatchMp4(pid);
+}
+
+function openPatchImageModal(pid, name, imageType, patchBgPath, status) {
     const dlg = document.getElementById('patch-image-modal');
     document.getElementById('pi-title').textContent = name || ('Patch ' + pid);
     const url = `/books/${BOOK_ID}/patches/${pid}/overlay-image?v=${Date.now()}`;
@@ -2552,20 +2686,13 @@ function openPatchImageModal(pid, name, imageType, patchBgPath) {
 
     document.getElementById('pi-bg-remove').onclick = () => removePatchBackground(pid);
 
+    configurePatchMedia(pid, status);
     dlg.showModal();
 }
 
 function openPatchMediaModal(pid, name, status) {
-    const modal = document.getElementById('patch-media-modal');
-    document.getElementById('pm-title').textContent = name || ('Patch ' + pid);
-    document.getElementById('pm-audio-section').hidden = status === 'done';
-    document.getElementById('pm-audio-file').value = '';
-    document.getElementById('pm-video-file').value = '';
-    const audioBtn = modal.querySelector('.patch-audio-upload-btn');
-    audioBtn.dataset.patchId = pid;
-    audioBtn.onclick = () => uploadPatchAudio(audioBtn);
-    document.getElementById('pm-video-upload').onclick = () => uploadPatchMp4(pid);
-    modal.showModal();
+    const thumb = document.querySelector(`.patch-thumb-btn[data-patch-id="${pid}"]`);
+    openPatchImageModal(pid, name, thumb?.dataset.imageType, thumb?.dataset.bgPath, status);
 }
 
 // ---- Batch actions ---------------------------------------------------
@@ -2627,7 +2754,7 @@ async function genSelectedImages() {
     if (tbody) {
         tbody.addEventListener('click', (e) => {
             const thumb = e.target.closest('.patch-thumb-btn');
-            if (thumb) { openPatchImageModal(parseInt(thumb.dataset.patchId, 10), thumb.dataset.patchName, thumb.dataset.imageType, thumb.dataset.bgPath); return; }
+            if (thumb) { openPatchImageModal(parseInt(thumb.dataset.patchId, 10), thumb.dataset.patchName, thumb.dataset.imageType, thumb.dataset.bgPath, thumb.dataset.patchStatus); return; }
             const mediaBtn = e.target.closest('.patch-media-btn');
             if (mediaBtn) { openPatchMediaModal(parseInt(mediaBtn.dataset.patchId, 10), mediaBtn.dataset.patchName, mediaBtn.dataset.patchStatus); return; }
             const cell = e.target.closest('.patch-video-cell');

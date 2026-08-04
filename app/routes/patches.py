@@ -601,62 +601,6 @@ def resume_patch_from_chunk(
     return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
 
 
-@router.post("/books/{book_id}/patches/{patch_id}/export")
-def export_patch_to_drive(request: Request, book_id: int, patch_id: int, sync_target_id: int = Form(...)):
-    with locked_conn(request) as conn:
-        patch = repository.get_patch(conn, patch_id)
-        if patch is None or patch.book_id != book_id:
-            raise HTTPException(status_code=404, detail="patch not found")
-        if patch.status == "processing":
-            raise HTTPException(status_code=400, detail="cannot export a patch that is currently processing")
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail="book not found")
-        target = repository.get_drive_sync_target(conn, sync_target_id)
-        if target is None:
-            raise HTTPException(status_code=400, detail="Sync target not found")
-
-        # Compute the folder name up front so the same name is baked into the notebook and
-        # used for the actual Drive folder (folder_name_for_patch has a timestamp, so it must
-        # only be called once).
-        folder_name = drive_export.folder_name_for_patch(book.title, patch)
-        package_dir = _build_or_400(drive_export.build_export_package, conn, patch, drive_folder_name=folder_name, hf_token=settings.hf_token)
-        try:
-            folder = drive_export.publish_package(package_dir, target["folder_path"], folder_name)
-            chunk_count = drive_export.package_chunk_count(package_dir)
-            repository.create_patch_export(
-                conn, patch_id, str(folder), str(folder), chunk_count,
-                sync_target_id=target["id"], local_folder_path=str(folder),
-            )
-        except Exception as exc:
-            logger.exception("export to Google Drive Desktop failed for patch %s", patch_id)
-            raise HTTPException(status_code=500, detail=f"Drive Desktop export failed: {exc}")
-        finally:
-            shutil.rmtree(package_dir, ignore_errors=True)
-
-    return RedirectResponse(url=f"/books/{book_id}/patches/{patch_id}/chunks", status_code=303)
-
-
-@router.get("/books/{book_id}/patches/{patch_id}/export/download")
-def download_patch_export(request: Request, book_id: int, patch_id: int):
-    with locked_conn(request) as conn:
-        patch = repository.get_patch(conn, patch_id)
-        if patch is None or patch.book_id != book_id:
-            raise HTTPException(status_code=404, detail="patch not found")
-        book = repository.get_book(conn, book_id)
-        if book is None:
-            raise HTTPException(status_code=404, detail="book not found")
-        # Use the same naming convention as the Drive folder so the zip filename
-        # matches the folder that would be created on Google Drive.
-        folder_name = drive_export.folder_name_for_patch(book.title, patch)
-        zip_path = _build_or_400(drive_export.build_export_zip, conn, patch, hf_token=settings.hf_token)
-    return FileResponse(
-        str(zip_path),
-        media_type="application/zip",
-        filename=f"{folder_name}.zip",
-    )
-
-
 def _load_batch_patches(conn, book_id: int, patch_ids: list[int]):
     """Validate a multi-patch export selection and return (book, patches sorted by
     patch_index). Raises HTTPException on empty/unknown/processing selections."""
@@ -680,7 +624,11 @@ def _load_batch_patches(conn, book_id: int, patch_ids: list[int]):
 
 
 @router.post("/books/{book_id}/patches/export-batch/download")
-def download_batch_export(request: Request, book_id: int, patch_ids: list[int] = Form(...)):
+def download_batch_export(
+    request: Request, book_id: int, patch_ids: list[int] = Form(...),
+    model_id: str = Form("voxcpm2"), voice_id: str = Form(""), max_chars: int = Form(0),
+    with_effects: int = Form(0),
+):
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
         # Same convention as the single-patch download: compute the timestamped name
@@ -689,6 +637,8 @@ def download_batch_export(request: Request, book_id: int, patch_ids: list[int] =
         zip_path = _build_or_400(
             drive_export.build_batch_export_zip,
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
+            model_id=model_id, voice_id=voice_id or None, max_chars=max_chars,
+            with_effects=bool(with_effects),
         )
     return FileResponse(
         str(zip_path),
@@ -698,7 +648,11 @@ def download_batch_export(request: Request, book_id: int, patch_ids: list[int] =
 
 
 @router.post("/books/{book_id}/patches/export-batch")
-def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] = Form(...), sync_target_id: int = Form(...)):
+def export_batch_to_drive(
+    request: Request, book_id: int, patch_ids: list[int] = Form(...), sync_target_id: int = Form(...),
+    model_id: str = Form("voxcpm2"), voice_id: str = Form(""), max_chars: int = Form(0),
+    with_effects: int = Form(0),
+):
     with locked_conn(request) as conn:
         book, patches = _load_batch_patches(conn, book_id, patch_ids)
         target = repository.get_drive_sync_target(conn, sync_target_id)
@@ -709,6 +663,8 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
         package_dir, batch_manifest = _build_or_400(
             drive_export.build_batch_export_package,
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
+            model_id=model_id, voice_id=voice_id or None, max_chars=max_chars,
+            with_effects=bool(with_effects),
         )
         try:
             batch_folder = drive_export.publish_package(package_dir, target["folder_path"], folder_name)
@@ -730,7 +686,11 @@ def export_batch_to_drive(request: Request, book_id: int, patch_ids: list[int] =
 
 
 @router.post("/books/{book_id}/patches/export-batch-api")
-def export_batch_to_drive_api(request: Request, book_id: int, patch_ids: list[int] = Form(...), account_id: int = Form(...)):
+def export_batch_to_drive_api(
+    request: Request, book_id: int, patch_ids: list[int] = Form(...), account_id: int = Form(...),
+    model_id: str = Form("voxcpm2"), voice_id: str = Form(""), max_chars: int = Form(0),
+    with_effects: int = Form(0),
+):
     """Upload the batch package to Google Drive via the Drive API (drive.file scope) so
     the Kaggle notebook can use it. This is the API counterpart of export_batch_to_drive,
     which copies into a local Google Drive Desktop folder - files that arrive on Drive
@@ -751,6 +711,8 @@ def export_batch_to_drive_api(request: Request, book_id: int, patch_ids: list[in
         package_dir, batch_manifest = _build_or_400(
             drive_export.build_batch_export_package,
             conn, patches, drive_folder_name=folder_name, hf_token=settings.hf_token,
+            model_id=model_id, voice_id=voice_id or None, max_chars=max_chars,
+            with_effects=bool(with_effects),
         )
         try:
             service = google_drive.get_drive_service(conn, account_id)

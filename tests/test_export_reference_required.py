@@ -1,7 +1,4 @@
-"""Exporting to Colab/Kaggle requires a voice reference clip: without one VoxCPM
-picks a different random voice per chunk/session, so the merged audio is
-inconsistent. build_export_package / build_batch_export_package must refuse to
-build a package for a book that has no (existing) voice clip."""
+"""Batch export requires a reference clip for reference-based models."""
 from __future__ import annotations
 
 import sqlite3
@@ -43,45 +40,10 @@ def _seed_book_and_patch(conn, voice_clip_path=None):
     return repository.get_patch(conn, cur.lastrowid)
 
 
-def test_single_export_requires_voice_reference(conn):
-    patch = _seed_book_and_patch(conn, voice_clip_path=None)
-    with pytest.raises(ValueError, match="voice reference"):
-        drive_export.build_export_package(conn, patch)
-
-
-def test_single_export_rejects_missing_voice_file(conn, tmp_path):
-    patch = _seed_book_and_patch(conn, voice_clip_path=str(tmp_path / "gone.wav"))
-    with pytest.raises(ValueError, match="voice reference"):
-        drive_export.build_export_package(conn, patch)
-
-
 def test_batch_export_requires_voice_reference(conn):
     patch = _seed_book_and_patch(conn, voice_clip_path=None)
     with pytest.raises(ValueError, match="voice reference"):
         drive_export.build_batch_export_package(conn, [patch])
-
-
-def test_single_export_bundles_reference(conn, tmp_path, monkeypatch):
-    from app import image_overlay
-
-    clip = tmp_path / "voice.wav"
-    clip.write_bytes(b"RIFFfakewav")
-    monkeypatch.setattr(drive_export, "_TMP_DIR", tmp_path / "export_tmp")
-    # Don't render a real overlay into data_root during tests.
-    monkeypatch.setattr(image_overlay, "ensure_patch_overlay", lambda *a, **k: None)
-    patch = _seed_book_and_patch(conn, voice_clip_path=str(clip))
-
-    package_dir = drive_export.build_export_package(conn, patch)
-    try:
-        import json
-
-        manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-        assert manifest["reference_wav"] == "reference.wav"
-        assert (package_dir / "reference.wav").exists()
-    finally:
-        import shutil
-
-        shutil.rmtree(package_dir, ignore_errors=True)
 
 
 def test_batch_export_bundles_reference(conn, tmp_path, monkeypatch):

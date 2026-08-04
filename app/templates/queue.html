@@ -37,7 +37,7 @@
 </div>
 
 <table class="static-table" id="jobs">
-    <thead><tr><th>ID</th><th>Loại</th><th>Sách</th><th>Trạng thái</th><th>Tiến độ</th><th>Lần thử</th><th>Lỗi</th><th></th></tr></thead>
+    <thead><tr><th>ID</th><th>Hoạt động</th><th>Patch</th><th>Trạng thái</th><th>Tiến độ</th><th>Lần thử</th><th>Lỗi</th><th></th></tr></thead>
     <tbody></tbody>
 </table>
 
@@ -45,13 +45,21 @@
     <style>
         .book-modal { width:min(720px,calc(100% - 2rem)); max-height:calc(100vh - 2rem); padding:var(--space-lg); color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 20px 60px rgba(0,0,0,.3); }
         .book-modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+        .job-status { padding:.2rem .55rem; border-radius:999px; font-size:.75rem; font-weight:600; }
+        .job-status.pending { background:#fff3cd;color:#7a5200 }.job-status.running { background:#dbeafe;color:#1d4ed8 }
+        .job-status.done { background:#dcfce7;color:#166534 }.job-status.failed { background:#fee2e2;color:#991b1b }
+        .job-status.cancelled,.job-status.cancelling { background:#e5e7eb;color:#374151 }
         @media (max-width: 760px) { .book-modal { padding:var(--space-md); } }
     </style>
     <div class="card-header ui-modal-header">
-        <h3 style="margin:0">Log Job</h3>
+        <h3 id="modal-title" style="margin:0">Chi tiết job</h3>
         <button type="button" class="btn-outline btn-sm" data-close-dialog>Đóng</button>
     </div>
-    <div class="ui-modal-body" style="max-height:60vh;overflow:auto">
+    <div style="display:grid;grid-template-columns:1fr auto;gap:.5rem;align-items:center;margin-bottom:1rem">
+      <div><span id="modal-status" class="job-status"></span> <strong id="modal-phase"></strong></div><strong id="modal-percent">0%</strong>
+      <progress id="modal-progress" max="100" value="0" style="grid-column:1/-1;width:100%"></progress>
+    </div>
+    <div class="ui-modal-body" style="max-height:60vh;overflow:auto;background:var(--bg-primary);padding:1rem;border-radius:var(--border-radius)">
         <pre id="log-content" style="margin:0;font-family:var(--font-mono);font-size:var(--font-size-sm);white-space:pre-wrap;word-wrap:break-word"></pre>
     </div>
 </dialog>
@@ -86,9 +94,9 @@ function render(jobs) {
     for (const job of jobs) {
         const row = document.createElement("tr");
         cell(row, job.id);
-        cell(row, job.job_type);
-        cell(row, job.book_id);
-        cell(row, job.status + (job.phase ? " / " + job.phase : ""));
+        cell(row, job.node_id || job.job_type, job.flow_run_id ? `Flow run #${job.flow_run_id}` : "");
+        cell(row, job.patch_id || job.book_id);
+        const statusCell=cell(row, ""); const badge=document.createElement('span'); badge.className=`job-status ${job.status}`; badge.textContent=job.status+(job.phase?` / ${job.phase}`:''); statusCell.append(badge);
         const progress = document.createElement("td");
         if (job.progress_total) {
             const bar = document.createElement("progress");
@@ -102,6 +110,7 @@ function render(jobs) {
         row.appendChild(document.createElement("td"));
         button(row, "Log", "log", job.id, false);
         button(row, "Hủy", "cancel", job.id, TERMINAL.has(job.status) || NOT_CANCELLABLE.has(job.job_type));
+        button(row, "Xóa", "delete", job.id, job.status !== "pending");
         button(row, "Chạy lại", "retry", job.id, !TERMINAL.has(job.status));
         body.appendChild(row);
     }
@@ -150,20 +159,29 @@ document.addEventListener("click", async (event) => {
     const target = event.target;
     const modal = document.getElementById("log-modal");
     if (target.closest("[data-close-dialog]") || event.target === modal) {
+        if (window.jobStream) { window.jobStream.close(); window.jobStream=null; }
         modal.close();
         return;
     }
     if (target.dataset.log) {
-        const logContent = document.getElementById("log-content");
+        const id=target.dataset.log, logContent = document.getElementById("log-content");
         logContent.textContent = "Đang tải...";
+        document.getElementById('modal-title').textContent=`Job #${id}`;
         modal.showModal();
         try {
-            const response = await fetch(`/queue/jobs/${target.dataset.log}/log`);
+            const response = await fetch(`/queue/jobs/${id}/log`);
             if (!response.ok) throw new Error(response.status);
             logContent.textContent = await response.text();
+            const update=j=>{const s=document.getElementById('modal-status');s.className=`job-status ${j.status}`;s.textContent=j.status;document.getElementById('modal-phase').textContent=j.phase||'đang chờ';document.getElementById('modal-percent').textContent=`${j.percent}%`;document.getElementById('modal-progress').value=j.percent;};
+            update(await (await fetch(`/queue/jobs/${id}`)).json());
+            window.jobStream=new EventSource(`/queue/jobs/${id}/stream`);
+            window.jobStream.onmessage=e=>{const data=JSON.parse(e.data);if(data.type==='log'){logContent.textContent+=(logContent.textContent?'\n':'')+(data.message||'');logContent.parentElement.scrollTop=logContent.parentElement.scrollHeight}else if(data.type==='progress')update(data)};
         } catch (_) {
             logContent.textContent = "Không thể tải log.";
         }
+    } else if (target.dataset.delete) {
+        if(confirm('Xóa job đang chờ này?')) await fetch(`/queue/jobs/${target.dataset.delete}`, {method:'DELETE'});
+        await refresh();
     } else if (target.dataset.cancel || target.dataset.retry) {
         const action = target.dataset.cancel ? "cancel" : "retry";
         await fetch(`/queue/jobs/${target.dataset[action]}/${action}`, {method: "POST"});

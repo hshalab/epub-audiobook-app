@@ -21,6 +21,16 @@ ProgressCallback = Callable[[str, dict], None]
 # upload/preview routes.
 VIDEO_BACKGROUND_EXTENSIONS = {".mp4", ".webm", ".mov"}
 
+# Every segment's audio is encoded to exactly this format. concat_segments
+# stream-copies the audio, writing a single AudioSpecificConfig taken from the
+# first segment, so a segment that disagrees on rate or layout yields a file
+# that muxes and probes cleanly but fails to decode ("channel element N is not
+# allocated"). Segment audio must therefore never be inherited from the input:
+# greeting audio is a raw user upload and narration is TTS output whose rate
+# depends on the engine. 48kHz stereo is YouTube's recommended upload format.
+AUDIO_SAMPLE_RATE = 48000
+AUDIO_CHANNELS = 2
+
 
 def is_video_background(path: str | Path | None) -> bool:
     """True if the background path points to a loopable video (by extension)."""
@@ -35,6 +45,25 @@ def _emit(on_progress: ProgressCallback | None, event: str, **fields) -> None:
             on_progress(event, fields)
         except Exception:
             pass
+
+
+def _probe_audio_seconds(path: str) -> float | None:
+    """Duration of an audio file in seconds, or None if it cannot be determined.
+
+    Returning None rather than raising keeps generate_segment working on inputs
+    ffprobe cannot read: the caller falls back to '-shortest' alone, which is the
+    behaviour that shipped before the duration bound was added.
+    """
+    try:
+        result = subprocess.run(
+            [settings.get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True,
+        )
+        seconds = float(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError, AttributeError, TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def _build_zoompan_filter(image_type: str, width: int, height: int, fps: int, duration: float) -> str:
@@ -144,6 +173,16 @@ def generate_segment(
         music_idx = next_idx
         next_idx += 1
 
+    # Both input shapes are infinite ('-loop 1' on a still, '-stream_loop -1' on a
+    # clip), so the output length comes from the narration. '-shortest' alone is
+    # not enough once the audio is resampled to AUDIO_SAMPLE_RATE: the resampler's
+    # latency delays the audio EOF and roughly 1.5s of extra video frames slip
+    # through, leaving the video track longer than the audio. Bounding the output
+    # with an explicit '-t' keeps the two tracks aligned.
+    _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
+    narration_seconds = _probe_audio_seconds(audio_path)
+    duration_args = ["-t", f"{narration_seconds:.6f}"] if narration_seconds else []
+
     if image_type == "none" or is_video_bg:
         # 'fps' must be pinned explicitly: '-loop 1' on a still image defaults to
         # 25fps and a video background inherits its own rate. Segments that
@@ -153,14 +192,9 @@ def generate_segment(
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
         )
     else:
-        _emit(on_progress, "segment.probe_duration", path=out_path, audio=audio_path)
-        probe = subprocess.run(
-            [settings.get_ffprobe_path(), "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
-            capture_output=True, text=True,
+        zp_filter = _build_zoompan_filter(
+            image_type, width, height, fps, narration_seconds or 10.0
         )
-        duration = float(probe.stdout.strip()) if probe.stdout.strip() else 10.0
-        zp_filter = _build_zoompan_filter(image_type, width, height, fps, duration)
         base_vf = f"{zp_filter},format=yuv420p"
 
     audio_chains: list[str] = []
@@ -184,9 +218,11 @@ def generate_segment(
             "-c:v", video_codec,
             *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
+            "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
             "-pix_fmt", "yuv420p",
             "-r", str(fps),
             *quality_args,
+            *duration_args,
             "-shortest",
             out_path,
         ]
@@ -203,9 +239,11 @@ def generate_segment(
             "-c:v", video_codec,
             *tune_args,
             "-c:a", "aac", "-b:a", audio_bitrate,
+            "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
             "-pix_fmt", "yuv420p",
             "-r", str(fps),
             *quality_args,
+            *duration_args,
             "-shortest",
             out_path,
         ]
@@ -269,6 +307,50 @@ def _assert_uniform_frame_rate(segment_paths: list[str]) -> None:
         )
 
 
+def _probe_audio_format(path: str) -> tuple[str, int, int] | None:
+    """(codec, sample_rate, channels) of a file's first audio stream, or None."""
+    try:
+        result = subprocess.run(
+            [settings.get_ffprobe_path(), "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name,sample_rate,channels",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True,
+        )
+        codec, rate, channels = [l for l in result.stdout.strip().splitlines() if l]
+        return codec, int(rate), int(channels)
+    except (OSError, subprocess.SubprocessError, AttributeError, TypeError, ValueError):
+        # An unreadable format means "unknown", never a hard failure: the guard
+        # below must not be able to break a concat that ffmpeg itself accepts.
+        return None
+
+
+def _assert_uniform_audio_format(segment_paths: list[str]) -> None:
+    """Reject a stream-copy concat whose inputs disagree on audio format.
+
+    The MP4 muxer writes one AudioSpecificConfig for the output track, taken from
+    the first input. Packets from a segment encoded at another sample rate or
+    channel count are copied in verbatim, so the file muxes and probes cleanly
+    but any decoder configured from that first header hits invalid syntax at the
+    boundary. The result uploads fine but YouTube cannot process it, which is far
+    worse than failing here.
+    """
+    formats = [(p, _probe_audio_format(p)) for p in segment_paths]
+    known = [(p, f) for p, f in formats if f is not None]
+    if not known:
+        return
+    baseline = known[0][1]
+    offenders = [(p, f) for p, f in known if f != baseline]
+    if offenders:
+        detail = ", ".join(
+            f"{Path(p).name}={c}/{r}Hz/{ch}ch" for p, (c, r, ch) in offenders
+        )
+        c, r, ch = baseline
+        raise ValueError(
+            f"refusing to concat segments with mixed audio format "
+            f"(baseline {c}/{r}Hz/{ch}ch): {detail}"
+        )
+
+
 def concat_segments(
     segment_paths: list[str],
     out_path: str,
@@ -287,6 +369,7 @@ def concat_segments(
         return
 
     _assert_uniform_frame_rate(segment_paths)
+    _assert_uniform_audio_format(segment_paths)
 
     list_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
     try:
@@ -400,7 +483,10 @@ def generate_background_sequence(
         cmd = inputs
         if chains:
             cmd += ["-filter_complex", ";".join(chains)]
-        cmd += ["-map", "0:v:0", "-map", audio_map, "-c:v", "copy", "-c:a", "aac", "-b:a", audio_bitrate, "-shortest", out_path]
+        cmd += ["-map", "0:v:0", "-map", audio_map, "-c:v", "copy",
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                "-ar", str(AUDIO_SAMPLE_RATE), "-ac", str(AUDIO_CHANNELS),
+                "-shortest", out_path]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 

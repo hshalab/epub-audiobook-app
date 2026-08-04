@@ -69,7 +69,7 @@ def test_patch_with_no_speakable_text_is_fatal(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn, text="   ")
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: _FakeEngine())
     ctx, _ = _ctx(conn, patch_id=patch_id)
     with pytest.raises(JobFatalError):
         voxcpm_tts.handle(ctx)
@@ -81,7 +81,7 @@ def test_successful_run_writes_audio_and_marks_the_patch_done(tmp_path, monkeypa
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
     engine = _FakeEngine()
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: engine)
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: engine)
     ctx, job_id = _ctx(conn, patch_id=patch_id)
     result = voxcpm_tts.handle(ctx)
     patch = repository.get_patch(conn, patch_id)
@@ -96,7 +96,7 @@ def test_run_without_chunk_files_writes_audio_and_progress(tmp_path, monkeypatch
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
     engine = _FakeEngine()
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: engine)
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: engine)
     monkeypatch.setattr(settings, "tts_write_chunk_files", False)
     ctx, job_id = _ctx(conn, patch_id=patch_id)
 
@@ -113,7 +113,7 @@ def test_progress_is_reported_per_chunk(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: _FakeEngine())
     ctx, job_id = _ctx(conn, patch_id=patch_id)
     voxcpm_tts.handle(ctx)
     ctx.flush()
@@ -128,7 +128,7 @@ def test_next_chunk_index_is_persisted_so_a_rerun_resumes(tmp_path, monkeypatch)
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
     engine = _FakeEngine()
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: engine)
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: engine)
     ctx, _ = _ctx(conn, patch_id=patch_id)
     voxcpm_tts.handle(ctx)
     first_calls = len(engine.calls)
@@ -138,12 +138,39 @@ def test_next_chunk_index_is_persisted_so_a_rerun_resumes(tmp_path, monkeypatch)
     assert len(engine.calls) == first_calls
 
 
+def test_model_config_change_invalidates_chunks_and_restarts_at_zero(tmp_path, monkeypatch):
+    conn = db.connect(str(tmp_path / "a.db"))
+    db.init_schema(conn)
+    patch_id = _book_with_patch(conn, text="Câu một rất dài. Câu hai rất dài. Câu ba rất dài. Câu bốn rất dài.")
+    state = {"cfg": "a"}
+    engine = _FakeEngine()
+    engine.config_fingerprint = lambda: state["cfg"]
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: engine)
+
+    ctx, _ = _ctx(conn, patch_id=patch_id)
+    voxcpm_tts.handle(ctx)
+    first_calls = len(engine.calls)
+
+    # Same model/config + text => resume, nothing regenerated.
+    repository._update_status(conn, "patch", patch_id, status="pending")
+    ctx2, _ = _ctx(conn, patch_id=patch_id)
+    voxcpm_tts.handle(ctx2)
+    assert len(engine.calls) == first_calls
+
+    # Model/config fingerprint changed => stale chunks wiped, restart at zero.
+    state["cfg"] = "b"
+    repository._update_status(conn, "patch", patch_id, status="pending")
+    ctx3, _ = _ctx(conn, patch_id=patch_id)
+    voxcpm_tts.handle(ctx3)
+    assert len(engine.calls) > first_calls
+
+
 def test_cancel_between_chunks_stops_the_run(tmp_path, monkeypatch):
     import asyncio
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn, text="Một. Hai. Ba. Bốn. Năm. Sáu. Bảy. Tám.")
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: _FakeEngine())
     job_id = store.enqueue(conn, "voxcpm_tts", payload={"patch_id": patch_id}, book_id=1)
     job = store.claim(conn, "voxcpm_tts", "w")
     ctx = JobContext(job, conn, JobLogger(job_id, "voxcpm_tts"), lambda: True)
@@ -158,7 +185,7 @@ def test_finishing_the_last_patch_enqueues_a_video_job(tmp_path, monkeypatch):
     patch_id = _book_with_patch(conn)
     conn.execute("UPDATE book SET background_image_path='/tmp/bg.jpg' WHERE id=1")
     conn.commit()
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: _FakeEngine())
     ctx, _ = _ctx(conn, patch_id=patch_id)
     voxcpm_tts.handle(ctx)
     assert repository.get_book(conn, 1).final_audio_path is not None
@@ -171,7 +198,7 @@ def test_no_video_job_when_the_book_has_no_image(tmp_path, monkeypatch):
     conn = db.connect(str(tmp_path / "a.db"))
     db.init_schema(conn)
     patch_id = _book_with_patch(conn)
-    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(voxcpm_tts, "get_engine", lambda *a, **k: _FakeEngine())
     ctx, _ = _ctx(conn, patch_id=patch_id)
     voxcpm_tts.handle(ctx)
     assert store.list_jobs(conn, job_type="video") == []

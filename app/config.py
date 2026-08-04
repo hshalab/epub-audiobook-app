@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     default_patch_size: int = 10
     default_page_size: int = 20
     tts_max_chars: int = 400
+    tts_engine: str = "voxcpm2"
     default_background_image: str = str(_APP_ROOT / "assets" / "default_background.jpg")
     use_nvenc: bool = False
     worker_poll_interval: float = 2.0
@@ -64,11 +65,6 @@ class Settings(BaseSettings):
     piper_voices_dir: str = ""
     # How many times to attempt each LightTTS chunk before reporting it failed.
     light_tts_chunk_retries: int = 3
-    queue_concurrency: str = "voxcpm_tts=1,video=2,youtube_upload=1"
-    queue_default_concurrency: int = 10
-    queue_log_retention_days: int = 7
-    queue_reap_after_seconds: int = 120
-
     # Queue job chạy nền
     # Loại nào không liệt kê ở đây nhận queue_default_concurrency.
     queue_concurrency: str = "voxcpm_tts=1,video=2,youtube_upload=1"

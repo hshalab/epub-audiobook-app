@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import db, repository
 from app.config import settings
-from app.routes import books, database_io, downloads, drive, effects, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
+from app.routes import books, database_io, downloads, drive, effects, flows, local_bridge, logs, music, patches, photos, queue, text_studio, video, video_api, voices, youtube
 import asyncio
 
 from app.jobqueue import joblog
@@ -131,6 +131,8 @@ app.include_router(text_studio.router)
 app.include_router(drive.router)
 app.include_router(database_io.router)
 app.include_router(effects.router)
+app.include_router(flows.router)
+app.include_router(local_bridge.router)
 
 
 @app.get("/")

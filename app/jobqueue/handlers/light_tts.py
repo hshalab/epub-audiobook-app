@@ -39,7 +39,9 @@ def _synth_with_retries(engine, text: str, voice: str | None) -> bytes:
 
 
 def handle(ctx) -> dict:
-    payload = ctx.job.payload
+    from app.tts_engine import normalize_tt_payload
+
+    payload = normalize_tt_payload(ctx.job.payload, default_engine=settings.light_tts_backend)
     patch_id = payload.get("patch_id")
     if patch_id is None:
         raise JobFatalError("payload thiếu patch_id")
@@ -47,10 +49,10 @@ def handle(ctx) -> dict:
     if patch is None:
         raise JobFatalError(f"patch {patch_id} không tồn tại")
     book_id = patch.book_id
-    backend = payload.get("backend") or settings.light_tts_backend
+    backend = payload["tts_engine"]
     voice = payload.get("voice") or settings.light_tts_voice
-    max_chars = int(payload.get("max_chars") or 0)
-    with_effects = bool(payload.get("with_effects"))
+    max_chars = payload["max_chars"]
+    with_effects = payload["with_effects"]
     effective_max_chars = max_chars if max_chars > 0 else (patch.max_chars or settings.tts_max_chars)
     plan_inputs = repository.fetch_patch_chunk_inputs(ctx.conn, patch, max_chars=effective_max_chars)
     plan = repository.build_chunk_plan_from_inputs(plan_inputs)
@@ -121,9 +123,11 @@ def handle(ctx) -> dict:
     chunk_paths = [str(chunk_dir / f"chunk_{i:03d}.wav") for i in range(total)]
     audio_merge.concat_wavs(chunk_paths, audio_path, pause_ms=_CHUNK_PAUSE_MS)
     _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects)
+    from app.jobqueue.handlers.voxcpm_tts import finalize_book_if_ready
+    final_path = finalize_book_if_ready(ctx, book_id)
     ctx.emit({"type": "done", "saved": True, "complete": True, "ok": ok_count, "failed": 0})
     ctx.progress(total, total, phase="done")
-    return {"audio_path": audio_path, "ok": ok_count, "failed": 0}
+    return {"audio_path": audio_path, "ok": ok_count, "failed": 0, "final_audio_path": final_path}
 
 
 def _finish_patch_audio(ctx, plan, chunk_paths, audio_path, patch_id, with_effects) -> None:

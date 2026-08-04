@@ -313,19 +313,19 @@ def client_with_target(tmp_path, monkeypatch):
         yield c, book_id, patch_id, target["id"], drive_dir
 
 
-def test_export_no_target_returns_400(client):
+def test_removed_single_export_route_returns_404(client):
     with TestClient(app) as c:
         resp = c.post("/books/1/patches/1/export", data={}, follow_redirects=False)
-    assert resp.status_code == 422
+    assert resp.status_code == 404
 
 
-def test_export_unknown_target_returns_400(client, tmp_path):
+def test_removed_single_export_route_ignores_old_target_payload(client, tmp_path):
     drive_dir = tmp_path / "gd"
     drive_dir.mkdir()
     with db.connect(str(tmp_path / "app.db")) as conn:
         _seed_book_patch(conn, tmp_path)
     resp = client.post("/books/1/patches/1/export", data={"sync_target_id": "999"}, follow_redirects=False)
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_export_collision_leaves_existing_folder(tmp_path):

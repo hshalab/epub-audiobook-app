@@ -5,7 +5,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.tts_engine import VoxCPMEngine
+from app.tts_engine import (
+    EdgeTTSEngine,
+    GTTSEngine,
+    OmniVoiceEngine,
+    VieNeuFastEngine,
+    VoxCPMEngine,
+    create_tts_engine,
+    list_tts_models,
+    normalize_tt_payload,
+)
 
 
 class FakeModel:
@@ -116,3 +125,97 @@ def test_synthesize_chunk_without_prompt_text_omits_prompt_arguments(monkeypatch
 
     assert "prompt_wav_path" not in model.calls[0]
     assert "prompt_text" not in model.calls[0]
+
+
+def test_model_catalog_and_factory_are_unified():
+    models = list_tts_models()
+    assert [model["id"] for model in models] == ["voxcpm2", "omnivoice", "vieneu-fast", "edge-tts", "gtts"]
+    assert isinstance(create_tts_engine("voxcpm2"), VoxCPMEngine)
+    assert isinstance(create_tts_engine("omnivoice"), OmniVoiceEngine)
+    assert isinstance(create_tts_engine("vieneu-fast"), VieNeuFastEngine)
+    assert isinstance(create_tts_engine("edge-tts"), EdgeTTSEngine)
+    assert isinstance(create_tts_engine("gtts"), GTTSEngine)
+
+
+def test_catalog_carries_capability_metadata():
+    models = {m["id"]: m for m in list_tts_models()}
+    assert models["voxcpm2"]["capabilities"] == {
+        "kind": "local", "reference_audio": True, "voice_selection": False,
+        "offline": True, "online": False,
+    }
+    for cloud in ("edge-tts", "gtts"):
+        assert models[cloud]["capabilities"] == {
+            "kind": "cloud", "reference_audio": False, "voice_selection": True,
+            "offline": False, "online": True,
+        }
+        assert models[cloud]["supports_reference"] is False
+    assert models["edge-tts"]["default_voice"] == "vi-VN-HoaiMyNeural"
+    assert models["gtts"]["default_voice"] == "vi"
+
+
+def test_normalize_payload_accepts_legacy_shapes_and_canonicalises():
+    assert normalize_tt_payload({"patch_id": 1})["tts_engine"] == "voxcpm2"
+    canonical = normalize_tt_payload({"patch_id": 1, "backend": "gtts", "voice": "vi"})
+    assert canonical["tts_engine"] == "gtts"
+    assert canonical["max_chars"] == 0 and canonical["with_effects"] is False
+    assert normalize_tt_payload({"patch_id": 1, "tts_engine": "edge-tts"})["tts_engine"] == "edge-tts"
+    with pytest.raises(ValueError, match="Unknown TTS engine"):
+        normalize_tt_payload({"patch_id": 1, "tts_engine": "nope"})
+
+
+def test_cloud_engines_default_their_voice_from_the_catalog(monkeypatch):
+    assert EdgeTTSEngine().voice == "vi-VN-HoaiMyNeural"
+    assert GTTSEngine().voice == "vi"
+    assert create_tts_engine("edge-tts", voice="vi-VN-NamMinhNeural").voice == "vi-VN-NamMinhNeural"
+
+
+def test_cloud_engines_decode_to_arrays_and_learn_the_sample_rate(monkeypatch):
+    import io
+
+    import soundfile as sf
+
+    def fake_wav_bytes(text):
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(2400, dtype="float32"), 24000, format="WAV")
+        return buf.getvalue()
+
+    engine = EdgeTTSEngine()
+    monkeypatch.setattr(engine, "_synth_wav_bytes", fake_wav_bytes)
+    result = engine.synthesize_chunk("xin chào", "voice.wav", "unused")
+    assert result.dtype == np.float32 and result.shape == (2400,)
+    assert engine.sample_rate == 24000
+    assert engine.config_fingerprint() == "edge-tts:vi-VN-HoaiMyNeural"
+
+
+def test_local_engines_report_a_stable_config_fingerprint():
+    assert "voxcpm2" in VoxCPMEngine().config_fingerprint()
+    assert "omnivoice" in OmniVoiceEngine().config_fingerprint()
+    assert "vieneu-fast" in VieNeuFastEngine().config_fingerprint()
+    assert VoxCPMEngine(seed=1).config_fingerprint() != VoxCPMEngine(seed=2).config_fingerprint()
+
+
+def test_omnivoice_normalizes_list_output_and_clone_arguments(monkeypatch):
+    monkeypatch.setattr("app.tts_engine._seed_rng", lambda seed: None)
+    model = FakeModel()
+    model.generate = lambda **kwargs: (model.calls.append(kwargs) or [np.array([0.25])])
+    engine = OmniVoiceEngine()
+    engine._model = model
+
+    result = engine.synthesize_chunk("xin chào", "voice.wav", "giọng mẫu")
+
+    assert result.dtype == np.float32
+    assert model.calls == [{"text": "xin chào", "ref_audio": "voice.wav", "ref_text": "giọng mẫu"}]
+
+
+def test_vieneu_fast_uses_storytelling_and_clone_reference():
+    class FakeVieNeu:
+        def infer(self, text, **kwargs):
+            assert (text, kwargs) == ("xin chào", {"style": "doc_truyen", "ref_audio": "voice.wav"})
+            return [0.5]
+
+    engine = VieNeuFastEngine()
+    engine._model = FakeVieNeu()
+    result = engine.synthesize_chunk("xin chào", "voice.wav", "unused transcript")
+
+    assert result.dtype == np.float32
+    assert result.tolist() == [0.5]
